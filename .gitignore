@@ -1,0 +1,57 @@
+﻿# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+build/
+
+# Environment files
+.env
+.env*.local
+
+# Python virtual environments
+.venv/
+backend/.venv/
+venv/
+env/
+
+# Python cache and build output
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+dist/
+*.egg-info/
+
+# IDE files
+.vscode/
+.idea/
+
+# Logs and generated diagnostics
+*.log
+backend/*_out.txt
+backend/*_err.txt
+backend/*_log.txt
+backend/*_result.txt
+backend/*_results.txt
+backend/api_fail*.txt
+backend/smoke_out.txt
+backend/startup_log.txt
+frontend/*_log.txt
+*_dump.txt
+*_fresh_log.txt
+
+# Temporary scripts
+frontend/measure_quick.js
+frontend/take_screenshots.js
+
+# TypeScript generated files
+*.tsbuildinfo
+next-env.d.ts
+
+# OS files
+.DS_Store

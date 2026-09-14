@@ -1,0 +1,14 @@
+ENTERPRISE_ALGORITHM.md is documentation, so it is not directly executable.
+To run the implemented backend:
+cd "I:\AI-LAB\Projects\HSDEEP CORE AI\backend"
+python -m uvicorn main:app --reload --port 8000
+Open:
+API documentation: http://localhost:8000/docs
+Capabilities: http://localhost:8000/intelligence/capabilities
+Run the frontend in another terminal:
+cd "I:\AI-LAB\Projects\HSDEEP CORE AI\frontend"
+npm start
+Then open http://localhost:3000.
+
+
+http://localhost:3000/hsdeep_core_mission_control.html
