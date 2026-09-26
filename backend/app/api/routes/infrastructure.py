@@ -239,4 +239,3 @@ async def dependency_impact_view(
         )
     except ResourceNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
