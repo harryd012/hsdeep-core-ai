@@ -349,6 +349,14 @@ class TaskService:
             )
         if task.approval_status == APPROVAL_APPROVED:
             raise TaskTransitionNotAllowed(f"Task {task_id} is already approved")
+        # Fidelity to the documented lifecycle: approval is requested for work
+        # that has been accepted (an execution-eligible status), not while the
+        # task is still being routed. Narrowing only - the execution gate that
+        # protects the Action Plane is unchanged and independent of this.
+        if task.status not in {"accepted", "investigating"}:
+            raise TaskTransitionNotAllowed(
+                f"Task {task_id} cannot request approval while {task.status}"
+            )
 
         now = datetime.now(timezone.utc)
         task.audit_log.append(

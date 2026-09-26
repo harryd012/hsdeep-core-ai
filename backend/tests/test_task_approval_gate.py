@@ -383,5 +383,21 @@ class TestApprovalWorkflow:
             stored = await TaskRepository(db).get(task.id, tenant.id)
             assert stored is not None and stored.approval_status == "not_required"
 
+    async def test_request_approval_requires_an_execution_eligible_status(self, tenant):
+        """The lifecycle requests approval after acceptance, not while routing."""
+        async with AsyncSessionLocal() as db:
+            task = await _make_task(
+                db, tenant.id, approval_required=True, status="created"
+            )
+            with pytest.raises(HTTPException) as exc:
+                await request_approval_route(
+                    task_id=task.id, request=_principal(), body=None,
+                    service=get_task_service(db), tenant_id=tenant.id, db=db,
+                )
+            assert exc.value.status_code == 409
+            assert "cannot request approval" in exc.value.detail
+            await db.refresh(task)
+            assert task.approval_status == "not_required"  # unchanged
+
     async def test_autonomous_task_assignment_remains_false(self):
         assert get_settings().autonomous_task_assignment is False
