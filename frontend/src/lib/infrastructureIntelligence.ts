@@ -798,11 +798,13 @@ export interface FailoverSimulationOut {
   impact_if_scenario_holds?: number[];
 }
 
+export type FailoverPolicyScope = "all_wan" | "site" | "link";
+
 export interface FailoverPolicyOut {
   id: string;
   name: string;
   description: string | null;
-  scope: "all_wan" | "site" | "link";
+  scope: FailoverPolicyScope;
   scope_id: string | null;
   metric: string;
   warning_threshold: number | null;
@@ -810,6 +812,30 @@ export interface FailoverPolicyOut {
   clear_threshold: number | null;
   min_consecutive_samples: number;
   is_active: boolean;
+  attributes: Record<string, unknown>;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+/**
+ * Create/update payload.
+ *
+ * Threshold levels are validated by the backend against the metric's direction
+ * (latency/jitter/loss/utilisation breach when HIGH; availability when LOW), so
+ * a contradictory pair is refused rather than stored.
+ */
+export interface FailoverPolicyInput {
+  name: string;
+  metric: string;
+  scope?: FailoverPolicyScope;
+  scope_id?: string | null;
+  description?: string | null;
+  warning_threshold?: number | null;
+  critical_threshold?: number | null;
+  clear_threshold?: number | null;
+  min_consecutive_samples?: number;
+  is_active?: boolean;
+  attributes?: Record<string, unknown>;
 }
 
 export interface FailoverPoliciesOut {
@@ -923,5 +949,62 @@ export function getFailoverBlastRadius(params: {
 
 export function listFailoverPolicies(): Promise<FailoverPoliciesOut> {
   return apiFetch<FailoverPoliciesOut>(`${FAILOVER_BASE}/policies`);
+}
+
+export function getFailoverPolicy(
+  policyId: string,
+): Promise<FailoverPolicyOut> {
+  return apiFetch<FailoverPolicyOut>(`${FAILOVER_BASE}/policies/${policyId}`);
+}
+
+/**
+ * Create an operational SLA policy.
+ *
+ * Requires `monitoring.update`: these thresholds decide what the detector calls
+ * a breach, so retuning them is a configuration act, not an operational one.
+ * A `422` means the policy cannot be evaluated as written (no level,
+ * contradictory levels, a scope_id that is not in this tenant); a `409` means it
+ * would duplicate an existing metric+scope. Both rejections carry the offending
+ * `field` in the error detail.
+ */
+export function createFailoverPolicy(
+  input: FailoverPolicyInput,
+): Promise<FailoverPolicyOut> {
+  return apiFetch<FailoverPolicyOut>(`${FAILOVER_BASE}/policies`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+/**
+ * Partially update a policy. Only the supplied keys change, and an explicit
+ * `null` clears a level (`{ clear_threshold: null }`). The merged result is
+ * re-validated server-side, so moving one level cannot leave a contradictory
+ * pair behind; a rejected update writes nothing.
+ */
+export function updateFailoverPolicy(
+  policyId: string,
+  changes: Partial<FailoverPolicyInput>,
+): Promise<FailoverPolicyOut> {
+  return apiFetch<FailoverPolicyOut>(`${FAILOVER_BASE}/policies/${policyId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+}
+
+/**
+ * Soft delete. The policy stops being evaluated immediately and disappears from
+ * the list, but the row is retained as an audit record. To disable a policy
+ * while keeping it visible, PATCH `{ is_active: false }` instead.
+ */
+export function deleteFailoverPolicy(
+  policyId: string,
+): Promise<{ deleted: boolean; policy: FailoverPolicyOut }> {
+  return apiFetch<{ deleted: boolean; policy: FailoverPolicyOut }>(
+    `${FAILOVER_BASE}/policies/${policyId}`,
+    { method: "DELETE" },
+  );
 }
 
