@@ -1,0 +1,493 @@
+﻿"""
+Authentication & authorization primitives (Auth + RBAC sprint, P1).
+
+This module is the ONLY place that knows how to hash a password, mint/verify
+a JWT, and turn a bearer token into a `Principal`. Routes depend on the
+FastAPI dependencies exported here (`get_current_user`, `require_permission`)
+and never parse tokens themselves - same "one seam" discipline the Collector
+Framework uses for vendors.
+
+Design notes:
+  * Passwords: Argon2id via passlib. Deliberately NOT SecretCrypto (Fernet) -
+    password storage must be a one-way KDF, not reversible encryption.
+  * Access token: stateless HS256 JWT carrying the tenant id and the user's
+    resolved permission set, so a per-request authorization check needs no DB
+    round-trip. Kept short-lived (minutes) precisely because it cannot be
+    revoked server-side.
+  * Refresh token: an opaque high-entropy string (NOT a JWT) whose SHA-256
+    hash is persisted (app/models/refresh_token.py) so it can be revoked.
+  * MSP cross-tenant (interim): a superuser may act on any tenant by sending
+    an `X-Tenant-Id` header; a normal user's principal is pinned to the
+    tenant in their token. This is the approved interim model pending a
+    formal MSP-org hierarchy (see audit-master-roadmap).
+  * API keys (Sprint 2): a raw API key presented as `Authorization: Bearer
+    <key>` is resolved against the `api_keys` table (SHA-256 hash lookup),
+    checked for expiry/active state, and its scopes are enforced as the
+    Principal's permission set. `get_current_user` transparently supports
+    both JWTs and API keys so existing routes gain API-key auth without
+    changes.
+
+`Principal` is a frozen dataclass, not a Pydantic/ORM object, so it is cheap,
+immutable, and never accidentally serialized to a client.
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import logging
+import secrets
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+
+from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
+
+from app.core.config import get_settings
+
+settings = get_settings()
+
+# Argon2id. `deprecated="auto"` lets us add stronger schemes later and have
+# passlib flag old hashes for rehash-on-next-login without a migration.
+_pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
+
+# auto_error=False: we raise our own 401s (with consistent shape) and also
+# support the AUTH_ENFORCED=false transitional mode where an absent token is
+# tolerated by get_optional_user.
+_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
+
+_ACCESS_TOKEN_TYPE = "access"
+
+
+# ---------------------------------------------------------------------------
+# Passwords
+# ---------------------------------------------------------------------------
+
+def hash_password(plaintext: str) -> str:
+    """Return an Argon2id hash. Never logs the plaintext."""
+    return _pwd_context.hash(plaintext)
+
+
+def verify_password(plaintext: str, password_hash: str | None) -> bool:
+    """Constant-time-ish verify via passlib. A null stored hash (user has no
+    local password) always returns False rather than raising."""
+    if not password_hash:
+        return False
+    try:
+        return _pwd_context.verify(plaintext, password_hash)
+    except ValueError:
+        # Malformed/unknown hash format - treat as a failed login, never 500.
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Refresh tokens (opaque; only the hash is stored)
+# ---------------------------------------------------------------------------
+
+def generate_refresh_token() -> str:
+    """A URL-safe 256-bit random token handed to the client exactly once."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_refresh_token(token: str) -> str:
+    """SHA-256 hex digest stored in refresh_tokens.token_hash. A fast hash is
+    fine here (unlike passwords) because the token is high-entropy."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Access JWTs
+# ---------------------------------------------------------------------------
+
+def create_access_token(
+    *,
+    user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    email: str,
+    is_superuser: bool,
+    permissions: frozenset[str],
+) -> str:
+    now = datetime.now(timezone.utc)
+    claims = {
+        "sub": str(user_id),
+        "tid": str(tenant_id),
+        "email": email,
+        "su": is_superuser,
+        "perms": sorted(permissions),
+        "type": _ACCESS_TOKEN_TYPE,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(minutes=settings.access_token_expire_minutes)).timestamp()),
+    }
+    return jwt.encode(claims, settings.effective_jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def _decode_access_token(token: str) -> dict:
+    try:
+        payload = jwt.decode(
+            token, settings.effective_jwt_secret, algorithms=[settings.jwt_algorithm]
+        )
+    except JWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    if payload.get("type") != _ACCESS_TOKEN_TYPE:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Wrong token type",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# API keys (Sprint 2: expiry + scope enforcement + lastUsedAt)
+# ---------------------------------------------------------------------------
+
+def hash_api_key(raw: str) -> str:
+    """SHA-256 hex digest of a raw API key. Same scheme used by the settings
+    route when creating a key (app/api/routes/settings.py::hash_api_key)."""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def _resolve_api_key_principal(
+    raw_key: str, db: AsyncSession, x_tenant_id: uuid.UUID | None
+) -> Principal | None:
+    """Resolve a raw API key into a Principal, or return None if the key is
+    unknown/inactive/expired. Never raises - the caller decides the 401 shape.
+
+    Enforces:
+      * key exists (SHA-256 hash lookup) and is_active
+      * expires_at (ISO-8601 string) is in the future
+      * tenant isolation: the key's tenant_id is used (X-Tenant-Id override
+        is NOT permitted for API keys - a key is pinned to its tenant)
+      * scopes become the Principal's permission set, so `require_permission`
+        enforces key scopes automatically.
+
+    Fire-and-forget lastUsedAt update: we schedule a background task that
+    opens its own session so the current request is never slowed down by the
+    write. The task is best-effort and swallows errors (a failed lastUsedAt
+    update must never break the authenticated request).
+    """
+    from app.models.api_key import ApiKey
+
+    key_hash = hash_api_key(raw_key)
+    result = await db.execute(
+        select(ApiKey).where(
+            ApiKey.key_hash == key_hash,
+            ApiKey.is_active.is_(True),
+            ApiKey.is_deleted.is_(False),
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+
+    # Expiry enforcement: expires_at is stored as an ISO-8601 string.
+    if row.expires_at:
+        try:
+            expires = datetime.fromisoformat(row.expires_at.replace("Z", "+00:00"))
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if expires <= datetime.now(timezone.utc):
+                return None
+        except ValueError:
+            # Malformed expiry - treat as expired (fail closed).
+            return None
+
+    # Fire-and-forget lastUsedAt update (best-effort, own session).
+    async def _touch_last_used() -> None:
+        try:
+            from app.core.db import AsyncSessionLocal
+            async with AsyncSessionLocal() as touch_db:
+                touch_row = (
+                    await touch_db.execute(
+                        select(ApiKey).where(ApiKey.id == row.id)
+                    )
+                ).scalar_one_or_none()
+                if touch_row is not None:
+                    touch_row.last_used_at = datetime.now(timezone.utc).isoformat()
+                    await touch_db.commit()
+        except Exception:  # noqa: BLE001 - best-effort, never break the request
+            logger.debug("Failed to update api_key.last_used_at for key %s", row.id)
+
+    asyncio.get_running_loop().create_task(_touch_last_used())
+
+    return Principal(
+        user_id=uuid.UUID(int=0),  # API keys have no user identity
+        tenant_id=row.tenant_id,
+        email=f"apikey:{row.name}",
+        is_superuser=False,
+        permissions=frozenset(row.scopes or []),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Principal + dependencies
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Principal:
+    """The authenticated caller for the duration of one request."""
+
+    user_id: uuid.UUID
+    tenant_id: uuid.UUID
+    email: str
+    is_superuser: bool
+    permissions: frozenset[str]
+
+    def has_permission(self, code: str) -> bool:
+        # Superusers bypass the grant check by design (interim MSP model).
+        return self.is_superuser or code in self.permissions
+
+
+async def _audit_impersonation(
+    actor_user_id: uuid.UUID, actor_email: str, target_tenant_id: uuid.UUID
+) -> None:
+    """Best-effort audit of a superuser cross-tenant (X-Tenant-Id) override.
+    Opens its own session so it can never break or slow the request."""
+    try:
+        from app.core.db import AsyncSessionLocal
+        from app.services.audit_service import AuditService
+
+        async with AsyncSessionLocal() as db:
+            await AuditService(db).record(
+                tenant_id=target_tenant_id,
+                action="tenant.impersonation",
+                actor_id=actor_user_id,
+                actor_email=actor_email,
+                entity_type="tenant",
+                entity_id=target_tenant_id,
+                description=(
+                    f"Superuser {actor_email} acted on tenant "
+                    f"{target_tenant_id} via X-Tenant-Id override"
+                ),
+                context={"target_tenant_id": str(target_tenant_id)},
+            )
+            await db.commit()
+    except Exception:  # noqa: BLE001 - auditing must never break auth
+        logger.exception("Failed to audit tenant impersonation for actor %s", actor_email)
+
+
+def _principal_from_payload(payload: dict, x_tenant_id: uuid.UUID | None) -> Principal:
+    is_superuser = bool(payload.get("su", False))
+    token_tenant = uuid.UUID(payload["tid"])
+
+    # Superuser tenant targeting (interim MSP model). A normal user supplying
+    # X-Tenant-Id is ignored - never allow it to widen their scope.
+    if x_tenant_id is not None and x_tenant_id != token_tenant:
+        if not is_superuser:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="X-Tenant-Id override is not permitted for this user",
+            )
+        effective_tenant = x_tenant_id
+        # Security audit: every cross-tenant override is recorded
+        # (fire-and-forget; never blocks or fails the request). Skipped when
+        # no event loop is running (e.g. direct unit-test invocation).
+        try:
+            _loop = asyncio.get_running_loop()
+            _loop.create_task(
+                _audit_impersonation(
+                    uuid.UUID(payload["sub"]), payload.get("email", ""), effective_tenant
+                )
+            )
+        except RuntimeError:
+            logger.debug("Impersonation audit skipped: no running event loop")
+    else:
+        effective_tenant = token_tenant
+
+    return Principal(
+        user_id=uuid.UUID(payload["sub"]),
+        tenant_id=effective_tenant,
+        email=payload.get("email", ""),
+        is_superuser=is_superuser,
+        permissions=frozenset(payload.get("perms", [])),
+    )
+
+
+async def _validate_override_tenant(target_tenant_id: uuid.UUID) -> None:
+    """P0 hardening for the superuser X-Tenant-Id override.
+
+    The override target must be a REAL, live (non-soft-deleted) tenant. Before
+    this check an override pointing at a random or deleted tenant UUID was
+    accepted silently — an unvalidated active-tenant claim. Suspended
+    (is_active=False) tenants still pass: superusers must be able to
+    administer them (reads stay open by design).
+
+    Opens its own short-lived session (same pattern as the API-key resolution
+    and the impersonation audit) so no request-scoped session is needed. The
+    normal no-override fast path never pays this DB round-trip.
+    """
+    from app.core.db import AsyncSessionLocal
+    from app.repositories.tenant_repository import TenantRepository
+
+    async with AsyncSessionLocal() as db:
+        row = await TenantRepository(db).get_existing(target_tenant_id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Target tenant does not exist or is not accessible",
+        )
+
+
+def _override_applied(principal: Principal, payload: dict) -> bool:
+    """True when the request's effective tenant came from an X-Tenant-Id
+    override rather than the token's own tenant claim (only possible for a
+    superuser — `_principal_from_payload` already 403s everyone else)."""
+    return principal.tenant_id != uuid.UUID(payload["tid"])
+
+
+def _publish_principal(request: Request, principal: Principal) -> None:
+    """Expose the successfully-resolved principal on ``request.state``.
+
+    Cross-cutting middleware (structured request observability) needs to
+    attribute a request to its tenant/user, but must not parse tokens itself.
+    Publishing the resolved principal keeps auth the single seam that
+    understands credentials.
+
+    SECURITY: only the immutable ``Principal`` is stored — never the raw
+    token, the Authorization header, a password or an API key. `state` is
+    request-scoped and discarded when the request ends, so nothing leaks
+    between requests or tenants.
+    """
+    request.state.principal = principal
+
+
+async def get_current_user(
+    request: Request,
+    token: str | None = Depends(_oauth2_scheme),
+    x_tenant_id: uuid.UUID | None = Header(default=None, alias="X-Tenant-Id"),
+) -> Principal:
+    """Resolve the authenticated principal or raise 401. Use this on any route
+    that requires a logged-in user but no specific permission.
+
+    Supports both JWT bearer tokens and raw API keys. An API key is resolved
+    against the api_keys table (hash lookup), checked for expiry/active state,
+    and its scopes become the Principal's permission set."""
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Try JWT first (fast path - no DB round-trip).
+    try:
+        payload = _decode_access_token(token)
+        principal = _principal_from_payload(payload, x_tenant_id)
+    except HTTPException:
+        # Not a valid JWT - fall through to API key resolution.
+        pass
+    else:
+        # P0 hardening: validate the override target before trusting it.
+        if _override_applied(principal, payload):
+            await _validate_override_tenant(principal.tenant_id)
+        _publish_principal(request, principal)
+        return principal
+
+    # API key path: needs a DB session.
+    from app.core.db import get_db  # noqa: F401 - imported lazily to avoid a cycle
+    async for session in get_db():
+        principal = await _resolve_api_key_principal(token, session, x_tenant_id)
+        if principal is not None:
+            _publish_principal(request, principal)
+            return principal
+        break
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+async def get_optional_user(
+    token: str | None = Depends(_oauth2_scheme),
+    x_tenant_id: uuid.UUID | None = Header(default=None, alias="X-Tenant-Id"),
+) -> Principal | None:
+    """Transitional dependency for the phased cutover (AUTH_ENFORCED=false):
+    returns a Principal if a valid token is present, else None. A present but
+    INVALID token still 401s - only absence is tolerated. Lets a route accept
+    either principal-derived tenancy or the legacy tenant_id query param while
+    routes are migrated one at a time."""
+    if not token:
+        return None
+    try:
+        payload = _decode_access_token(token)
+        principal = _principal_from_payload(payload, x_tenant_id)
+    except HTTPException:
+        # Not a JWT - try API key resolution.
+        from app.core.db import get_db
+        async for session in get_db():
+            principal = await _resolve_api_key_principal(token, session, x_tenant_id)
+            if principal is not None:
+                return principal
+            break
+        return None
+    else:
+        # P0 hardening: validate the override target before trusting it.
+        # (Outside the except block so a 403 for a bogus override is NOT
+        # silently swallowed into "no principal".)
+        if _override_applied(principal, payload):
+            await _validate_override_tenant(principal.tenant_id)
+        return principal
+
+
+def require_permission(code: str):
+    """Dependency factory: guard a route with a specific permission.
+
+        @router.get(..., dependencies=[Depends(require_permission("alerts.read"))])
+
+    or inject the principal too:
+
+        principal: Principal = Depends(require_permission("alerts.read"))
+    """
+
+    async def _dependency(principal: Principal = Depends(get_current_user)) -> Principal:
+        if not principal.has_permission(code):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing required permission: {code}",
+            )
+        return principal
+
+    return _dependency
+
+
+def get_tenant_id(principal: Principal = Depends(get_current_user)) -> uuid.UUID:
+    """Extract the tenant_id from the authenticated principal.
+
+    Use this dependency as a replacement for the legacy `tenant_id: uuid.UUID = Query(...)`
+    pattern. This enforces tenant isolation: the caller's identity determines the tenant,
+    not an arbitrary query parameter.
+
+        @router.get("")
+        async def list_items(tenant_id: uuid.UUID = Depends(get_tenant_id), ...):
+            ...
+    """
+    return principal.tenant_id
+
+
+def require_admin(principal: Principal = Depends(get_current_user)) -> Principal:
+    """Dependency factory: guard a route so only superusers/admins can access it.
+
+        @router.get("/admin/...", dependencies=[Depends(require_admin)])
+
+    or inject the principal too:
+
+        principal: Principal = Depends(require_admin)
+    """
+    if not principal.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+    return principal

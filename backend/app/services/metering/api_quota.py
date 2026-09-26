@@ -1,0 +1,157 @@
+"""
+Per-tenant API-request quota (``Plan.api_rate_limit``).
+
+``Plan.api_rate_limit`` is a PER-BILLING-PERIOD allowance, not a per-minute
+one: ``BillingService.get_entitlements()`` sums ``api.call`` usage_counters
+since ``subscription.current_period_start`` and compares that total with the
+plan value (50_000 Starter / 500_000 Pro / 5_000_000 Enterprise).
+
+Two things were missing for that quota to be real:
+
+1. Nothing recorded ``api.call``. ``app/services/ingester/pipeline.py``'s
+   ``count_api_call()`` shipped with the docstring "Called from middleware or
+   route handlers" but had ZERO callers, so usage always read 0 (live evidence:
+   ``{"resource":"api_calls","limit":50000,"used":0}`` on a system that had
+   served thousands of requests) and the quota could never trigger.
+2. The request limiter applied ``api_rate_limit`` as a PER-MINUTE value in a
+   60-second sliding window and, when it tripped, slept instead of rejecting -
+   so a 50_000/month allowance never blocked anything.
+
+This module supplies the missing meter and the period-allowance check. It
+reuses the existing ``TenantUsageCollector`` (in-memory hourly buckets, flushed
+through the existing ``flush_usage_counters``) and ``BillingService``, so there
+is no second metering system and no second source of truth.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid
+from collections import defaultdict
+
+logger = logging.getLogger(__name__)
+
+# `api.call` increments are accumulated in memory and written in batches, so
+# the request path never pays for a DB write.
+FLUSH_THRESHOLD = 50
+
+# How long a tenant's allowance (limit + period usage) is cached. One billing
+# query per tenant per minute, never one per request.
+ALLOWANCE_TTL_SECONDS = 60.0
+
+_pending: dict[uuid.UUID, int] = defaultdict(int)
+_allowance_cache: dict[uuid.UUID, tuple[float, int, int, bool]] = {}
+_lock = asyncio.Lock()
+
+
+def pending_for(tenant_id: uuid.UUID) -> int:
+    """Unflushed ``api.call`` increments for a tenant (in-process only)."""
+    return _pending.get(tenant_id, 0)
+
+
+def reset_state() -> None:
+    """Clear all in-process state. Test hook only."""
+    _pending.clear()
+    _allowance_cache.clear()
+
+
+async def record_api_call(tenant_id: uuid.UUID, increment: int = 1) -> None:
+    """Count one authenticated API request for metering.
+
+    Cheap by design: the increment is held in memory and persisted in batches,
+    so a metering failure can never fail a request.
+    """
+    async with _lock:
+        _pending[tenant_id] += increment
+        due = _pending[tenant_id] >= FLUSH_THRESHOLD
+    if due:
+        await flush_api_calls(tenant_id)
+
+
+async def flush_api_calls(tenant_id: uuid.UUID | None = None) -> None:
+    """Persist accumulated ``api.call`` increments through the existing meter.
+
+    Uses the previously-unwired ``count_api_call()`` plus the existing
+    ``flush_usage_counters()``, so counts land in ``usage_counters`` exactly
+    like ``collector.run`` and ``alert.ingested`` already do.
+    """
+    from app.core.db import AsyncSessionLocal
+    from app.services.ingester.pipeline import count_api_call, flush_usage_counters
+
+    async with _lock:
+        if tenant_id is None:
+            batch = dict(_pending)
+            _pending.clear()
+        else:
+            batch = {tenant_id: _pending.pop(tenant_id, 0)}
+    batch = {t: n for t, n in batch.items() if n > 0}
+    if not batch:
+        return
+
+    try:
+        async with AsyncSessionLocal() as db:
+            for tid, increment in batch.items():
+                await count_api_call(tid, db, increment=increment)
+            await flush_usage_counters(db)
+            await db.commit()
+    except Exception:  # noqa: BLE001 - metering must never break a request
+        logger.warning("Failed to flush api.call usage counters.", exc_info=True)
+        # Put the counts back so the next flush retries instead of losing them.
+        async with _lock:
+            for tid, increment in batch.items():
+                _pending[tid] += increment
+
+
+async def api_allowance(tenant_id: uuid.UUID) -> tuple[int | None, int, bool]:
+    """Cached ``(limit, period_used, over_limit)`` for the ``api_calls`` quota.
+
+    Reads the same entitlement computation the UI and
+    ``BillingService.check_limit("api_calls")`` use. ``(None, 0, False)`` means
+    "no enforceable allowance" (no subscription, or a non-positive plan value),
+    which must never block a request.
+    """
+    import time
+
+    now = time.monotonic()
+    cached = _allowance_cache.get(tenant_id)
+    if cached and cached[0] > now:
+        return cached[1], cached[2], cached[3]
+
+    limit: int | None = None
+    used = 0
+    over = False
+    try:
+        from app.core.db import AsyncSessionLocal
+        from app.repositories.plan_repository import PlanRepository
+        from app.repositories.subscription_repository import SubscriptionRepository
+        from app.services.billing_service import BillingService, SubscriptionNotFound
+
+        async with AsyncSessionLocal() as db:
+            billing = BillingService(
+                plans=PlanRepository(db),
+                subscriptions=SubscriptionRepository(db),
+                db=db,
+            )
+            try:
+                entitlements = await billing.get_entitlements(tenant_id)
+            except SubscriptionNotFound:
+                entitlements = None
+            if entitlements:
+                for entry in entitlements["limits"]:
+                    if entry["resource"] == "api_calls":
+                        limit = int(entry["limit"])
+                        used = int(entry["used"])
+                        over = bool(entry["over_limit"])
+                        break
+    except Exception:  # noqa: BLE001 - never let quota config break requests
+        logger.warning("Failed to read api_calls allowance.", exc_info=True)
+        limit, used, over = None, 0, False
+
+    # A non-positive limit means "no metered allowance configured" - the Plan
+    # model documents 0 as not-enforced - so it must not block.
+    if limit is not None and limit <= 0:
+        limit = None
+        over = False
+
+    _allowance_cache[tenant_id] = (now + ALLOWANCE_TTL_SECONDS, limit, used, over)
+    return limit, used, over
