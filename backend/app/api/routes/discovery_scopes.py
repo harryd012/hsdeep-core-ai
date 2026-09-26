@@ -24,6 +24,10 @@ from app.schemas.discovery_scope import (
     ScopeProbeHostOut,
     ScopeProbeResultOut,
 )
+from app.services.discovery.profiles import (
+    UnknownDiscoveryProfile,
+    apply_profile,
+)
 from app.services.discovery.scope_runner import (
     ScopeNotProbeable,
     probe_scope,
@@ -80,6 +84,27 @@ def _validate(scope_type: str, target: str, protocols: list[str] | None):
     return clean_target, clean_protocols
 
 
+def _compose_profile(body: DiscoveryScopeCreate) -> dict:
+    """Compose a named DiscoveryProfile UNDER the request's own values (9.4).
+
+    The schema's own defaults are used when no profile is named, so existing
+    callers keep exactly today's behaviour. An unknown profile is a 422 that
+    names the valid profiles - never a silent fall-back to a broader one.
+    """
+    fields = body.model_dump()
+    profile_name = fields.pop("profile", None)
+    try:
+        return apply_profile(
+            profile_name,
+            fields,
+            explicit=set(body.model_fields_set) - {"profile"},
+        )
+    except UnknownDiscoveryProfile as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
 async def _get_or_404(
     repo: DiscoveryScopeRepository, scope_id: uuid.UUID, tenant_id: uuid.UUID
 ) -> DiscoveryScope:
@@ -120,7 +145,12 @@ async def create_scope(
             detail=f"A scope named {body.name!r} already exists for this tenant",
         )
 
-    target, protocols = _validate(body.scope_type, body.target, body.allowed_protocols)
+    # Phase 9.4: a named profile supplies defaults for the fields this request
+    # does not state itself; anything stated explicitly always wins.
+    fields = _compose_profile(body)
+    target, protocols = _validate(
+        body.scope_type, body.target, fields["allowed_protocols"]
+    )
     scope = await repo.create(
         tenant_id=tenant_id,
         name=body.name,
@@ -129,11 +159,11 @@ async def create_scope(
         enabled=body.enabled,
         credential_profile_id=body.credential_profile_id,
         allowed_protocols=protocols,
-        max_depth=body.max_depth,
-        max_hosts=body.max_hosts,
-        max_concurrency=body.max_concurrency,
-        timeout=body.timeout,
-        excluded_targets=list(body.excluded_targets or []),
+        max_depth=fields["max_depth"],
+        max_hosts=fields["max_hosts"],
+        max_concurrency=fields["max_concurrency"],
+        timeout=fields["timeout"],
+        excluded_targets=list(fields["excluded_targets"] or []),
         schedule=body.schedule,
     )
     await db.commit()
@@ -161,6 +191,17 @@ async def update_scope(
 ):
     scope = await _get_or_404(repo, scope_id, tenant_id)
     fields = body.model_dump(exclude_unset=True)
+    # Phase 9.4: re-profiling is explicit. A named profile re-states the limits
+    # this request did not mention; nothing happens when none is named, so
+    # existing PATCH callers are unaffected.
+    profile_name = fields.pop("profile", None)
+    if profile_name is not None:
+        try:
+            fields = apply_profile(profile_name, fields, explicit=set(fields))
+        except UnknownDiscoveryProfile as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            ) from exc
 
     # A type/target change is re-validated as a PAIR, so a scope can never be
     # left holding a target that does not match its type.

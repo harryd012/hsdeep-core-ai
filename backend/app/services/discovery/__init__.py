@@ -17,6 +17,16 @@ from app.services.discovery.evidence import (
     TRANSPORT_SSH,
     TRANSPORT_TCP,
 )
+from app.services.discovery.profiles import (
+    DEFAULT_PROFILE,
+    PROFILES,
+    PROFILE_NAMES,
+    DiscoveryProfile,
+    UnknownDiscoveryProfile,
+    apply_profile,
+    profile_catalog,
+    resolve_profile,
+)
 from app.services.discovery.service import (
     DiscoveryResult,
     DiscoveryService,
@@ -24,10 +34,14 @@ from app.services.discovery.service import (
 )
 
 __all__ = [
+    "DEFAULT_PROFILE",
     "DiscoveryEvidence",
+    "DiscoveryProfile",
     "DiscoveryResult",
     "DiscoveryService",
     "NeighborEvidence",
+    "PROFILES",
+    "PROFILE_NAMES",
     "ResourceOutcome",
     "TRANSPORT_AGENT",
     "TRANSPORT_API",
@@ -36,4 +50,8 @@ __all__ = [
     "TRANSPORT_SNMP",
     "TRANSPORT_SSH",
     "TRANSPORT_TCP",
+    "UnknownDiscoveryProfile",
+    "apply_profile",
+    "profile_catalog",
+    "resolve_profile",
 ]

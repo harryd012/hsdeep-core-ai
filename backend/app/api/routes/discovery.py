@@ -36,6 +36,12 @@ from app.models.collector_run import CollectorRun
 from app.models.monitoring_source import MonitoringSource
 from app.services.discovery import DiscoveryService
 from app.services.discovery.probes import expand_targets, probe_target
+from app.services.discovery.profiles import (
+    DEFAULT_PROFILE,
+    UnknownDiscoveryProfile,
+    profile_catalog,
+    resolve_profile,
+)
 from app.services.resource_context import build_resource_context
 
 logger = logging.getLogger(__name__)
@@ -48,6 +54,12 @@ DISCOVERY_SOURCE_NAME = "network-discovery"
 
 class DiscoveryRequest(BaseModel):
     target: str = Field(..., min_length=1, description="IP, hostname, or CIDR")
+    #: Phase 9.4: name a DiscoveryProfile to derive the protocol set for a
+    #: request that does not state one. An explicit ``protocols`` list always
+    #: wins, and naming no profile leaves today's defaults in place.
+    profile: str | None = Field(
+        default=None, max_length=32, description="basic | balanced | deep | cloud | topology"
+    )
     protocols: list[str] = Field(
         default_factory=lambda: ["icmp", "snmp", "https", "ssh"]
     )
@@ -75,6 +87,18 @@ async def run_discovery(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Probe the target(s), recognise, and persist into the existing inventory."""
+    # Phase 9.4: profile resolution is explicit and fails loudly. Only the
+    # PROTOCOL SET is taken here - this endpoint already bounds host count and
+    # timeouts itself, and re-implementing scope limits here would create the
+    # second execution path the architecture forbids.
+    try:
+        profile = resolve_profile(payload.profile) if payload.profile else None
+    except UnknownDiscoveryProfile as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    protocols = payload.protocols
+    if profile is not None and "protocols" not in payload.model_fields_set:
+        protocols = list(profile.allowed_protocols)
+
     targets = expand_targets(payload.target)
     if not targets:
         raise HTTPException(
@@ -98,7 +122,7 @@ async def run_discovery(
     for target in targets:
         bundle = await probe_target(
             target,
-            protocols=payload.protocols,
+            protocols=protocols,
             community=payload.snmp_community or "public",
             snmp_version=payload.snmp_version,
         )
@@ -133,6 +157,10 @@ async def run_discovery(
         "job_id": str(job.id),
         "status": job.status,
         "target": payload.target,
+        # Effective configuration actually used (Phase 9.4): the caller can see
+        # which profile ran and which protocols it resolved to.
+        "profile": profile.name if profile else None,
+        "protocols": list(protocols),
         "monitoring_source_id": str(source.id),
         "probe_results": [b.as_dict() for b in bundles],
         "result": result.as_dict(),
@@ -157,6 +185,37 @@ async def list_discovery_jobs(
     )
     rows = list((await db.execute(stmt)).scalars().all())
     return [_job_out(r) for r in rows]
+
+
+@router.get("/profiles")
+async def list_discovery_profiles(
+    tenant_id: uuid.UUID = Depends(get_tenant_id),  # noqa: ARG001 - authz only
+    _principal: Principal = Depends(require_permission("devices.read")),
+) -> dict:
+    """The declared DiscoveryProfiles and their effective configuration.
+
+    Global configuration, like the capability/provider catalogues, so the body
+    is tenant-independent - but it still requires an authenticated principal and
+    the standard read permission, so an unauthenticated caller cannot enumerate
+    how this deployment scans.
+    """
+    return {
+        "default_profile": DEFAULT_PROFILE,
+        "profiles": profile_catalog(),
+    }
+
+
+@router.get("/profiles/{name}")
+async def get_discovery_profile(
+    name: str,
+    tenant_id: uuid.UUID = Depends(get_tenant_id),  # noqa: ARG001 - authz only
+    _principal: Principal = Depends(require_permission("devices.read")),
+) -> dict:
+    """One profile by name. An unknown name is a 404 that lists the valid set."""
+    try:
+        return resolve_profile(name).to_dict()
+    except UnknownDiscoveryProfile as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/resources/{device_id}/context")

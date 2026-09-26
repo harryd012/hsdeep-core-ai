@@ -19,6 +19,11 @@ class DiscoveryScopeCreate(BaseModel):
     target: str
     enabled: bool = True
     credential_profile_id: uuid.UUID | None = None
+    #: Phase 9.4: name a DiscoveryProfile to supply defaults for every field
+    #: below that this request does not state itself. An explicit value always
+    #: wins over the profile, and omitting the profile changes nothing (today's
+    #: defaults still apply) - so this is additive for every existing caller.
+    profile: str | None = Field(default=None, max_length=32)
     allowed_protocols: list[str] = Field(default_factory=list)
     max_depth: int = Field(default=1, ge=0, le=10)
     max_hosts: int = Field(default=256, ge=1, le=65536)
@@ -34,6 +39,9 @@ class DiscoveryScopeUpdate(BaseModel):
     target: str | None = None
     enabled: bool | None = None
     credential_profile_id: uuid.UUID | None = None
+    #: Phase 9.4: re-profile this scope. Limits not stated in the same request
+    #: are re-stated from the profile; stated ones always win.
+    profile: str | None = Field(default=None, max_length=32)
     allowed_protocols: list[str] | None = None
     max_depth: int | None = Field(default=None, ge=0, le=10)
     max_hosts: int | None = Field(default=None, ge=1, le=65536)
