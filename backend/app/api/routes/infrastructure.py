@@ -26,9 +26,11 @@ from app.schemas.infrastructure_overview import InfrastructureOverviewOut
 from app.schemas.pagination import Page
 from app.schemas.site import SiteOut, SiteSummary
 from app.schemas.topology_graph import TopologyGraphOut
+from app.schemas.topology_live import TopologyLiveOut
 from app.services.infrastructure_overview_service import InfrastructureOverviewService
 from app.services.infrastructure_service import InfrastructureService
 from app.services.topology_graph_service import TopologyGraphService
+from app.services.topology_live_service import TopologyLiveService
 from app.services.topology_service import TopologyService
 from app.schemas.topology import TopologyOut
 
@@ -66,6 +68,12 @@ def get_topology_graph_service(
     return TopologyGraphService(db)
 
 
+def get_topology_live_service(
+    db: AsyncSession = Depends(get_db),
+) -> TopologyLiveService:
+    return TopologyLiveService(db)
+
+
 @router.get("/topology/graph", response_model=TopologyGraphOut)
 async def get_topology_graph(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -84,6 +92,29 @@ async def get_topology_graph(
     why - it never synthesises an edge from subnets, hostnames or device types.
     """
     return await service.build(tenant_id)
+
+
+@router.get("/topology/graph/live", response_model=TopologyLiveOut)
+async def get_topology_live_graph(
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    site_id: uuid.UUID | None = Query(
+        default=None,
+        description="Bound the view to one site (the site node plus its members).",
+    ),
+    service: TopologyLiveService = Depends(get_topology_live_service),
+):
+    """The live operational topology: the graph PLUS interface/telemetry facts.
+
+    Composed in ONE response so the UI never fans out into a per-device
+    interface/telemetry call (an N+1 that grows with the graph).
+
+    Every added value is a stored column - interface oper/admin status, speed,
+    rx/tx bps, errors, discards, utilisation, timestamps - and anything never
+    measured stays `null`, so "no traffic" and "no telemetry" cannot be confused.
+    It reuses the existing graph builder, availability mapping and freshness
+    thresholds, so there is no second graph, health or telemetry engine.
+    """
+    return await service.build(tenant_id, site_id=site_id)
 
 
 @router.get("/overview", response_model=InfrastructureOverviewOut)

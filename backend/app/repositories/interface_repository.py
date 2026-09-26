@@ -163,6 +163,33 @@ class InterfaceRepository:
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_for_devices(
+        self, tenant_id: uuid.UUID, device_ids: list[uuid.UUID]
+    ) -> list[Interface]:
+        """Every interface for a SET of devices, in ONE query.
+
+        Added for the live topology read model, which needs per-device interface
+        state (oper status, speed, rx/tx bps) for a whole site at once. Calling
+        `list_for_device()` per node would be an N+1 - the same reason
+        `counts_by_device()` exists above.
+
+        Tenant-scoped, soft-delete aware, and an empty id set returns [] without
+        touching the database.
+        """
+        if not device_ids:
+            return []
+        stmt = (
+            select(Interface)
+            .where(
+                Interface.tenant_id == tenant_id,
+                Interface.device_id.in_(device_ids),
+                Interface.is_deleted.is_(False),
+            )
+            .order_by(Interface.device_id, Interface.name)
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
     async def count_for_tenant(self, tenant_id: uuid.UUID) -> int:
         """Tenant-wide interface count, for the canonical infrastructure overview.
 

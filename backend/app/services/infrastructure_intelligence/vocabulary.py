@@ -905,3 +905,42 @@ def evidence_classification(transport: str | None) -> str | None:
     if not transport:
         return None
     return TRANSPORT_EVIDENCE_CLASSIFICATION.get(str(transport).strip().lower())
+
+
+#: Evidence classification for each RELATIONSHIP evidence source.
+#:
+#: ``ResourceRelationship.discovered_by`` records WHICH observation produced an
+#: edge (the ``EVIDENCE_SOURCE_*`` tokens above, plus free text). The topology UI
+#: must show an edge's provenance with the same three-way classification as
+#: discovery evidence, so the mapping lives here instead of being re-derived in
+#: the frontend.
+#:
+#: Rows follow the transport table's rule: a source absent from this table
+#: resolves to None and is never guessed. ``EVIDENCE_SOURCE_MANUAL`` is
+#: deliberately absent - an operator-asserted edge was not collected by any
+#: mechanism, so it has no collection classification at all.
+RELATIONSHIP_SOURCE_EVIDENCE_CLASSIFICATION: dict[str, str] = {
+    # HSDEEP interrogated the device(s) and read the adjacency from it.
+    EVIDENCE_SOURCE_LLDP: EVIDENCE_ACTIVE,
+    EVIDENCE_SOURCE_CDP: EVIDENCE_ACTIVE,
+    EVIDENCE_SOURCE_ARP: EVIDENCE_ACTIVE,
+    EVIDENCE_SOURCE_MAC: EVIDENCE_ACTIVE,
+    EVIDENCE_SOURCE_SNMP: EVIDENCE_ACTIVE,
+    EVIDENCE_SOURCE_ROUTING: EVIDENCE_ACTIVE,
+    EVIDENCE_SOURCE_BGP: EVIDENCE_ACTIVE,
+    # Answered by a provider/controller/cloud API rather than by the device.
+    EVIDENCE_SOURCE_SDWAN: EVIDENCE_API,
+    EVIDENCE_SOURCE_CLOUD: EVIDENCE_API,
+}
+
+
+def relationship_evidence_classification(source: str | None) -> str | None:
+    """Classification for a relationship's recorded evidence source, or None.
+
+    None means "this source is not one we can classify" and is returned rather
+    than ACTIVE, so an unrecognised ``discovered_by`` value is displayed as
+    unclassified instead of being presented as something HSDEEP observed itself.
+    """
+    if not source:
+        return None
+    return RELATIONSHIP_SOURCE_EVIDENCE_CLASSIFICATION.get(str(source).strip().lower())
