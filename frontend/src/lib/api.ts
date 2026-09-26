@@ -423,6 +423,23 @@ export {
   probeSourceReadiness,
   syncMonitoringSource,
 } from "./monitoringApi";
+
+// ---------------------------------------------------------------------------
+// RE-EXPORT FACADE: this surface now lives in its own module
+//
+// Re-exported so existing importers of "@/lib/api" keep working; new code
+// should import from the owning module.
+// ---------------------------------------------------------------------------
+export {
+  type TopologyHealth,
+  type TopologyGraphStatus,
+  type TopologyNodeType,
+  type TopologyGraphNode,
+  type TopologyGraphEdge,
+  type TopologyGraph,
+  getTopologyGraph,
+} from "./topologyApi";
+
 // ---------------------------------------------------------------------------
 // Topology
 // ---------------------------------------------------------------------------
