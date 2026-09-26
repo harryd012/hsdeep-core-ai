@@ -410,6 +410,20 @@ export function listPrtgRootSensors(): Promise<PrtgSensorOut[]> {
 }
 
 // ---------------------------------------------------------------------------
+// RE-EXPORT FACADE: this surface now lives in its own module
+//
+// Re-exported so existing importers of "@/lib/api" keep working; new code
+// should import from the owning module.
+// ---------------------------------------------------------------------------
+export {
+  type ReadinessResultOut,
+  type ReadinessReportOut,
+  type SyncResultOut,
+  getReadinessReport,
+  probeSourceReadiness,
+  syncMonitoringSource,
+} from "./monitoringApi";
+// ---------------------------------------------------------------------------
 // Topology
 // ---------------------------------------------------------------------------
 export interface SensorNode {
