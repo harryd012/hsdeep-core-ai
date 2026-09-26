@@ -60,6 +60,32 @@ class Task(Base, UUIDPKMixin, TimestampMixin, SoftDeleteMixin):
         ARRAY(String(100)), nullable=False, default=list, server_default="{}"
     )
 
+    # -- Approval (P0 security boundary) --
+    # Deliberately NOT a new Task.status value: the proven lifecycle state
+    # machine (CREATED -> ASSIGNED -> ... -> RECORDED) and its validator stay
+    # untouched, so existing tasks and transitions are unaffected. Approval is
+    # separate persisted state, and protected execution is refused unless that
+    # state permits it (TaskService._assert_approval_gate).
+    approval_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false", index=True
+    )
+    approval_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="not_required",
+        server_default="not_required",
+        index=True,
+    )
+    approval_requested_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    approval_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    approval_decided_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    approval_decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    approval_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # -- Lifecycle State --
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="created", server_default="created", index=True

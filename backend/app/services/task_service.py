@@ -31,6 +31,31 @@ class AgentTaskPermissionError(Exception):
     pass
 
 
+class ApprovalNotRequiredError(Exception):
+    """Approval was requested for a task that does not require it."""
+
+
+class ApprovalRequiredError(Exception):
+    """Protected execution was refused because a required approval is missing.
+
+    Raised by the centralized gate at the execution boundary. It is an
+    authorization refusal, not a transient failure: nothing external has been
+    attempted at the point it is raised.
+    """
+
+
+# -- Approval states (P0 security boundary) --------------------------------
+APPROVAL_NOT_REQUIRED = "not_required"
+APPROVAL_WAITING = "waiting_for_approval"
+APPROVAL_APPROVED = "approved"
+APPROVAL_REJECTED = "rejected"
+
+#: Riskiest level an approver may sign off, keyed by the Task model's existing
+#: risk_level vocabulary. Used to compare a task's risk against an agent's
+#: ``approval_limit`` (an existing Agent field).
+RISK_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+
 # Allowed task lifecycle transitions
 _ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "created": {"assigned", "cancelled"},
@@ -298,6 +323,154 @@ class TaskService:
             updates["verified_at"] = now
         return await self.task_repo.update(task, **updates)
 
+    # -- Approval workflow (P0 security boundary) --------------------------
+    #
+    # Approval is persisted state on the existing Task, decided only by an
+    # authenticated principal supplied by the route (never by a client-provided
+    # actor string). The lifecycle validator keeps owning Task.status; these
+    # methods own approval_status and append to the existing audit_log.
+    async def request_approval(
+        self,
+        task_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        *,
+        actor: str | None = None,
+        reason: str | None = None,
+    ) -> Task:
+        """Move a task that genuinely requires approval into WAITING_FOR_APPROVAL."""
+        task = await self.get(task_id, tenant_id)
+        if not task.approval_required:
+            raise ApprovalNotRequiredError(
+                f"Task {task_id} does not require approval"
+            )
+        if task.approval_status == APPROVAL_WAITING:
+            raise TaskTransitionNotAllowed(
+                f"Task {task_id} is already waiting for approval"
+            )
+        if task.approval_status == APPROVAL_APPROVED:
+            raise TaskTransitionNotAllowed(f"Task {task_id} is already approved")
+
+        now = datetime.now(timezone.utc)
+        task.audit_log.append(
+            {
+                "timestamp": now.isoformat(),
+                "action": "approval_requested",
+                "from_status": task.status,
+                "to_status": task.status,
+                "approval_status": APPROVAL_WAITING,
+                "actor": actor or "SYSTEM",
+                "reason": reason,
+            }
+        )
+        return await self.task_repo.update(
+            task,
+            approval_status=APPROVAL_WAITING,
+            approval_requested_by=actor,
+            approval_requested_at=now,
+        )
+
+    async def approve_task(
+        self,
+        task_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        *,
+        actor: str | None = None,
+        reason: str | None = None,
+    ) -> Task:
+        """Grant approval so protected execution may proceed."""
+        task = await self.get(task_id, tenant_id)
+        if not task.approval_required:
+            raise ApprovalNotRequiredError(
+                f"Task {task_id} does not require approval"
+            )
+        if task.approval_status != APPROVAL_WAITING:
+            raise TaskTransitionNotAllowed(
+                f"Task {task_id} is not awaiting approval "
+                f"(approval_status={task.approval_status})"
+            )
+
+        now = datetime.now(timezone.utc)
+        task.audit_log.append(
+            {
+                "timestamp": now.isoformat(),
+                "action": "approval_granted",
+                "from_status": task.status,
+                "to_status": task.status,
+                "approval_status": APPROVAL_APPROVED,
+                "actor": actor or "SYSTEM",
+                "reason": reason,
+            }
+        )
+        return await self.task_repo.update(
+            task,
+            approval_status=APPROVAL_APPROVED,
+            approval_decided_by=actor,
+            approval_decided_at=now,
+            approval_result=reason or "approved",
+        )
+
+    async def reject_task(
+        self,
+        task_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        *,
+        actor: str | None = None,
+        reason: str | None = None,
+    ) -> Task:
+        """Refuse approval. The protected action is never executed."""
+        task = await self.get(task_id, tenant_id)
+        if not task.approval_required:
+            raise ApprovalNotRequiredError(
+                f"Task {task_id} does not require approval"
+            )
+        if task.approval_status != APPROVAL_WAITING:
+            raise TaskTransitionNotAllowed(
+                f"Task {task_id} is not awaiting approval "
+                f"(approval_status={task.approval_status})"
+            )
+
+        now = datetime.now(timezone.utc)
+        task.audit_log.append(
+            {
+                "timestamp": now.isoformat(),
+                "action": "approval_rejected",
+                "from_status": task.status,
+                "to_status": task.status,
+                "approval_status": APPROVAL_REJECTED,
+                "actor": actor or "SYSTEM",
+                "reason": reason,
+            }
+        )
+        return await self.task_repo.update(
+            task,
+            approval_status=APPROVAL_REJECTED,
+            approval_decided_by=actor,
+            approval_decided_at=now,
+            approval_result=reason or "rejected",
+        )
+
+    @staticmethod
+    def _assert_approval_gate(task: Task) -> None:
+        """Centralized protected-execution gate (P0).
+
+        Invariant: when a task requires approval, protected infrastructure
+        execution MUST NOT START unless the persisted approval state says
+        APPROVED.
+
+        The decision reads database state only. It cannot be influenced by
+        frontend state, browser behaviour, client-provided approval flags,
+        local storage or UI controls, and it runs BEFORE any tool adapter is
+        resolved or invoked, so no external command is issued when it refuses.
+        """
+        if not task.approval_required:
+            return
+        if task.approval_status == APPROVAL_APPROVED:
+            return
+        raise ApprovalRequiredError(
+            f"Task {task.id} requires approval before protected execution "
+            f"(approval_status={task.approval_status})"
+        )
+
     async def run_worker_execution(
         self,
         task_id: uuid.UUID,
@@ -318,6 +491,9 @@ class TaskService:
           real backend state instead of fake synthetic lifecycle transitions.
         """
         task = await self.get(task_id, tenant_id)
+        # P0 PROTECTED-ACTION GATE: refuse before any tool adapter is resolved
+        # or invoked. Reads persisted approval state only.
+        self._assert_approval_gate(task)
         if task.assigned_agent_id is not None and task.assigned_agent_id != agent_id:
             raise AgentTaskPermissionError(
                 f"Agent {agent_id} is not the assigned worker for task {task_id}"

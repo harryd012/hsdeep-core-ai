@@ -24,6 +24,9 @@ from app.services.agent_service import AgentService
 from app.services.task_routing import NoAgentAvailable, RoutingEngine
 from app.services.task_service import (
     AgentTaskPermissionError,
+    ApprovalNotRequiredError,
+    ApprovalRequiredError,
+    RISK_ORDER,
     TaskNotFound,
     TaskService,
     TaskTransitionNotAllowed,
@@ -462,6 +465,144 @@ async def escalate_task(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
+async def _assert_approver_authorized(
+    db: AsyncSession,
+    service: TaskService,
+    task_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    approver_agent_id: uuid.UUID | None,
+) -> None:
+    """Reuse the existing Agent authority fields - no new RBAC is invented.
+
+    When a call names an approving agent, that agent must belong to this tenant
+    (tenant-scoped lookup: a foreign id is reported exactly like an unknown
+    one), must have ``can_approve`` set, and its ``approval_limit`` must be at
+    or above the task's risk level. Human approval is authorized by the
+    existing authenticated principal plus the tenant context.
+    """
+    if approver_agent_id is None:
+        return
+    agent = await AgentRepository(db).get(approver_agent_id, tenant_id)
+    if agent is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Approver agent not found in this tenant",
+        )
+    if not agent.can_approve:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Agent {agent.name!r} is not authorized to approve",
+        )
+    task = await service.get(task_id, tenant_id)
+    task_risk = RISK_ORDER.get((task.risk_level or "low").lower(), 0)
+    limit = RISK_ORDER.get((agent.approval_limit or "low").lower(), 0)
+    if task_risk > limit:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Agent {agent.name!r} cannot approve a {task.risk_level!r} risk "
+                f"task (approval_limit={agent.approval_limit!r})"
+            ),
+        )
+
+
+@router.post("/{task_id}/request-approval", response_model=TaskRead)
+async def request_task_approval(
+    task_id: uuid.UUID,
+    request: Request,
+    body: TaskStatusChange | None = None,
+    service: TaskService = Depends(get_task_service),
+    tenant_id: uuid.UUID = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Request approval for a task that requires it.
+
+    The requester is the authenticated principal resolved by the auth layer -
+    never a client-supplied actor string.
+    """
+    try:
+        task = await service.request_approval(
+            task_id,
+            tenant_id,
+            actor=_request_actor(request),
+            reason=body.reason if body else None,
+        )
+        await db.commit()
+        return task
+    except TaskNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except ApprovalNotRequiredError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except TaskTransitionNotAllowed as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+
+
+@router.post("/{task_id}/approve", response_model=TaskRead)
+async def approve_task(
+    task_id: uuid.UUID,
+    request: Request,
+    body: TaskStatusChange | None = None,
+    approver_agent_id: uuid.UUID | None = Query(default=None),
+    service: TaskService = Depends(get_task_service),
+    tenant_id: uuid.UUID = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve a task awaiting approval, so protected execution may proceed.
+
+    Only a task that is genuinely WAITING_FOR_APPROVAL can be approved, and the
+    deciding actor recorded in the audit trail is the authenticated principal.
+    """
+    try:
+        await _assert_approver_authorized(
+            db, service, task_id, tenant_id, approver_agent_id
+        )
+        task = await service.approve_task(
+            task_id,
+            tenant_id,
+            actor=_request_actor(request),
+            reason=body.reason if body else None,
+        )
+        await db.commit()
+        return task
+    except TaskNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except ApprovalNotRequiredError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except TaskTransitionNotAllowed as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+
+
+@router.post("/{task_id}/reject", response_model=TaskRead)
+async def reject_task(
+    task_id: uuid.UUID,
+    request: Request,
+    body: TaskStatusChange | None = None,
+    approver_agent_id: uuid.UUID | None = Query(default=None),
+    service: TaskService = Depends(get_task_service),
+    tenant_id: uuid.UUID = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reject a task awaiting approval. The protected action is never executed."""
+    try:
+        await _assert_approver_authorized(
+            db, service, task_id, tenant_id, approver_agent_id
+        )
+        task = await service.reject_task(
+            task_id,
+            tenant_id,
+            actor=_request_actor(request),
+            reason=body.reason if body else None,
+        )
+        await db.commit()
+        return task
+    except TaskNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except ApprovalNotRequiredError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except TaskTransitionNotAllowed as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+
+
 @router.post("/{task_id}/cancel", response_model=TaskRead)
 async def cancel_task(
     task_id: uuid.UUID,
@@ -510,6 +651,10 @@ async def worker_execute_task(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except TaskTransitionNotAllowed as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except ApprovalRequiredError as e:
+        # The P0 gate refused protected execution: an authorization failure,
+        # not a server error. Nothing external was attempted.
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
 
 @router.post("/{task_id}/execute", response_model=TaskRead)
