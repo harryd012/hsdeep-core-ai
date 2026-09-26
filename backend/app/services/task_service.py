@@ -87,13 +87,21 @@ class TaskService:
         """Create a new task in CREATED state."""
         task_number = await self.task_repo.next_task_number(tenant_id)
         now = datetime.now(timezone.utc)
+        # POPPED, not forwarded: `**fields` below goes straight to the ORM and
+        # Task has no `actor` column, so a caller-supplied actor must not leak
+        # into the insert.
+        actor = fields.pop("actor", None)
 
         audit_entry = {
             "timestamp": now.isoformat(),
             "action": "created",
             "from_status": None,
             "to_status": "created",
-            "actor": fields.get("owner_command", "system"),
+            # Actor attribution (Phase 9.12): a task created BY A HUMAN is never
+            # recorded as "system". The caller that knows the authenticated
+            # principal passes `actor`; only genuinely platform-generated work
+            # falls back to the SYSTEM marker.
+            "actor": actor or fields.get("owner_command") or "SYSTEM",
         }
 
         return await self.task_repo.create(

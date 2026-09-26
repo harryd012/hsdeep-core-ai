@@ -49,7 +49,22 @@ async def dispatch_queued_tasks() -> None:
     time. No-ops (never raises) when the lock is held elsewhere. Mirrors the
     connection-scoped lock handling in ``jobs.tick``: the try-lock and unlock
     must run on the same underlying connection.
+
+    HUMAN-CONTROLLED BY DEFAULT (Phase 9.12): this job is the automatic
+    assignment path, so it runs ONLY when an administrator has explicitly enabled
+    `AUTONOMOUS_TASK_ASSIGNMENT`. With the flag off (the default) queued tasks are
+    left in `created` for a human to assign - never silently routed to an agent -
+    and the tick says so once per run instead of pretending it did work.
     """
+    from app.core.config import get_settings
+
+    if not get_settings().autonomous_task_assignment:
+        logger.info(
+            "Task dispatch: skipped - automatic task assignment is disabled "
+            "(AUTONOMOUS_TASK_ASSIGNMENT=false). Queued tasks stay 'created' until a "
+            "human assigns them."
+        )
+        return
     async with engine.connect() as conn:
         result = await conn.execute(
             text("SELECT pg_try_advisory_lock(:key)"), {"key": DISPATCH_LOCK_KEY}

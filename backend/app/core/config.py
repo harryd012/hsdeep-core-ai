@@ -132,6 +132,18 @@ class Settings(BaseSettings):
     # its own default unload policy (5m) — never an aggressive permanent pin.
     ollama_keep_alive: str = ""
 
+    # -- Human-controlled agent orchestration (Phase 9.12) -------------------
+    # The default production behaviour is that AGENTS DO NOTHING ON THEIR OWN:
+    # a human creates a task and a human assigns it. This flag is the single,
+    # explicit, administrator-controlled opt-in that allows the scheduler to
+    # auto-route queued tasks to an available agent. It is OFF unless an operator
+    # deliberately turns it on, so the historical "created -> assigned ->
+    # system" behaviour is no longer an implicit default.
+    #
+    # OFF (default): tasks stay in `created` (unassigned) until a human assigns
+    # them, and the dispatcher reports that honestly instead of routing.
+    autonomous_task_assignment: bool = False
+
     # -- PNETLab topology provider (Phase 9.7B) ------------------------------
     # Externalised configuration for the PNETLab topology provider. A PNETLab
     # lab is the authoritative source of its own topology, so the provider reads
