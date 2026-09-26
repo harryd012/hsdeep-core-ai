@@ -56,6 +56,8 @@ export interface TopologyGraphEdge {
   confidence?: number | null;
   is_inferred?: boolean;
   discovered_by?: string;
+  /** Operator- or collector-supplied label for the link, when recorded. */
+  label?: string | null;
   /** True when the recorded type is outside the model's declared vocabulary. */
   unknown_relationship_type?: boolean;
   status?: string | null;
@@ -90,5 +92,161 @@ export interface TopologyGraph {
  */
 export function getTopologyGraph(tenantId: string = DEFAULT_TENANT_ID): Promise<TopologyGraph> {
   return apiFetch<TopologyGraph>(`/api/infrastructure/topology/graph?${withTenant(tenantId).toString()}`);
+}
+
+// ---------------------------------------------------------------------------
+// Live operational topology (Phase 9.5) — the SAME graph plus interface and
+// telemetry facts, composed by the backend in ONE response so the UI never
+// fans out into a per-device interface/telemetry request.
+//
+// Every added value is a stored column, and anything never measured is `null`.
+// The UI must render an absent value as unavailable, never as 0.
+// ---------------------------------------------------------------------------
+
+export interface LiveInterface {
+  id: string;
+  name: string;
+  interface_type: string | null;
+  oper_status: string | null;
+  admin_status: string | null;
+  vlan_id: number | null;
+  mac_address: string | null;
+  speed_bps: number | null;
+  rx_bps: number | null;
+  tx_bps: number | null;
+  utilization_pct: number | null;
+  in_errors: number | null;
+  out_errors: number | null;
+  discards_in: number | null;
+  discards_out: number | null;
+  last_telemetry_at: string | null;
+}
+
+export interface LiveInterfaceSummary {
+  total: number;
+  up: number;
+  down: number;
+  /** False means "never measured": the totals below are then null, not 0. */
+  has_telemetry: boolean;
+  rx_bps: number | null;
+  tx_bps: number | null;
+  last_telemetry_at: string | null;
+}
+
+export interface LiveFreshness {
+  /** fresh | aging | stale | expired | never_collected | unavailable */
+  state: string;
+  age_seconds: number | null;
+  last_telemetry_at: string | null;
+}
+
+export interface LiveRecognition {
+  /** identified | unknown — reuse of the platform's existing rule. */
+  status: string;
+  device_type: string | null;
+}
+
+export interface LiveIdentity {
+  vendor: string | null;
+  model: string | null;
+  device_type: string | null;
+  device_type_raw: string | null;
+  ip: string | null;
+  hostname: string | null;
+  serial: string | null;
+}
+
+export interface LiveNodeBlock {
+  /** up | down | degraded | unknown (canonical operational state). */
+  operational_state: string;
+  status_raw: string | null;
+  lifecycle_state: string | null;
+  site_id: string | null;
+  recognition: LiveRecognition;
+  identity: LiveIdentity;
+  freshness: LiveFreshness;
+  interfaces: LiveInterfaceSummary;
+  relationship_count: number;
+}
+
+export interface TopologyLiveNode extends TopologyGraphNode {
+  /** Null for site and monitoring-source nodes. */
+  live: LiveNodeBlock | null;
+}
+
+export interface LiveLink {
+  capacity_bps: number | null;
+  utilization_pct: number | null;
+  /** recorded | computed | null — a derived percentage is labelled as derived. */
+  utilization_source: string | null;
+  has_telemetry: boolean;
+  rx_bps: number | null;
+  tx_bps: number | null;
+  observed_at: string | null;
+  /** Freshness of the link's telemetry, classified by the backend. */
+  freshness: LiveFreshness;
+}
+
+export interface LiveEdgeBlock {
+  local_interface_name: string | null;
+  remote_interface_name: string | null;
+  local_interface: LiveInterface | null;
+  remote_interface: LiveInterface | null;
+  link: LiveLink;
+  status_raw: string | null;
+  /** active | passive | api | null — never re-derived in the frontend. */
+  classification: string | null;
+  is_inferred: boolean;
+}
+
+export interface TopologyLiveEdge extends TopologyGraphEdge {
+  live: LiveEdgeBlock;
+}
+
+export interface TopologyLiveSummary {
+  devices_total: number;
+  sites_total: number;
+  monitoring_sources_total: number;
+  links_total: number;
+  unidentified_devices_total: number;
+  by_health: Record<string, number>;
+  by_operational_state: Record<string, number>;
+  by_freshness: Record<string, number>;
+  interfaces_total: number;
+  interfaces_up: number;
+  interfaces_down: number;
+  traffic_measured: boolean;
+  rx_bps_total: number | null;
+  tx_bps_total: number | null;
+}
+
+export interface TopologyLive {
+  tenant_id: string;
+  generated_at: string;
+  status: TopologyGraphStatus | string | null;
+  scope: {
+    site_id: string | null;
+    filtered: boolean;
+    nodes_hidden: number;
+    edges_hidden: number;
+  };
+  summary: TopologyLiveSummary;
+  telemetry_freshness: LiveFreshness & { devices_reporting: number };
+  nodes: TopologyLiveNode[];
+  edges: TopologyLiveEdge[];
+  limitations: string[];
+}
+
+/**
+ * Live operational topology: the graph plus interface/telemetry facts, in one
+ * response. Optionally bounded to a single site.
+ */
+export function getLiveTopology(
+  options: { siteId?: string | null; tenantId?: string } = {}
+): Promise<TopologyLive> {
+  const tenantId = options.tenantId ?? DEFAULT_TENANT_ID;
+  const query = withTenant(tenantId);
+  if (options.siteId) query.set("site_id", options.siteId);
+  return apiFetch<TopologyLive>(`/api/infrastructure/topology/graph/live?${query.toString()}`);
 }
 
