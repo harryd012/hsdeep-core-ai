@@ -440,6 +440,29 @@ export {
   getTopologyGraph,
 } from "./topologyApi";
 
+// Platform-admin tenant/customer administration -> ./adminApi
+export {
+  type AdminCustomer,
+  type AdminTenantSummary,
+  type AdminTenantProfile,
+  type AdminTenantLimit,
+  type AdminTenantSubscription,
+  type AdminTenantUsage,
+  type AdminTenantCounts,
+  type AdminTenantDiscoveryScope,
+  type AdminTenantPermission,
+  type AdminTenantRole,
+  type AdminTenantUser,
+  type AdminTenantUsers,
+  type AdminTenantDetail,
+  type AdminTenantRenameResult,
+  type AdminTenantStatusResult,
+  listAdminCustomers,
+  getAdminTenantDetail,
+  renameAdminTenant,
+  setAdminTenantStatus,
+} from "./adminApi";
+
 // ---------------------------------------------------------------------------
 // Topology
 // ---------------------------------------------------------------------------
