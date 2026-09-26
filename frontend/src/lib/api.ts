@@ -40,6 +40,7 @@ export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost
 export const DEFAULT_TENANT_ID = process.env.NEXT_PUBLIC_DEFAULT_TENANT_ID ?? "00000000-0000-0000-0000-000000000000";
 
 const AUTH_TOKEN_KEY = "hsdeep_auth_token";
+const REFRESH_TOKEN_KEY = "hsdeep_refresh_token";
 
 /**
  * Dev-mode auto-login bootstrap.
@@ -86,10 +87,87 @@ export function getAuthToken(): string | null {
   return null;
 }
 
+let bootstrapSuppressed = false;
+
 export function clearAuthToken(): void {
+  bootstrapSuppressed = true;
   if (typeof window !== "undefined") {
     localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(REFRESH_TOKEN_KEY);
   }
+}
+
+export function getRefreshToken(): string | null {
+  return typeof window === "undefined" ? null : localStorage.getItem(REFRESH_TOKEN_KEY);
+}
+
+function setAuthSession(data: { access_token: string; refresh_token: string }): void {
+  if (!data.access_token || !data.refresh_token) {
+    throw new ApiError("/api/auth", 0, "The server returned an incomplete session.");
+  }
+  if (typeof window !== "undefined") {
+    localStorage.setItem(REFRESH_TOKEN_KEY, data.refresh_token);
+    setAuthToken(data.access_token);
+  }
+}
+
+let refreshPromise: Promise<string> | null = null;
+
+/** Rotate once for all concurrent callers; never substitute bootstrap credentials. */
+export function refreshAuthToken(): Promise<string> {
+  if (refreshPromise) return refreshPromise;
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) {
+    clearAuthToken();
+    return Promise.reject(new ApiError("/api/auth/refresh", 401, "Please log in again."));
+  }
+  refreshPromise = (async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        if (res.status === 401 && getRefreshToken() === refreshToken) clearAuthToken();
+        throw new ApiError("/api/auth/refresh", res.status, await readErrorDetail(res));
+      }
+      const data = (await res.json()) as LoginResponse;
+      // A logout or another login must not be undone by a late refresh response.
+      if (getRefreshToken() !== refreshToken) {
+        await revokeRefreshToken(data.refresh_token);
+        throw new ApiError("/api/auth/refresh", 401, "Session changed during refresh.");
+      }
+      setAuthSession(data);
+      return data.access_token;
+    } finally {
+      clearTimeout(timer);
+    }
+  })().finally(() => { refreshPromise = null; });
+  return refreshPromise;
+}
+
+async function revokeRefreshToken(refreshToken: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/auth/logout`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new ApiError("/api/auth/logout", res.status, await readErrorDetail(res));
+}
+
+/** Drop local credentials immediately, then revoke the server-side session. */
+export async function logoutSession(): Promise<void> {
+  const token = getRefreshToken();
+  clearAuthToken();
+  clearActiveTenantOverride();
+  if (token) await revokeRefreshToken(token);
 }
 
 export interface LoginResponse {
@@ -124,17 +202,67 @@ export async function loginWithCredentials(creds: LoginCredentials = {}): Promis
   if (creds.tenantId) {
     body.tenant_id = creds.tenantId;
   }
-  const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    cache: "no-store",
-  });
+  // Hard client-side ceiling so a hung backend/proxy can never leave the
+  // login button spinning forever (mirrors apiFetchWithRetry).
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } catch (err) {
+    // fetch() rejects with a native TypeError on network-level failures
+    // (backend down, DNS failure, CORS preflight rejection, connection
+    // reset). Those are NOT HTTP responses, so there is no status to read.
+    // Normalize them to an ApiError with status 0 so the login form can
+    // distinguish "can't reach the server" from "the server said no".
+    // Previously this escaped as a raw TypeError, which the form's
+    // `err instanceof ApiError` check missed and rendered as the generic
+    // "Unexpected error. Please try again." - hiding the real cause.
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new ApiError(
+        "/api/auth/login",
+        0,
+        "The sign-in request timed out. Please try again.",
+      );
+    }
+    throw new ApiError(
+      "/api/auth/login",
+      0,
+      err instanceof Error && err.message
+        ? `Can't reach the server (${err.message}).`
+        : "Can't reach the server.",
+    );
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     throw new ApiError("/api/auth/login", res.status, await readErrorDetail(res));
   }
-  const data = (await res.json()) as LoginResponse;
-  setAuthToken(data.access_token);
+  let data: LoginResponse;
+  try {
+    data = (await res.json()) as LoginResponse;
+  } catch {
+    throw new ApiError(
+      "/api/auth/login",
+      res.status,
+      "The server returned a malformed login response.",
+    );
+  }
+  if (!data?.access_token) {
+    throw new ApiError(
+      "/api/auth/login",
+      res.status,
+      "The login response did not include an access token.",
+    );
+  }
+  setAuthSession(data);
+  clearActiveTenantOverride();
   return data;
 }
 
@@ -180,7 +308,8 @@ export async function signupTenant(payload: SignupRequest): Promise<SignupRespon
     throw new ApiError("/api/billing/signup", res.status, await readErrorDetail(res));
   }
   const data = (await res.json()) as SignupResponse;
-  setAuthToken(data.access_token);
+  setAuthSession(data);
+  clearActiveTenantOverride();
   return data;
 }
 
@@ -216,20 +345,19 @@ let authPromise: Promise<string> | null = null;
 export async function ensureAuthenticated(): Promise<string> {
   const existing = getAuthToken();
   if (existing) {
-    // Proactively check token expiry so we never fire a doomed request
-    // that the backend will reject with 401 (BUG 1 — auth-401-repro.js).
-    // If the token is expired, clear it locally and fall through to either
-    // the dev-bootstrap login or a thrown 401 — whichever applies.
+    // Expiry must rotate the existing session, never log in as the dev user.
     const decoded = decodeJwtPayload(existing);
     const now = Math.floor(Date.now() / 1000);
     if (decoded && typeof decoded.exp === "number" && decoded.exp <= now) {
-      clearAuthToken();
+      return refreshAuthToken();
     } else {
       return existing;
     }
   }
 
-  if (!AUTH_BOOTSTRAP) {
+  if (getRefreshToken()) return refreshAuthToken();
+
+  if (!AUTH_BOOTSTRAP || bootstrapSuppressed) {
     throw new ApiError("/api/auth/login", 401, "Session expired - please log in again.");
   }
 
@@ -254,7 +382,16 @@ export interface Alert {
   sensor_id: string | null;
   monitoring_source_id: string | null;
   title: string;
+  /** RAW provider value. May contain markup (PRTG stores
+   *  `<div class="logmessage">…`). Render `message`, not this; show it only
+   *  under a "Raw event" details view. */
   description: string | null;
+  /** Plain-text projection of `description`, derived server-side. Safe to
+   *  render directly - it never contains a tag. */
+  message: string | null;
+  /** True when `description` held markup that `message` stripped, i.e. when a
+   *  "Raw event" affordance is worth showing. */
+  description_contains_markup?: boolean;
   severity: AlertSeverity;
   status: AlertStatus;
   metric_type: string | null;
@@ -365,6 +502,9 @@ export interface MonitoringSourceOut {
   snmp_version: string | null;
   username: string | null;
   poll_interval_seconds: number;
+  /** Whether credential material is stored for this source. Never the value:
+   *  the secret itself is not returned by the API, by design. */
+  credential_configured?: boolean;
 }
 
 export interface SensorOut {
@@ -515,6 +655,76 @@ export interface TopologyOut {
  */
 export function getTopology(tenantId: string = DEFAULT_TENANT_ID): Promise<TopologyOut> {
   return apiFetch<TopologyOut>(`/api/infrastructure/topology?${withTenant(tenantId).toString()}`);
+}
+
+// ---------------------------------------------------------------------------
+// Canonical infrastructure overview (KPI source).
+//
+// Every number here is computed by the backend from real rows. Where the backend
+// has no source for a figure at all (VLANs, public IPs) this client returns
+// nothing and the UI must render "No data" rather than inventing a value.
+// ---------------------------------------------------------------------------
+
+export interface InfrastructureHealth {
+  total_devices: number;
+  healthy_devices: number;
+  warning_devices: number;
+  critical_devices: number;
+  unknown_devices: number;
+  total_sites: number;
+  healthy_sites: number;
+  warning_sites: number;
+  critical_sites: number;
+  unknown_sites: number;
+  total_sensors: number;
+  healthy_sensors: number;
+  warning_sensors: number;
+  down_sensors: number;
+  unknown_sensors: number;
+  total_alerts: number;
+  active_alerts: number;
+  critical_alerts: number;
+  warning_alerts: number;
+  info_alerts: number;
+  total_incidents: number;
+  open_incidents: number;
+  total_collector_runs: number;
+  successful_collector_runs: number;
+  failed_collector_runs: number;
+  total_relationships: number;
+  total_interfaces: number;
+}
+
+/** Count block used by the overview's nested aggregates. */
+export interface InfrastructureCountBlock {
+  total?: number;
+  by_status?: Record<string, number>;
+  by_type?: Record<string, number>;
+  by_type_raw?: Record<string, number>;
+  [key: string]: unknown;
+}
+
+export interface InfrastructureOverview {
+  tenant_id: string;
+  health: InfrastructureHealth;
+  sites: Record<string, unknown>[] | InfrastructureCountBlock;
+  devices: InfrastructureCountBlock;
+  sensors: InfrastructureCountBlock;
+  alerts: InfrastructureCountBlock;
+  incidents: InfrastructureCountBlock;
+  collector_runs: InfrastructureCountBlock;
+  monitoring_sources: InfrastructureCountBlock;
+  topology: InfrastructureCountBlock;
+  geography: Record<string, unknown>;
+  last_updated: string;
+}
+
+export function getInfrastructureOverview(
+  tenantId: string = DEFAULT_TENANT_ID,
+): Promise<InfrastructureOverview> {
+  return apiFetch<InfrastructureOverview>(
+    `/api/infrastructure/overview?${withTenant(tenantId).toString()}`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -910,15 +1120,49 @@ export async function readErrorDetail(res: Response): Promise<string> {
  *  - Every request is bounded by REQUEST_TIMEOUT_MS via AbortController, so
  *    a hung server can never wedge a caller's loading state permanently.
  */
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  return apiFetchWithRetry<T>(path, init, 0);
+export async function apiFetch<T>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs?: number,
+): Promise<T> {
+  return apiFetchWithRetry<T>(path, init, 0, timeoutMs);
 }
 
 /** Hard ceiling for any single HTTP round-trip made through this client. */
 const REQUEST_TIMEOUT_MS = 10_000;
 
+/**
+ * Budget for DIAGNOSTIC calls that are allowed to outlive the default cap.
+ *
+ * A readiness probe waits for a real network handshake, and the backend's own
+ * SNMP budget (seconds x retries) legitimately exceeds REQUEST_TIMEOUT_MS; a
+ * collection cycle is longer still. Capping those at 10s would abort the request
+ * while the server was still working and surface "request timed out" instead of
+ * the real readiness/collection result the operator asked for.
+ *
+ * 90s = the collector's own SNMP probe budget (timeout x retries) plus the
+ * request overhead of a slow collector host; a diagnostic is worth waiting for,
+ * and it is still a bounded ceiling.
+ */
+export const DIAGNOSTIC_TIMEOUT_MS = 90_000;
 
-async function apiFetchWithRetry<T>(path: string, init: RequestInit | undefined, attempt: number): Promise<T> {
+/**
+ * Budget for OPERATOR WRITES that do real server-side work beyond a plain
+ * insert: credential encryption, audit records, subscription/entitlement checks
+ * and source-health bookkeeping. Those legitimately exceed the 10s default on a
+ * slow collector host, and aborting one mid-flight is the worst outcome for a
+ * CONFIGURATION change: the operator is told "request timed out" while the row
+ * may still be committed server-side.
+ */
+export const OPERATOR_WRITE_TIMEOUT_MS = 45_000;
+
+
+async function apiFetchWithRetry<T>(
+  path: string,
+  init: RequestInit | undefined,
+  attempt: number,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
+): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
 
   // Attach a valid token. If none exists yet, perform the (shared, single
@@ -942,7 +1186,7 @@ async function apiFetchWithRetry<T>(path: string, init: RequestInit | undefined,
   // spinning forever. Timed-out requests reject with a readable ApiError so
   // every view transitions to its error/retry state instead.
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res: Response;
   try {
     res = await fetch(`${API_BASE_URL}${path}`, {
@@ -963,12 +1207,11 @@ async function apiFetchWithRetry<T>(path: string, init: RequestInit | undefined,
   if (!res.ok) {
     const message = await readErrorDetail(res);
 
-    // Session expired mid-flight: clear the stale token and retry exactly
-    // once with a freshly-minted credential (avoids infinite retry loops
-    // on genuinely invalid credentials).
+    // Late 401s from parallel requests reuse an already rotated token.
     if (res.status === 401 && attempt === 0) {
-      clearAuthToken();
-      return apiFetchWithRetry<T>(path, init, attempt + 1);
+      if (getAuthToken() === token) await refreshAuthToken();
+      if (!getAuthToken()) throw new ApiError(path, 401, "Please log in again.");
+      return apiFetchWithRetry<T>(path, init, attempt + 1, timeoutMs);
     }
 
     throw new ApiError(path, res.status, res.status === 401 ? "Session expired - please log in again." : message);
@@ -1160,7 +1403,9 @@ export interface AiCtoStatus {
     status: 'healthy' | 'degraded';
     reason: string | null;
   };
-  services: Record<string, 'up' | 'down' | 'unavailable'>;
+  /** Redis reports "up" | "down" | "unreachable" (see app/core/redis.py);
+   *  Ollama may additionally report "unavailable" when not configured. */
+  services: Record<string, 'up' | 'down' | 'unreachable' | 'unavailable'>;
   ai: {
     status: 'ready' | 'unavailable';
     message: string;
@@ -1169,7 +1414,114 @@ export interface AiCtoStatus {
 }
 
 export function getAiCtoStatus(): Promise<AiCtoStatus> {
-  return apiFetch<AiCtoStatus>(`/api/health/ai-cto`);
+  return apiFetch<AiCtoStatus>(`/ai-cto`);
+}
+
+// ---------------------------------------------------------------------------
+// Tenant custom-property definitions (Phase 6.3E)
+//
+// LOCKED backend contract:
+//   GET    /api/admin/tenants/{tenant_id}/custom-properties        -> 200
+//   POST   /api/admin/tenants/{tenant_id}/custom-properties        -> 201
+//   PATCH  /api/admin/tenants/{tenant_id}/custom-properties/{id}   -> 200
+//   DELETE /api/admin/tenants/{tenant_id}/custom-properties/{id}   -> 204
+//
+// Every call is tenant-scoped BY THE URL: the backend rejects a property_id
+// that does not belong to tenant_id with 404, so the UI can never reach
+// another tenant's definition by id.
+// ---------------------------------------------------------------------------
+
+/** Controlled set. Mirrors the backend `DATA_TYPES` exactly. */
+export type CustomPropertyDataType =
+  | "string"
+  | "integer"
+  | "boolean"
+  | "date"
+  | "datetime"
+  | "enum";
+
+/** One definition. Field names mirror the locked backend response exactly. */
+export interface TenantCustomProperty {
+  id: string;
+  tenant_id: string;
+  key: string;
+  display_name: string;
+  description: string | null;
+  data_type: CustomPropertyDataType;
+  required: boolean;
+  default_value: string | null;
+  allowed_values: string[];
+  /**
+   * Declarative configuration ONLY (min_length, max_length, min, max, regex).
+   * This is DATA, never code - nothing here is ever evaluated.
+   */
+  validation_rules: Record<string, unknown>;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  created_by: string | null;
+}
+
+/** Create payload. `key` and `data_type` are immutable once created. */
+export interface TenantCustomPropertyInput {
+  key: string;
+  display_name: string;
+  description?: string | null;
+  data_type: CustomPropertyDataType;
+  required: boolean;
+  default_value?: string | null;
+  allowed_values: string[];
+  validation_rules: Record<string, unknown>;
+  is_active?: boolean;
+}
+
+/** Update payload - `key`/`data_type` are deliberately not updatable. */
+export type TenantCustomPropertyUpdate = Partial<
+  Omit<TenantCustomPropertyInput, "key" | "data_type">
+>;
+
+export function getTenantCustomProperties(
+  tenantId: string,
+): Promise<TenantCustomProperty[]> {
+  return apiFetch<TenantCustomProperty[]>(
+    `/api/admin/tenants/${tenantId}/custom-properties`,
+  );
+}
+
+export function createTenantCustomProperty(
+  tenantId: string,
+  payload: TenantCustomPropertyInput,
+): Promise<TenantCustomProperty> {
+  return apiFetch<TenantCustomProperty>(
+    `/api/admin/tenants/${tenantId}/custom-properties`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export function updateTenantCustomProperty(
+  tenantId: string,
+  propertyId: string,
+  payload: TenantCustomPropertyUpdate,
+): Promise<TenantCustomProperty> {
+  return apiFetch<TenantCustomProperty>(
+    `/api/admin/tenants/${tenantId}/custom-properties/${propertyId}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+}
+
+/**
+ * Deactivate a definition. The backend soft-deletes and answers 204 with NO
+ * body; `apiFetch` already returns `undefined` for 204 without attempting to
+ * parse JSON, so no body handling is required here.
+ */
+export function deleteTenantCustomProperty(
+  tenantId: string,
+  propertyId: string,
+): Promise<void> {
+  return apiFetch<void>(
+    `/api/admin/tenants/${tenantId}/custom-properties/${propertyId}`,
+    { method: "DELETE" },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2297,6 +2649,118 @@ export interface TaskWorkerExecution {
   tool_name?: string | null;
   execution_input?: Record<string, unknown> | null;
   allowed_tools?: string[] | null;
+}
+
+// ---------------------------------------------------------------------------
+// Network Intelligence (SD-WAN + SASE)
+// ---------------------------------------------------------------------------
+//
+// Read-only evaluation layer: POST /api/network-intelligence/evaluate takes
+// one flow (+ candidate WAN paths) and returns {flow, sdwan, sase,
+// incident_context, recommendation, audit}. Recommendations are advisory
+// only (PENDING_HUMAN_DECISION) - execution stays on the device-actions
+// plane. Reuses the existing hud-panel card style on the Infrastructure page.
+
+export interface NetworkWanPath {
+  name: string;
+  latency_ms?: number;
+  jitter_ms?: number;
+  packet_loss_pct?: number;
+  bandwidth_mbps?: number;
+  available?: boolean;
+}
+
+export interface NetworkFlow {
+  flow_id?: string;
+  user_identity?: string;
+  device_identity?: string;
+  device_compliance?: boolean;
+  destination?: string;
+  url_category?: string;
+  application?: string;
+  risk_level?: string;
+}
+
+export interface ScoredWanPath extends NetworkWanPath {
+  score: number;
+  health: string;
+  components: Record<string, number>;
+}
+
+export interface SdwanResult {
+  selected_path: string | null;
+  score: number;
+  decision: string;
+  paths: ScoredWanPath[];
+  failover: boolean;
+  reason: string;
+}
+
+export interface SaseStage {
+  stage: string;
+  decision: string;
+  reason: string;
+}
+
+export interface SaseResult {
+  decision: string;
+  pipeline: SaseStage[];
+  reason: string;
+}
+
+export interface NetworkRecommendation {
+  title: string;
+  status: string;
+  actions: unknown[];
+  reason: string;
+}
+
+export interface NetworkAuditRow {
+  timestamp: string;
+  flow_id: string;
+  device: string;
+  engine: string;
+  stage: string;
+  decision: string;
+  reason: string;
+}
+
+export interface NetworkEvaluateResult {
+  flow_id: string;
+  flow: Record<string, unknown>;
+  sdwan: SdwanResult;
+  sase: SaseResult;
+  incident_id: string | null;
+  incident_context: Record<string, unknown>;
+  recommendation: NetworkRecommendation | null;
+  audit: NetworkAuditRow[];
+  tenant_id: string;
+}
+
+export interface NetworkEvaluateIn {
+  flow: NetworkFlow;
+  paths: NetworkWanPath[];
+  weights?: Record<string, number>;
+  require_compliant_device?: boolean;
+  block_malicious_urls?: boolean;
+  enforce_application_policy?: boolean;
+  incident_id?: string | null;
+  incident_context?: Record<string, unknown>;
+}
+
+export function evaluateNetworkFlow(payload: NetworkEvaluateIn): Promise<NetworkEvaluateResult> {
+  return apiFetch<NetworkEvaluateResult>("/api/network-intelligence/evaluate", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listNetworkScenarios(): Promise<{ scenarios: string[] }> {
+  return apiFetch<{ scenarios: string[] }>("/api/network-intelligence/scenarios");
+}
+
+export function getNetworkScenario(name: string): Promise<{ name: string; flow: NetworkFlow; paths: NetworkWanPath[] }> {
+  return apiFetch(`/api/network-intelligence/scenarios/${encodeURIComponent(name)}`);
 }
 
 export function workerExecuteTask(

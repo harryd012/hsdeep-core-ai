@@ -102,9 +102,9 @@ class MonitoringSourceOut(BaseModel):
     # INTENTIONAL OMISSION - do not add these fields: api_key, password,
     # api_key_encrypted, password_encrypted, or any other credential-derived
     # field. Requirement 9.2 / Correctness Property 6 require that secrets
-    # are never returned by the API. If you need to expose "is a credential
-    # configured" info, add a boolean flag (e.g. has_api_key), never the
-    # value itself.
+    # are never returned by the API. "Is a credential configured" is exposed
+    # ONLY as the boolean below, never as the value itself.
+    credential_configured: bool = False
 
 
 class ConnectionTestResult(BaseModel):

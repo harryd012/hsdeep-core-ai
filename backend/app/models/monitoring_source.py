@@ -110,5 +110,16 @@ class MonitoringSource(Base, UUIDPKMixin, TimestampMixin, SoftDeleteMixin):
         back_populates="monitoring_source", cascade="all, delete-orphan"
     )
 
+    @property
+    def credential_configured(self) -> bool:
+        """Whether ANY credential material is stored for this source.
+
+        Derived from the ciphertext columns, so an operator interface can show
+        "credential configured" without the API ever returning the value: this is
+        the boolean the `MonitoringSourceOut` schema comment sanctions. Adding a
+        new credential column means adding it here too.
+        """
+        return bool(self.api_key_encrypted or self.password_encrypted)
+
     def __repr__(self) -> str:
         return f"<MonitoringSource id={self.id} type={self.source_type!r} name={self.name!r}>"
