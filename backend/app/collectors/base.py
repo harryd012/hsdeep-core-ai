@@ -136,6 +136,14 @@ class NormalizedNeighbor:
     #: protocol did not expose one - in that case the adjacency is real but
     #: cannot be resolved to a Device, so NO edge is written for it.
     remote_address: str | None = None
+    #: The remote resource's identity IN THE SOURCE SYSTEM, when that source
+    #: explicitly names the peer as one of its own managed objects (a PNETLab
+    #: node id, a Meraki device serial, a FortiManager device name). Populated
+    #: ONLY from such an explicit reference: a protocol field like an LLDP
+    #: sysName is a NAME, not an identity, and putting it here would turn a
+    #: hostname guess into an edge. Resolution still happens inside the existing
+    #: tenant-scoped device lookup.
+    remote_external_id: str | None = None
     #: Remote system name / device id, kept for provenance only. Never used to
     #: fabricate a Device.
     remote_identity: str | None = None

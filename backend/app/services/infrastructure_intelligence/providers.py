@@ -66,6 +66,12 @@ _MONITORING_PLATFORM = _ALL_COLLECTOR | {
     V.CAP_INTERFACES, V.CAP_BANDWIDTH, V.CAP_SESSIONS, V.CAP_WIRELESS,
     V.CAP_CLIENTS, V.CAP_STORAGE,
 }
+#: A lab / topology controller: authoritative for its OWN inventory and wiring
+#: (PNETLab knows exactly which interface is patched to which). It does not
+#: measure device performance, so only the capabilities it really emits appear.
+_TOPOLOGY_CONTROLLER = _ALL_COLLECTOR | {
+    V.CAP_INTERFACES, V.CAP_TOPOLOGY, V.CAP_DEPENDENCIES,
+}
 
 #: provider token -> capability set the WIRED collector is implemented to emit.
 PROVIDER_CAPABILITIES: dict[str, frozenset[str]] = {
@@ -82,6 +88,7 @@ PROVIDER_CAPABILITIES: dict[str, frozenset[str]] = {
         }
     ),
     V.PROVIDER_SNMP: frozenset(_SNMP),
+    V.PROVIDER_PNETLAB: frozenset(_TOPOLOGY_CONTROLLER),
     V.PROVIDER_ICMP: frozenset(_ALL_COLLECTOR | {V.CAP_HEALTH}),
     V.PROVIDER_WINRM: frozenset(_SERVER_AGENT),
     V.PROVIDER_WMI: frozenset(_SERVER_AGENT),
@@ -112,6 +119,7 @@ SOURCE_TYPE_TO_PROVIDER: dict[str, str] = {
     "fortigate": V.PROVIDER_FORTIGATE,
     "fortimanager": V.PROVIDER_FORTIMANAGER,
     "meraki": V.PROVIDER_MERAKI,
+    "pnetlab": V.PROVIDER_PNETLAB,
     "snmp": V.PROVIDER_SNMP,
     "switching": V.PROVIDER_SNMP,
     "connectivity": V.PROVIDER_ICMP,
@@ -131,6 +139,7 @@ PROVIDER_KINDS: dict[str, str] = {
     V.PROVIDER_FORTIGATE: KIND_NETWORK,
     V.PROVIDER_FORTIMANAGER: KIND_CONTROLLER,
     V.PROVIDER_MERAKI: KIND_CONTROLLER,
+    V.PROVIDER_PNETLAB: KIND_CONTROLLER,
     V.PROVIDER_SNMP: KIND_NETWORK,
     V.PROVIDER_ICMP: KIND_NETWORK,
     V.PROVIDER_WINRM: KIND_AGENT,
@@ -157,6 +166,9 @@ PROVIDER_RESOURCE_TYPES: dict[str, tuple[str, ...]] = {
     V.PROVIDER_FORTIMANAGER: ("firewall", "security_gateway", "network_device"),
     V.PROVIDER_MERAKI: (
         "access_point", "switch", "security_gateway", "wireless_controller",
+    ),
+    V.PROVIDER_PNETLAB: (
+        "router", "switch", "firewall", "host", "network_device",
     ),
     V.PROVIDER_SNMP: (
         "router", "switch", "firewall", "access_point", "server",
@@ -286,6 +298,9 @@ PROVIDER_EVIDENCE_CLASSIFICATION: dict[str, str] = {
     V.PROVIDER_FORTIGATE: V.EVIDENCE_API,
     V.PROVIDER_FORTIMANAGER: V.EVIDENCE_API,
     V.PROVIDER_MERAKI: V.EVIDENCE_API,
+    # PNETLab answers over its own controller API; the lab is the authority for
+    # its topology, so a reported link is source-observed evidence.
+    V.PROVIDER_PNETLAB: V.EVIDENCE_API,
     V.PROVIDER_VMWARE: V.EVIDENCE_API,
     V.PROVIDER_KUBERNETES: V.EVIDENCE_API,
     V.PROVIDER_AZURE: V.EVIDENCE_API,

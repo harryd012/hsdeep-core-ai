@@ -48,6 +48,11 @@ class NeighborEvidence:
     remote_interface: str | None = None
     relationship_type: str = "connected_to"
     confidence: float = 100.0
+    #: The peer's identity in the SOURCE system, when the source explicitly
+    #: named it as one of its own objects (PNETLab node id, Meraki serial). Used
+    #: by DiscoveryService as an alternative resolution key to `address` - never
+    #: as a guess, and only ever within the same tenant.
+    remote_external_id: str | None = None
 
 
 @dataclass

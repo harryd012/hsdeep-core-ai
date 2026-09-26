@@ -457,12 +457,25 @@ class DiscoveryService:
         unresolved = 0
         observed_at = datetime.now(timezone.utc)
         for nb in neighbors:
-            target_id = batch_index.get(nb.address) or await self._device_id_for_address(
-                tenant_id,
-                monitoring_source_id,
-                nb.address,
-                tenant_wide=peer_scope == PEER_SCOPE_TENANT,
-            )
+            target_id = None
+            if nb.address:
+                target_id = batch_index.get(nb.address) or await self._device_id_for_address(
+                    tenant_id,
+                    monitoring_source_id,
+                    nb.address,
+                    tenant_wide=peer_scope == PEER_SCOPE_TENANT,
+                )
+            if target_id is None and nb.remote_external_id:
+                # The source named this peer as one of its OWN objects (a PNETLab
+                # node id, a Meraki serial). That is an explicit identity rather
+                # than an address, so it is resolved by identity - still strictly
+                # inside this tenant, and never by a hostname or name guess.
+                target_id = await self._device_id_for_external_id(
+                    tenant_id,
+                    monitoring_source_id,
+                    nb.remote_external_id,
+                    tenant_wide=peer_scope == PEER_SCOPE_TENANT,
+                )
             if target_id is None:
                 # No evidence-backed endpoint -> no edge. Reported, not faked.
                 unresolved += 1
@@ -541,6 +554,35 @@ class DiscoveryService:
             batch_index={},
             peer_scope=PEER_SCOPE_TENANT,
         )
+
+    async def _device_id_for_external_id(
+        self,
+        tenant_id: uuid.UUID,
+        monitoring_source_id: uuid.UUID,
+        external_id: str,
+        *,
+        tenant_wide: bool = False,
+    ) -> uuid.UUID | None:
+        """Resolve a peer the SOURCE explicitly identified as one of its objects.
+
+        Unlike an address lookup this key came with the source's own identity for
+        the peer (a PNETLab node reference), so matching it is evidence-based, not
+        an inference. Tenant-scoped by construction; `tenant_wide` widens only
+        from "this source's devices" to "this tenant's devices".
+        """
+        stmt = select(Device.id).where(
+            Device.tenant_id == tenant_id,
+            Device.external_id == external_id,
+        )
+        if tenant_wide:
+            stmt = stmt.order_by(
+                Device.monitoring_source_id != monitoring_source_id,
+                Device.created_at,
+                Device.id,
+            )
+        else:
+            stmt = stmt.where(Device.monitoring_source_id == monitoring_source_id)
+        return (await self.db.execute(stmt.limit(1))).scalar_one_or_none()
 
     async def _device_id_for_address(
         self,

@@ -132,6 +132,25 @@ class Settings(BaseSettings):
     # its own default unload policy (5m) — never an aggressive permanent pin.
     ollama_keep_alive: str = ""
 
+    # -- PNETLab topology provider (Phase 9.7B) ------------------------------
+    # Externalised configuration for the PNETLab topology provider. A PNETLab
+    # lab is the authoritative source of its own topology, so the provider reads
+    # it over PNETLab's native JSON API instead of inferring anything.
+    #
+    # SECRETS: `pnetlab_password` is read from the environment only (never
+    # committed, never logged, never returned by an API). Empty means "not
+    # configured", and the provider then reports configuration-missing rather
+    # than pretending to have collected a topology.
+    pnetlab_base_url: str = ""
+    pnetlab_username: str = ""
+    pnetlab_password: str = ""
+    #: Optional lab path ("/lab.unl"). Empty = discover every lab the account
+    #: can see; never a hard-coded lab id (Phase 9.7B step 3).
+    pnetlab_lab_path: str = ""
+    #: PNETLab commonly serves a self-signed certificate on the lab host.
+    pnetlab_verify_ssl: bool = False
+    pnetlab_timeout_seconds: float = 15.0
+
     @property
     def effective_jwt_secret(self) -> str:
         """The signing secret actually used for JWTs. Falls back to

@@ -59,9 +59,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from app.collectors.base import NormalizedAlertSignal, NormalizedBundle
 from app.models.monitoring_source import MonitoringSource
+from app.services.monitoring.interface_rates import compute_interface_rate
 from app.models.sensor import Sensor
 from app.repositories.device_repository import DeviceRepository
 from app.repositories.event_repository import EventRepository
@@ -88,6 +90,10 @@ logger = logging.getLogger(__name__)
 class SaveResult:
     devices_upserted: int = 0
     interfaces_upserted: int = 0
+    #: Phase 9.8: interfaces whose rx/tx rate was derived from two counter
+    #: samples this run. 0 on a first collection is the honest answer, not a
+    #: missing measurement.
+    rates_measured: int = 0
     sensors_created: int = 0
     sensors_updated: int = 0
     metrics_recorded: int = 0
@@ -297,6 +303,17 @@ class BundleSaver:
         # sensor interface_id resolution in step 3.
         interface_id_by_key: dict[tuple[str, str], object] = {}
 
+        # Phase 9.8: previous counter sample per (device, interface), read in ONE
+        # query so a two-sample rate can be derived. A missing previous row just
+        # means "first observation": no rate and never a fabricated zero.
+        collected_at = datetime.now(timezone.utc)
+        previous_by_key: dict[tuple[object, str], object] = {}
+        if bundle.interfaces and device_id_by_external:
+            for existing_row in await self.interface_repo.list_for_devices(
+                source.tenant_id, list(device_id_by_external.values())
+            ):
+                previous_by_key[(existing_row.device_id, existing_row.external_id)] = existing_row
+
         for ni in bundle.interfaces:
             device_id = device_id_by_external.get(ni.device_external_id)
             if device_id is None:
@@ -314,6 +331,17 @@ class BundleSaver:
                 )
                 continue
 
+            previous = previous_by_key.get((device_id, ni.external_id))
+            rate = compute_interface_rate(
+                previous_in=previous.in_octets if previous is not None else None,
+                previous_out=previous.out_octets if previous is not None else None,
+                previous_at=previous.last_telemetry_at if previous is not None else None,
+                current_in=ni.in_octets,
+                current_out=ni.out_octets,
+                observed_at=collected_at,
+                speed_mbps=ni.speed_mbps,
+            )
+
             interface, _created = await self.interface_repo.upsert(
                 tenant_id=source.tenant_id,
                 device_id=device_id,
@@ -328,7 +356,17 @@ class BundleSaver:
                 out_octets=ni.out_octets,
                 in_errors=ni.in_errors,
                 out_errors=ni.out_errors,
+                # Derived ONLY from two real samples; None leaves the column
+                # untouched/NULL rather than publishing a zero.
+                rx_bps=rate.rx_bps,
+                tx_bps=rate.tx_bps,
+                utilization_pct=rate.utilization_pct,
+                # Drives Interface.last_telemetry_at (freshness), so a poll that
+                # carried counters is distinguishable from one that did not.
+                telemetry_seen=rate.has_counters,
             )
+            if rate.measured:
+                result.rates_measured += 1
             interface_id_by_key[(ni.device_external_id, ni.external_id)] = interface.id
             result.interfaces_upserted += 1
 
@@ -464,47 +502,52 @@ class BundleSaver:
             from app.services.discovery.evidence import NeighborEvidence
             from app.services.discovery.service import DiscoveryService
 
-            source_device_id = device_id_by_external.get(
-                bundle.neighbors[0].device_external_id
-            )
-            if source_device_id is None:
-                # The local device did not persist (e.g. blocked by a plan
-                # limit), so there is no endpoint to hang an edge on.
-                result.neighbors_unresolved += len(bundle.neighbors)
-            else:
+            # A bundle may describe MANY local devices: an SNMP poll reports one
+            # endpoint, while a lab/topology controller (PNETLab) reports a whole
+            # topology at once. Neighbours are therefore grouped by the local
+            # device they were observed from, and each group goes through the same
+            # single writer - so both provider shapes share one code path.
+            by_local: dict[str, list] = {}
+            for nb in bundle.neighbors:
+                by_local.setdefault(nb.device_external_id, []).append(nb)
+
+            discovery = DiscoveryService(self.device_repo.db)
+            for local_external_id, group in by_local.items():
+                source_device_id = device_id_by_external.get(local_external_id)
+                if source_device_id is None:
+                    # The local device did not persist (e.g. blocked by a plan
+                    # limit), so there is no endpoint to hang an edge on.
+                    result.neighbors_unresolved += len(group)
+                    continue
                 evidence: list[NeighborEvidence] = []
-                for nb in bundle.neighbors:
-                    if nb.device_external_id != bundle.neighbors[0].device_external_id:
-                        # A bundle describes ONE local device in the SNMP case;
-                        # neighbours for a device we did not resolve cannot be
-                        # attributed, so they are reported rather than guessed.
-                        result.neighbors_unresolved += 1
-                        continue
-                    if not nb.remote_address:
-                        # Real adjacency, but no management address was exposed,
-                        # so it cannot be matched to a Device. No edge - and no
+                for nb in group:
+                    if not nb.remote_address and not nb.remote_external_id:
+                        # Real adjacency, but the source exposed NEITHER a
+                        # management address NOR an identity of its own, so it
+                        # cannot be matched to a Device. No edge - and no
                         # fabricated device either.
                         result.neighbors_unresolved += 1
                         logger.info(
-                            "neighbour %s on %s has no management address "
-                            "(evidence=%s) - adjacency recorded, no edge written",
+                            "neighbour %s on %s has no management address or source "
+                            "identity (evidence=%s) - adjacency recorded, no edge written",
                             nb.remote_identity or "?", nb.local_interface, nb.evidence_type,
                         )
                         continue
                     evidence.append(NeighborEvidence(
-                        address=nb.remote_address,
+                        # An empty address is honest: the edge is then resolved by
+                        # the source identity below, never by a name guess.
+                        address=nb.remote_address or "",
                         evidence_type=nb.evidence_type,
                         local_interface=nb.local_interface,
                         remote_interface=nb.remote_interface,
                         # Physical adjacency uses the existing vocabulary; the
                         # protocol is evidence, not the relationship type.
                         relationship_type="connected_to",
+                        remote_external_id=nb.remote_external_id,
                     ))
 
                 if evidence:
-                    written, unresolved = await DiscoveryService(
-                        self.device_repo.db
-                    ).write_observed_neighbors(
+                    written, unresolved = await discovery.write_observed_neighbors(
                         tenant_id=source.tenant_id,
                         monitoring_source_id=source.id,
                         source_device_id=source_device_id,
