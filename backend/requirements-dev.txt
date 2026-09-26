@@ -1,0 +1,13 @@
+# Dev/test dependencies (Phase 9A). Install with:
+#   pip install -r requirements-dev.txt
+#
+# The production image installs ONLY requirements.txt, so test tooling never
+# ships to a container. Versions match pyproject.toml's [project.optional-dependencies].dev
+# (pytest-asyncio 0.24.0 in the old requirements.txt was stale - the installed
+# and configured version is 0.26.0, see pyproject.toml asyncio_mode/loop scope).
+-r requirements.txt
+
+pytest==8.3.3
+pytest-asyncio==0.26.0
+hypothesis==6.112.0
+respx==0.21.1
