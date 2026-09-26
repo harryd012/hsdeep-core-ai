@@ -4,10 +4,10 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Radar, ShieldCheck, Wifi } from "lucide-react";
 import {
-  DiscoveryRunResponse,
+  type DiscoveryRunResponse,
   listDiscoveryJobs,
   runDiscovery,
-} from "@/lib/api";
+} from "@/lib/infrastructureIntelligence";
 
 /**
  * /infrastructure/discovery — Universal Discovery console.

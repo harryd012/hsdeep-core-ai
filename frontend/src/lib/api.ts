@@ -828,6 +828,18 @@ export async function readErrorDetail(res: Response): Promise<string> {
         )
         .join("; ");
     }
+    // Structured detail ({field, message}) returned by HSDEEP routes that name
+    // the offending field (operational SLA policy validation, resource
+    // operational state). Without this branch a caller could only ever see
+    // "422 Unprocessable Entity" and the backend's reason would be lost.
+    if (body?.detail && typeof body.detail === "object") {
+      const detail = body.detail as { field?: unknown; message?: unknown };
+      const text =
+        typeof detail.message === "string" ? detail.message : JSON.stringify(detail);
+      return typeof detail.field === "string" && detail.field
+        ? `${detail.field}: ${text}`
+        : text;
+    }
   } catch {
     // Not JSON ΓÇö fall through to text/status.
   }

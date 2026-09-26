@@ -15,7 +15,7 @@
  *   sends a tenant id.
  */
 
-import { apiFetch } from "./api";
+import { ApiError, apiFetch, getTopology, type SiteNode } from "./api";
 
 /* ------------------------------------------------------------------------ *
  * WAN Failover Intelligence (observed failover episodes)
@@ -800,6 +800,34 @@ export interface FailoverSimulationOut {
 
 export type FailoverPolicyScope = "all_wan" | "site" | "link";
 
+/**
+ * Metrics an operational SLA policy can be written against.
+ *
+ * Mirrors the backend's `METRICS` vocabulary so the form can offer the real
+ * choices; the backend still validates and rejects anything unknown, so this is
+ * a convenience list, not a second source of truth.
+ */
+export const FAILOVER_POLICY_METRICS = [
+  "latency_ms",
+  "jitter_ms",
+  "packet_loss_pct",
+  "utilization_pct",
+  "availability_pct",
+] as const;
+
+export type FailoverPolicyMetric = (typeof FAILOVER_POLICY_METRICS)[number];
+
+/**
+ * Which way a metric is breached, for operator guidance only.
+ *
+ * Availability is the one metric where LOWER is worse; every other metric is
+ * breached by a value that is too HIGH. The UI shows this as a hint - the
+ * ordering rules themselves are enforced by the backend.
+ */
+export function failoverMetricDirection(metric: string): "higher_is_worse" | "lower_is_worse" {
+  return metric === "availability_pct" ? "lower_is_worse" : "higher_is_worse";
+}
+
 export interface FailoverPolicyOut {
   id: string;
   name: string;
@@ -1005,6 +1033,290 @@ export function deleteFailoverPolicy(
   return apiFetch<{ deleted: boolean; policy: FailoverPolicyOut }>(
     `${FAILOVER_BASE}/policies/${policyId}`,
     { method: "DELETE" },
+  );
+}
+
+/* ------------------------------------------------------------------------ *
+ * Operational SLA policy — form support
+ *
+ * Scope targets and error text for the policy UI. The backend stays
+ * authoritative for validation, tenant isolation and duplicate detection; these
+ * helpers only exist so the operator can PICK a real site/link and read the
+ * backend's rejection in plain language.
+ * ------------------------------------------------------------------------ */
+
+/** A site that can be used as a `scope=site` target. */
+export interface ScopeSiteOption {
+  id: string;
+  name: string;
+  code?: string | null;
+}
+
+/** A topology link that can be used as a `scope=link` target. */
+export interface ScopeLinkOption {
+  id: string;
+  name: string;
+  link_type: string;
+  oper_status: string;
+  redundancy_group: string | null;
+}
+
+/**
+ * Sites for the `scope=site` picker.
+ *
+ * Uses the committed topology read model (sites -> devices -> sources) rather
+ * than a new endpoint, so the policy form never depends on uncommitted work.
+ */
+export async function listScopeSites(): Promise<ScopeSiteOption[]> {
+  const topology = await getTopology();
+  return (topology.sites ?? []).map((site: SiteNode) => ({
+    id: site.id,
+    name: site.name,
+    code: site.code ?? null,
+  }));
+}
+
+/**
+ * Topology links for the `scope=link` picker (tenant resolved from the token).
+ *
+ * Backend: GET /api/topology/links. A link-scoped policy only applies to the
+ * link whose id matches, so picking the real id here avoids a policy that
+ * silently matches nothing (the backend would reject an unknown id anyway).
+ */
+export async function listScopeLinks(limit = 200): Promise<ScopeLinkOption[]> {
+  const page = await apiFetch<{
+    total: number;
+    items: {
+      id: string;
+      name: string;
+      link_type: string;
+      oper_status: string;
+      redundancy_group: string | null;
+    }[];
+  }>(`/api/topology/links?limit=${limit}`);
+  return (page.items ?? []).map((link) => ({
+    id: link.id,
+    name: link.name,
+    link_type: link.link_type,
+    oper_status: link.oper_status,
+    redundancy_group: link.redundancy_group ?? null,
+  }));
+}
+
+/**
+ * Human-readable guidance for a rejected policy request.
+ *
+ * `message` is whatever the backend said (the structured `{field, message}`
+ * detail is rendered as "field: message" by the transport), so the backend's
+ * own explanation is always shown verbatim. The hint only adds what the status
+ * implies for the operator - it never replaces the server's words.
+ */
+export function policyErrorHint(status: number, message: string): string {
+  switch (status) {
+    case 401:
+      return "Session expired. Sign in again - nothing was saved.";
+    case 403:
+      return "Editing operational SLA policies requires the monitoring.update permission.";
+    case 404:
+      return "That policy no longer exists (it may have been deleted by someone else).";
+    case 409:
+      return "This conflicts with an existing policy. The backend's reason is shown above.";
+    case 422:
+      return "The backend refused this policy, so nothing was saved. The reason is shown above.";
+    default:
+      return message;
+  }
+}
+
+/**
+ * Normalise any thrown value into `{status, message}` for display.
+ *
+ * Keeps React components independent of the transport module: the UI only ever
+ * imports from this file, and a non-ApiError failure (offline, abort, bug) is
+ * reported with status 0 rather than pretending to be an HTTP response.
+ */
+export function toApiFailure(error: unknown): { status: number; message: string } {
+  if (error instanceof ApiError) {
+    return { status: error.status, message: error.message };
+  }
+  if (error instanceof Error) {
+    return { status: 0, message: error.message };
+  }
+  return { status: 0, message: String(error) };
+}
+
+/* ------------------------------------------------------------------------ *
+ * Universal Discovery
+ *
+ * This surface lives HERE rather than in the general-purpose api.ts so the
+ * infrastructure discovery console resolves entirely against the committed
+ * infrastructure module. The backend owns probing, recognition and persistence;
+ * this client never inserts a device. Secrets (SNMP community) are sent once per
+ * request and are never returned by the API.
+ * ------------------------------------------------------------------------ */
+
+export interface DiscoveryRequest {
+  target: string;
+  protocols?: string[];
+  monitoring_source_id?: string | null;
+  site_id?: string | null;
+  /** Sent once per probe; never persisted or echoed back. */
+  snmp_community?: string | null;
+  snmp_version?: number;
+}
+
+export interface DiscoveryProbeOutcome {
+  protocol: string;
+  target: string;
+  outcome: string;
+  detail: string;
+  values: Record<string, unknown>;
+}
+
+export interface DiscoveryProbeBundle {
+  target: string;
+  probe_results: Record<string, string>;
+  probes: DiscoveryProbeOutcome[];
+}
+
+export interface DiscoveryResourceOutcome {
+  address: string;
+  resource_type: string;
+  resource_category: string;
+  device_id: string | null;
+  device_type: string;
+  vendor: string | null;
+  provider: string | null;
+  name: string | null;
+  external_id: string | null;
+  created: boolean;
+  updated: boolean;
+  identity_keys: string[];
+  identity_source: string | null;
+  identity_confidence: number;
+  capabilities: Record<string, boolean | null>;
+  provider_capabilities: string[];
+  recognition: {
+    method?: string;
+    matched?: boolean;
+    score?: number;
+    provider?: string | null;
+    evidence_used?: string[];
+    reason?: string;
+  };
+  relationships: unknown[];
+  errors: string[];
+  // -- probe EVIDENCE vs. CANONICAL RESOURCE -----------------------------
+  // `probe_evidence` is what the collector actually observed; it is retained
+  // even when recognition failed. `canonical_resource` is the persisted row,
+  // and is null when the evidence produced none.
+  probe_evidence: {
+    address: string;
+    transport: string;
+    source: string | null;
+    provider: string | null;
+    reachable: boolean | null;
+    hostname: string | null;
+    sys_descr: string | null;
+    sys_object_id: string | null;
+    model: string | null;
+    vendor: string | null;
+    serial: string | null;
+    mac: string | null;
+    device_type: string | null;
+    provider_resource_id: string | null;
+    cloud_resource_id: string | null;
+    region: string | null;
+    availability_zone: string | null;
+    capabilities: string[];
+    neighbor_count: number;
+    observed_at: string | null;
+    authentication: string;
+    raw_evidence_keys: string[];
+    note?: string;
+  };
+  recognition_status: "identified" | "unknown";
+  persisted: boolean;
+  identity_stage:
+    | "discovered"
+    | "identified"
+    | "classified"
+    | "capability_resolved"
+    | "collectable"
+    | "monitored"
+    | "stale"
+    | "retired";
+  canonical_resource: {
+    device_id: string;
+    created: boolean;
+    updated: boolean;
+    external_id: string | null;
+    identity_source: string | null;
+    identity_confidence: number;
+    identity_keys: string[];
+    lifecycle_state: string | null;
+    provider_resource_id: string | null;
+  } | null;
+  relationship_evidence_state:
+    | "active"
+    | "stale"
+    | "removed"
+    | "no_relationship_evidence";
+}
+
+export interface DiscoveryResultOut {
+  status: string;
+  discovered: number;
+  created: number;
+  updated: number;
+  unknown: number;
+  relationships_written: number;
+  unresolved_neighbors: number;
+  resources: DiscoveryResourceOutcome[];
+  errors: string[];
+  // -- aggregate evidence split ------------------------------------------
+  persisted: number;
+  evidence_only: number;
+  recognized: number;
+  with_topology_evidence: number;
+  no_topology_evidence: number;
+}
+
+export interface DiscoveryRunResponse {
+  job_id: string;
+  status: string;
+  target: string;
+  monitoring_source_id: string;
+  probe_results: DiscoveryProbeBundle[];
+  result: DiscoveryResultOut;
+}
+
+export interface DiscoveryJob {
+  job_id: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  devices_upserted: number;
+  error: string | null;
+}
+
+export function runDiscovery(
+  payload: DiscoveryRequest,
+): Promise<DiscoveryRunResponse> {
+  return apiFetch<DiscoveryRunResponse>("/api/infrastructure/discovery", {
+    method: "POST",
+    body: JSON.stringify({
+      protocols: ["icmp", "snmp", "https", "ssh"],
+      ...payload,
+    }),
+    // Probing several protocols takes longer than the default ceiling.
+    signal: AbortSignal.timeout(120_000),
+  });
+}
+
+export function listDiscoveryJobs(limit: number = 25): Promise<DiscoveryJob[]> {
+  return apiFetch<DiscoveryJob[]>(
+    `/api/infrastructure/discovery/jobs?limit=${limit}`,
   );
 }
 

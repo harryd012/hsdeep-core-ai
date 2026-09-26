@@ -16,6 +16,7 @@ import {
   type FailoverSummaryOut,
   type VerificationOut,
 } from "@/lib/infrastructureIntelligence";
+import OperationalSlaPolicyPanel from "@/components/infrastructure/OperationalSlaPolicyPanel";
 
 /**
  * FailoverTimelinePanel — observed WAN/HA failover episodes for one site edge.
@@ -760,6 +761,11 @@ export default function FailoverTimelinePanel({
           )}
         </div>
       ) : null}
+
+      {/* Thresholds live with the episodes they explain: editing them is the one
+          configuration action this surface owns, and every write is validated
+          and audited by the backend. */}
+      <OperationalSlaPolicyPanel siteId={siteId} />
     </div>
   );
 }
