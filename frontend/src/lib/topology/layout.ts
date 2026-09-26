@@ -97,6 +97,9 @@ function depths(
   return depth;
 }
 
+/** Widest layer row before the layout wraps it into sub-rows. */
+const MAX_NODES_PER_ROW = 10;
+
 function hierarchical(
   nodes: readonly LayoutNode[],
   edges: readonly LayoutEdge[],
@@ -118,12 +121,27 @@ function hierarchical(
   }
 
   const result: LayoutResult[] = [];
+  let rowCursor = 0;
   for (const level of [...rows.keys()].sort((a, b) => a - b)) {
     const ids = rows.get(level)!;
-    const span = (ids.length - 1) * options.xGap;
-    ids.forEach((id, index) => {
-      result.push({ id, x: index * options.xGap - span / 2, y: level * options.yGap });
-    });
+    /**
+     * A very wide layer (e.g. hundreds of devices with no recorded relationship
+     * yet) would otherwise be laid out as one enormous row that overflows the
+     * canvas and overlaps itself. Wrapping keeps every node legible while
+     * preserving the layer order that makes the hierarchy readable.
+     */
+    for (let start = 0; start < ids.length; start += MAX_NODES_PER_ROW) {
+      const slice = ids.slice(start, start + MAX_NODES_PER_ROW);
+      const span = (slice.length - 1) * options.xGap;
+      slice.forEach((id, index) => {
+        result.push({
+          id,
+          x: index * options.xGap - span / 2,
+          y: rowCursor * options.yGap,
+        });
+      });
+      rowCursor += 1;
+    }
   }
   return result;
 }
@@ -378,5 +396,82 @@ export function fitViewport(
     scale,
     offsetX: size.width / 2 - centreX * scale,
     offsetY: size.height / 2 - centreY * scale,
+  };
+}
+
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Transform that fits the whole graph into a small minimap box.
+ *
+ * Unlike `fitViewport`, the scale is NOT floored: a graph spanning millions of
+ * units must still fit a 180px minimap. Returns null for an empty graph, so the
+ * caller hides the minimap instead of drawing an empty frame.
+ */
+export function minimapTransform(
+  points: readonly Point[],
+  size: { width: number; height: number },
+  padding = 6
+): Viewport | null {
+  const bounds = layoutBounds(points);
+  if (!bounds || size.width <= 0 || size.height <= 0) return null;
+  const spanX = Math.max(bounds.width, 1);
+  const spanY = Math.max(bounds.height, 1);
+  const usableWidth = Math.max(1, size.width - padding * 2);
+  const usableHeight = Math.max(1, size.height - padding * 2);
+  const scale = Math.min(1, Math.max(1e-6, Math.min(usableWidth / spanX, usableHeight / spanY)));
+  const centreX = (bounds.minX + bounds.maxX) / 2;
+  const centreY = (bounds.minY + bounds.maxY) / 2;
+  return {
+    scale,
+    offsetX: size.width / 2 - centreX * scale,
+    offsetY: size.height / 2 - centreY * scale,
+  };
+}
+
+/** The GRAPH-space rectangle currently visible in the canvas viewport. */
+export function graphVisibleRect(
+  viewport: Viewport,
+  size: { width: number; height: number }
+): Rect {
+  const scale = viewport.scale > 0 ? viewport.scale : 1;
+  return {
+    x: -viewport.offsetX / scale,
+    y: -viewport.offsetY / scale,
+    width: size.width / scale,
+    height: size.height / scale,
+  };
+}
+
+/**
+ * Map a graph-space rectangle into minimap space, clipped to the box.
+ *
+ * Clipping matters: when the canvas viewport is larger than the graph itself the
+ * indicator would otherwise spill outside the minimap frame.
+ */
+export function toMinimapRect(
+  rect: Rect,
+  transform: Viewport,
+  size: { width: number; height: number },
+  padding = 6
+): Rect {
+  const x = rect.x * transform.scale + transform.offsetX;
+  const y = rect.y * transform.scale + transform.offsetY;
+  const width = rect.width * transform.scale;
+  const height = rect.height * transform.scale;
+  const minX = Math.max(padding, x);
+  const minY = Math.max(padding, y);
+  const maxX = Math.min(size.width - padding, x + width);
+  const maxY = Math.min(size.height - padding, y + height);
+  return {
+    x: minX,
+    y: minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
   };
 }

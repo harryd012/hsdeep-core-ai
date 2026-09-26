@@ -19,19 +19,18 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Loader2, RefreshCw, RotateCcw, Search, Eye, Play } from "lucide-react";
+import { AlertTriangle, Loader2, Play, RefreshCw } from "lucide-react";
 
 import { getLiveTopology, type TopologyLive } from "../../lib/topologyApi";
+import { buildEmptyState, isGraphEmpty } from "../../lib/topology/emptyState";
+import { buildKpis } from "../../lib/topology/kpis";
 import {
-  LAYOUTS,
   fitViewport,
   layoutNodes,
   type LayoutKind,
   type Viewport,
 } from "../../lib/topology/layout";
 import {
-  DEVICE_STATE_VISUALS,
-  LINK_STATE_VISUALS,
   deviceState,
   freshnessLabel,
   isFreshnessCurrent,
@@ -49,6 +48,14 @@ import {
 import { isUnknownResource, resolveVendorVisual } from "../../lib/topology/vendors";
 import TopologyCanvas from "./TopologyCanvas";
 import TopologyDetailDrawer from "./TopologyDetailDrawer";
+import TopologyEmptyStatePanel from "./TopologyEmptyState";
+import TopologyKpiStrip from "./TopologyKpiStrip";
+import {
+  TopologyCanvasControls,
+  TopologyLegend,
+  TopologyMinimap,
+} from "./TopologyOverlays";
+import TopologyToolbar from "./TopologyToolbar";
 import type {
   FilterOptions,
   RenderEdge,
@@ -70,6 +77,7 @@ const EMPTY_FILTERS: TopologyFilters = {
   deviceTypes: [],
   relationshipTypes: [],
   evidence: [],
+  unidentifiedOnly: false,
 };
 
 const IDENTITY_VIEWPORT: Viewport = { scale: 1, offsetX: 60, offsetY: 60 };
@@ -334,6 +342,8 @@ function filterModel(model: RenderModel, filters: TopologyFilters, query: string
     ) {
       return false;
     }
+    // "Unclassified" is the backend's own recognition verdict, not a guess.
+    if (filters.unidentifiedOnly && !node.unidentified) return false;
     if (needle) {
       const haystack = [
         node.name,
@@ -382,7 +392,7 @@ function filterModel(model: RenderModel, filters: TopologyFilters, query: string
 
 export default function OperationalTopologyPanel() {
   // View state lives here, so a refresh updates DATA without resetting the view.
-  const [viewport, setViewport] = useState<Viewport>(IDENTITY_VIEWPORT);
+  const [viewportOverride, setViewportOverride] = useState<Viewport | null>(null);
   const [layout, setLayout] = useState<LayoutKind>("hierarchical");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -445,6 +455,17 @@ export default function OperationalTopologyPanel() {
     return new Map(placed.map((entry) => [entry.id, { x: entry.x, y: entry.y }]));
   }, [visible, layout]);
 
+  /**
+   * The viewport is DERIVED until an operator moves it: with no explicit
+   * override the graph fits itself, so a first load (or a layout switch) never
+   * opens on an off-screen graph. Zoom/pan/fit/reset set the override, and a
+   * refresh keeps it — which is what preserves the view across refreshes.
+   */
+  const viewport = useMemo(
+    () => viewportOverride ?? fitViewport([...positions.values()], size) ?? IDENTITY_VIEWPORT,
+    [viewportOverride, positions, size]
+  );
+
   const animatedEdgeIds = useMemo(() => {
     const budget = animationBudget(visible.edges.length);
     const allowed = new Set<string>();
@@ -489,7 +510,7 @@ export default function OperationalTopologyPanel() {
 
   const fit = useCallback(() => {
     const fitted = fitViewport([...positions.values()], size);
-    if (fitted) setViewport(fitted);
+    if (fitted) setViewportOverride(fitted);
   }, [positions, size]);
 
   const zoomBy = (factor: number) => {
@@ -498,7 +519,7 @@ export default function OperationalTopologyPanel() {
     const ratio = next / viewport.scale;
     const centreX = size.width / 2;
     const centreY = size.height / 2;
-    setViewport({
+    setViewportOverride({
       scale: next,
       offsetX: centreX - (centreX - viewport.offsetX) * ratio,
       offsetY: centreY - (centreY - viewport.offsetY) * ratio,
@@ -546,41 +567,85 @@ export default function OperationalTopologyPanel() {
     cursor: "pointer",
   });
 
+  const kpis = useMemo(() => (model ? buildKpis(model.summary) : []), [model]);
+
+  const nodeCount = visible.nodes.length;
+  const edgeCount = visible.edges.length;
+  /**
+   * Zero relationships means the honest empty state applies. Real device nodes
+   * are still drawn (they exist); no link is ever implied.
+   */
+  const showEmptyState = model !== null && isGraphEmpty(edgeCount);
+
+  const emptyState = useMemo(
+    () =>
+      buildEmptyState({
+        devices: model?.summary.devices ?? 0,
+        relationships: edgeCount,
+        interfaces: model?.summary.interfacesTotal ?? 0,
+        online: model?.summary.online ?? 0,
+        offline: model?.summary.offline ?? 0,
+        unidentified: model?.summary.unidentified ?? 0,
+        limitations: model?.limitations ?? [],
+      }),
+    [model, edgeCount]
+  );
+
+  /** Centre the viewport on a graph coordinate (the minimap's only job). */
+  const navigateTo = useCallback(
+    (x: number, y: number) => {
+      if (!size.width || !size.height) return;
+      setViewportOverride({
+        scale: viewport.scale,
+        offsetX: size.width / 2 - x * viewport.scale,
+        offsetY: size.height / 2 - y * viewport.scale,
+      });
+    },
+    [viewport.scale, size.width, size.height]
+  );
+
+  /** View-level freshness: LIVE DATA vs DATA STALE, from the backend's own state. */
   const live = model ? isFreshnessCurrent(model.freshnessState) : false;
   const generated = model ? new Date(model.generatedAt).toLocaleTimeString() : null;
-  const stateChips: DeviceState[] = [
-    "ONLINE",
-    "WARNING",
-    "OFFLINE",
-    "UNKNOWN",
-    "STALE",
-    "MAINTENANCE",
-  ];
 
   return (
-    <section style={{ padding: "4px 0 24px" }}>
+    <section
+      data-testid="topology-workspace"
+      style={{ display: "flex", flexDirection: "column", gap: 8, padding: "4px 0 12px" }}
+    >
       <header
+        data-testid="topology-header"
         style={{
           display: "flex",
           flexWrap: "wrap",
-          alignItems: "baseline",
-          gap: 12,
+          alignItems: "center",
+          gap: 10,
           justifyContent: "space-between",
+          paddingBottom: 6,
+          borderBottom: "1px solid var(--border)",
         }}
       >
-        <div>
-          <h1 style={{ fontSize: 18, fontWeight: 600, color: "var(--fg)", margin: 0 }}>
+        <div style={{ minWidth: 220 }}>
+          <h1
+            style={{
+              fontSize: 17,
+              fontWeight: 600,
+              color: "var(--fg)",
+              margin: 0,
+              letterSpacing: "0.2px",
+            }}
+          >
             Live Operational Topology
           </h1>
-          <p style={{ fontSize: 11, color: "var(--muted)", margin: "4px 0 0" }}>
+          <p style={{ fontSize: 11, color: "var(--muted)", margin: "3px 0 0" }}>
             Site → device → interface, from recorded relationships and telemetry only.
-            {model?.graphStatus ? ` Graph status: ${model.graphStatus}.` : ""}
           </p>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <span
             data-testid="freshness-badge"
+            title="Freshness of the newest telemetry the backend holds for this view"
             style={{
               fontSize: 11,
               letterSpacing: "0.5px",
@@ -591,11 +656,22 @@ export default function OperationalTopologyPanel() {
             {model ? ` · ${model.freshnessLabel.toLowerCase()}` : ""}
           </span>
           {generated ? (
-            <span style={{ fontSize: 11, color: "var(--muted)" }}>Updated {generated}</span>
+            <span data-testid="topology-updated" style={{ fontSize: 11, color: "var(--muted)" }}>
+              Updated {generated}
+            </span>
           ) : null}
           {model ? (
-            <span style={{ fontSize: 11, color: "var(--muted)" }}>
-              {model.devicesReporting} device(s) reporting
+            <span data-testid="topology-reporting" style={{ fontSize: 11, color: "var(--muted)" }}>
+              {model.devicesReporting} reporting
+            </span>
+          ) : null}
+          {model?.graphStatus ? (
+            <span
+              data-testid="topology-graph-status"
+              title="The graph engine's own completeness status"
+              style={{ fontSize: 11, color: "var(--muted)" }}
+            >
+              graph: {model.graphStatus}
             </span>
           ) : null}
 
@@ -604,14 +680,16 @@ export default function OperationalTopologyPanel() {
               fontSize: 11,
               color: "var(--muted)",
               display: "flex",
-              gap: 6,
+              gap: 5,
               alignItems: "center",
             }}
           >
-            Auto refresh
+            Auto
             <select
               value={refreshSeconds}
               onChange={(event) => setRefreshSeconds(Number(event.target.value))}
+              aria-label="Auto refresh interval"
+              data-testid="topology-auto-refresh"
               style={{
                 background: "transparent",
                 color: "var(--fg)",
@@ -634,6 +712,7 @@ export default function OperationalTopologyPanel() {
             onClick={() => void query.refetch()}
             style={{ ...chip(false), display: "inline-flex", gap: 6, alignItems: "center" }}
             aria-label="Refresh topology"
+            data-testid="topology-refresh"
           >
             {query.isFetching ? <Loader2 size={12} /> : <RefreshCw size={12} />}
             Refresh
@@ -642,9 +721,15 @@ export default function OperationalTopologyPanel() {
           <button
             type="button"
             onClick={() => setAnimateEnabled((value) => !value)}
-            style={{ ...chip(animateEnabled), display: "inline-flex", gap: 6, alignItems: "center" }}
+            style={{
+              ...chip(animateEnabled),
+              display: "inline-flex",
+              gap: 6,
+              alignItems: "center",
+            }}
             aria-pressed={animateEnabled}
-            title="Traffic animation is driven only by measured telemetry"
+            title="Traffic animation is driven only by measured interface counters"
+            data-testid="topology-animation-toggle"
           >
             <Play size={12} />
             {animateEnabled ? "Flow animation on" : "Flow animation off"}
@@ -654,8 +739,8 @@ export default function OperationalTopologyPanel() {
 
       {error ? (
         <div
+          data-testid="topology-error"
           style={{
-            marginTop: 12,
             padding: "8px 10px",
             border: "1px solid var(--red)",
             borderRadius: 8,
@@ -671,324 +756,129 @@ export default function OperationalTopologyPanel() {
         </div>
       ) : null}
 
+      {model ? <TopologyKpiStrip cards={kpis} /> : null}
+
       {model ? (
-        <div
-          data-testid="topology-summary"
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 18,
-            marginTop: 14,
-            padding: "10px 12px",
-            border: "1px solid var(--border)",
-            borderRadius: 10,
-            fontSize: 12,
-            color: "var(--fg)",
-          }}
-        >
-          {[
-            { label: "Devices", value: model.summary.devices, tone: undefined },
-            { label: "Online", value: model.summary.online, tone: "var(--green)" },
-            { label: "Warning", value: model.summary.warning, tone: "var(--amber)" },
-            { label: "Offline", value: model.summary.offline, tone: "var(--red)" },
-            { label: "Unknown", value: model.summary.unknown, tone: "var(--muted)" },
-            { label: "Stale", value: model.summary.stale, tone: "var(--muted)" },
-            { label: "Links", value: model.summary.links, tone: undefined },
-            { label: "Interfaces", value: model.summary.interfacesTotal, tone: undefined },
-            { label: "Unidentified", value: model.summary.unidentified, tone: undefined },
-          ].map((item) => (
-            <span
-              key={item.label}
-              style={{ display: "inline-flex", gap: 6, alignItems: "baseline" }}
-            >
-              <strong style={{ color: item.tone ?? "var(--fg)" }}>{item.value}</strong>
-              <span style={{ color: "var(--muted)" }}>{item.label}</span>
-            </span>
-          ))}
-          <span style={{ display: "inline-flex", gap: 6, alignItems: "baseline" }}>
-            <strong
-              style={{ color: model.summary.trafficMeasured ? "var(--fg)" : "var(--muted)" }}
-            >
-              {model.summary.trafficMeasured
-                ? `${model.summary.rxLabel ?? "N/A"} ↓ / ${model.summary.txLabel ?? "N/A"} ↑`
-                : "No interface telemetry"}
-            </strong>
-            <span style={{ color: "var(--muted)" }}>Traffic</span>
-          </span>
-        </div>
-      ) : null}
-
-      {model && model.limitations.length ? (
-        <div
-          style={{
-            marginTop: 10,
-            padding: "8px 10px",
-            border: "1px dashed var(--border)",
-            borderRadius: 8,
-            fontSize: 11,
-            color: "var(--muted)",
-          }}
-        >
-          {model.limitations.map((limitation) => (
-            <div key={limitation}>• {limitation}</div>
-          ))}
-        </div>
-      ) : null}
-
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 10,
-          alignItems: "center",
-          marginTop: 12,
-        }}
-      >
-        <span
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-            border: "1px solid var(--border)",
-            borderRadius: 8,
-            padding: "4px 8px",
-          }}
-        >
-          <Search size={13} aria-hidden="true" />
-          <input
-            value={queryText}
-            onChange={(event) => setQueryText(event.target.value)}
-            placeholder="Search hostname, IP, serial, vendor, model, site…"
-            aria-label="Search topology"
-            style={{
-              background: "transparent",
-              border: "none",
-              outline: "none",
-              color: "var(--fg)",
-              fontSize: 12,
-              width: 260,
-            }}
-          />
-        </span>
-
-        <label
-          style={{
-            fontSize: 11,
-            color: "var(--muted)",
-            display: "flex",
-            gap: 6,
-            alignItems: "center",
-          }}
-        >
-          Site
-          <select
-            value={siteFilter}
-            onChange={(event) => setSiteFilter(event.target.value)}
-            style={{
-              background: "transparent",
-              color: "var(--fg)",
-              border: "1px solid var(--border)",
-              borderRadius: 6,
-              padding: "2px 4px",
-              fontSize: 11,
-            }}
-          >
-            <option value="">All sites</option>
-            {(model?.siteOptions ?? []).map((site) => (
-              <option key={site.id} value={site.id.replace(/^site:/, "")}>
-                {site.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <span style={{ display: "inline-flex", gap: 6 }}>
-          {LAYOUTS.map((entry) => (
-            <button
-              key={entry.kind}
-              type="button"
-              onClick={() => setLayout(entry.kind)}
-              style={chip(layout === entry.kind)}
-              title={entry.hint}
-            >
-              {entry.label}
-            </button>
-          ))}
-        </span>
-
-        <span style={{ display: "inline-flex", gap: 6 }}>
-          <button type="button" onClick={() => zoomBy(1.2)} style={chip(false)} aria-label="Zoom in">
-            +
-          </button>
-          <button
-            type="button"
-            onClick={() => zoomBy(1 / 1.2)}
-            style={chip(false)}
-            aria-label="Zoom out"
-          >
-            −
-          </button>
-          <button type="button" onClick={fit} style={chip(false)}>
-            Fit
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewport(IDENTITY_VIEWPORT)}
-            style={{ ...chip(false), display: "inline-flex", gap: 6, alignItems: "center" }}
-          >
-            <RotateCcw size={12} /> Reset view
-          </button>
-        </span>
-      </div>
-
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 6,
-          alignItems: "center",
-          marginTop: 10,
-        }}
-      >
-        <Eye size={13} aria-hidden="true" />
-        {stateChips
-          .filter((state) => !options || options.states.includes(state))
-          .map((state) => (
-            <button
-              key={state}
-              type="button"
-              onClick={() => toggleState(state)}
-              style={chip(filters.states.includes(state))}
-            >
-              {DEVICE_STATE_VISUALS[state].label}
-            </button>
-          ))}
-        {(options?.vendors ?? []).map((vendor) => (
-          <button
-            key={vendor.key}
-            type="button"
-            onClick={() =>
-              setFilters((previous) => ({
-                ...previous,
-                vendors: previous.vendors.includes(vendor.key)
-                  ? previous.vendors.filter((entry) => entry !== vendor.key)
-                  : [...previous.vendors, vendor.key],
-              }))
-            }
-            style={chip(filters.vendors.includes(vendor.key))}
-          >
-            {vendor.label}
-          </button>
-        ))}
-        {(options?.deviceTypes ?? []).map((type) => (
-          <button
-            key={type}
-            type="button"
-            onClick={() =>
-              setFilters((previous) => ({
-                ...previous,
-                deviceTypes: previous.deviceTypes.includes(type)
-                  ? previous.deviceTypes.filter((entry) => entry !== type)
-                  : [...previous.deviceTypes, type],
-              }))
-            }
-            style={chip(filters.deviceTypes.includes(type))}
-          >
-            {type}
-          </button>
-        ))}
-        {(options?.relationshipTypes ?? []).map((type) => (
-          <button
-            key={type}
-            type="button"
-            onClick={() => toggleRelationship(type)}
-            style={chip(filters.relationshipTypes.includes(type))}
-          >
-            {type.replace(/_/g, " ")}
-          </button>
-        ))}
-        {["observed", "inferred", "unclassified", "active", "passive", "api"]
-          .filter(
-            (tag) =>
-              tag === "observed" ||
-              tag === "inferred" ||
-              (options?.classifications ?? []).includes(tag)
-          )
-          .map((tag) => (
-            <button
-              key={tag}
-              type="button"
-              onClick={() => toggleEvidence(tag as TopologyFilters["evidence"][number])}
-              style={chip(
-                filters.evidence.includes(tag as TopologyFilters["evidence"][number])
-              )}
-            >
-              {tag}
-            </button>
-          ))}
-        <button
-          type="button"
-          onClick={() => {
+        <TopologyToolbar
+          query={queryText}
+          onQueryChange={setQueryText}
+          siteFilter={siteFilter}
+          onSiteFilterChange={setSiteFilter}
+          siteOptions={model.siteOptions}
+          options={options}
+          filters={filters}
+          onToggleState={toggleState}
+          onToggleUnidentified={() =>
+            setFilters((previous) => ({
+              ...previous,
+              unidentifiedOnly: !previous.unidentifiedOnly,
+            }))
+          }
+          onToggleVendor={(key) =>
+            setFilters((previous) => ({
+              ...previous,
+              vendors: previous.vendors.includes(key)
+                ? previous.vendors.filter((entry) => entry !== key)
+                : [...previous.vendors, key],
+            }))
+          }
+          onToggleDeviceType={(type) =>
+            setFilters((previous) => ({
+              ...previous,
+              deviceTypes: previous.deviceTypes.includes(type)
+                ? previous.deviceTypes.filter((entry) => entry !== type)
+                : [...previous.deviceTypes, type],
+            }))
+          }
+          onToggleRelationship={toggleRelationship}
+          onToggleEvidence={toggleEvidence}
+          onClear={() => {
             setFilters(EMPTY_FILTERS);
             setQueryText("");
           }}
-          style={chip(false)}
-        >
-          Clear filters
-        </button>
-      </div>
+          layout={layout}
+          onLayoutChange={(next) => {
+            setLayout(next);
+            // A new layout has new coordinates: re-fit instead of keeping an
+            // override that would leave the graph off-screen.
+            setViewportOverride(null);
+          }}
+          resultCount={nodeCount}
+          totalCount={model.nodes.filter((node) => node.kind !== "site").length}
+        />
+      ) : null}
 
       <div
         ref={containerRef}
-        style={{ position: "relative", height: "clamp(420px, 60vh, 820px)", marginTop: 12 }}
+        data-testid="topology-canvas-shell"
+        style={{
+          position: "relative",
+          height: "clamp(480px, calc(100vh - 336px), 1400px)",
+          border: "1px solid var(--border)",
+          borderRadius: 10,
+          overflow: "hidden",
+          background: "rgba(2,6,23,0.55)",
+        }}
       >
         {!model ? (
-          <p style={{ fontSize: 12, color: "var(--muted)" }}>Loading live topology…</p>
-        ) : visible.nodes.length === 0 ? (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              height: "100%",
-              border: "1px dashed var(--border)",
-              borderRadius: 10,
-              fontSize: 12,
-              color: "var(--muted)",
-              textAlign: "center",
-              padding: 24,
-            }}
-          >
-            {model.nodes.length === 0
-              ? "No infrastructure resources are recorded for this tenant yet, so there is nothing to draw."
-              : "No resources match the current search and filters."}
-          </div>
+          <p style={{ padding: 16, fontSize: 12, color: "var(--muted)" }}>
+            Loading live topology…
+          </p>
+        ) : nodeCount === 0 ? (
+          <TopologyEmptyStatePanel state={emptyState} variant="full" />
         ) : (
-          <TopologyCanvas
-            model={visible}
-            positions={positions}
-            viewport={viewport}
-            onViewportChange={setViewport}
-            selectedNodeId={selectedNodeId}
-            selectedEdgeId={selectedEdgeId}
-            onSelectNode={(id) => {
-              setSelectedEdgeId(null);
-              setSelectedNodeId(id);
-            }}
-            onSelectEdge={(id) => {
-              setSelectedNodeId(null);
-              setSelectedEdgeId(id);
-            }}
-            onClearSelection={() => {
-              setSelectedNodeId(null);
-              setSelectedEdgeId(null);
-            }}
-            highlight={highlight}
-            reducedMotion={reducedMotion}
-            animateEnabled={animateEnabled}
-            animatedEdgeIds={animatedEdgeIds}
-          />
+          <>
+            <TopologyCanvas
+              model={visible}
+              positions={positions}
+              viewport={viewport}
+              onViewportChange={setViewportOverride}
+              selectedNodeId={selectedNodeId}
+              selectedEdgeId={selectedEdgeId}
+              onSelectNode={(id) => {
+                setSelectedEdgeId(null);
+                setSelectedNodeId(id);
+              }}
+              onSelectEdge={(id) => {
+                setSelectedNodeId(null);
+                setSelectedEdgeId(id);
+              }}
+              onClearSelection={() => {
+                setSelectedNodeId(null);
+                setSelectedEdgeId(null);
+              }}
+              highlight={highlight}
+              reducedMotion={reducedMotion}
+              animateEnabled={animateEnabled}
+              animatedEdgeIds={animatedEdgeIds}
+            />
+            {showEmptyState ? (
+              <TopologyEmptyStatePanel state={emptyState} variant="compact" />
+            ) : null}
+          </>
         )}
+
+        {model && nodeCount > 0 ? (
+          <>
+            <TopologyMinimap
+              nodes={visible.nodes}
+              positions={positions}
+              edgeCount={edgeCount}
+              viewport={viewport}
+              canvasSize={size}
+              onNavigate={navigateTo}
+            />
+            <TopologyCanvasControls
+              scale={viewport.scale}
+              onZoomIn={() => zoomBy(1.2)}
+              onZoomOut={() => zoomBy(1 / 1.2)}
+              onFit={fit}
+              onReset={() => setViewportOverride(IDENTITY_VIEWPORT)}
+              fullscreenTarget={containerRef}
+            />
+            <TopologyLegend />
+          </>
+        ) : null}
 
         <TopologyDetailDrawer
           node={selectedNode}
@@ -1000,33 +890,12 @@ export default function OperationalTopologyPanel() {
         />
       </div>
 
-      <div
-        style={{
-          marginTop: 10,
-          fontSize: 10,
-          color: "var(--muted)",
-          display: "flex",
-          gap: 14,
-          flexWrap: "wrap",
-        }}
-      >
-        <span>Legend</span>
-        {Object.values(DEVICE_STATE_VISUALS).map((visual) => (
-          <span key={visual.state} style={{ color: visual.color }}>
-            {visual.marker} {visual.label}
-          </span>
-        ))}
-        {Object.values(LINK_STATE_VISUALS).map((visual) => (
-          <span key={`link-${visual.state}`} style={{ color: visual.color }}>
-            — {visual.label}
-          </span>
-        ))}
-        {model && model.scopeHiddenNodes > 0 ? (
-          <span>
-            Site filter hides {model.scopeHiddenNodes} node(s) and {model.scopeHiddenEdges} link(s)
-          </span>
-        ) : null}
-      </div>
+      {model && model.scopeHiddenNodes > 0 ? (
+        <p style={{ fontSize: 10, color: "var(--muted)", margin: 0 }}>
+          Site filter hides {model.scopeHiddenNodes} node(s) and {model.scopeHiddenEdges} link(s)
+          outside the selected site.
+        </p>
+      ) : null}
     </section>
   );
 }

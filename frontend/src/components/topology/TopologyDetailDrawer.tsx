@@ -128,6 +128,8 @@ export default function TopologyDetailDrawer({ node, edge, onClose }: DetailDraw
 
   return (
     <aside
+      data-testid="topology-drawer"
+      role="complementary"
       style={{
         position: "absolute",
         top: 0,
@@ -192,7 +194,7 @@ function DeviceDetail({ node }: { node: RenderNode }) {
         {stateVisual.description}
       </p>
 
-      <Section title="IDENTITY">
+      <Section title="OVERVIEW">
         <Row label="Vendor" value={node.vendorLabel} />
         <Row label="Model" value={node.model} />
         <Row label="Device type" value={node.deviceTypeRaw ?? node.deviceType} />
@@ -237,14 +239,41 @@ function DeviceDetail({ node }: { node: RenderNode }) {
         )}
       </Section>
 
-      <Section title="TOPOLOGY EVIDENCE">
-        <Row label="Relationships" value={String(node.relationshipCount)} />
+      <Section title="RELATIONSHIPS">
+        <Row label="Recorded relationships" value={String(node.relationshipCount)} />
         {node.relationshipCount === 0 ? (
           <p style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
             No relationship evidence recorded: discovery proves this resource exists, not how it is
             connected.
           </p>
         ) : null}
+      </Section>
+
+      <Section title="TELEMETRY">
+        {node.interfaces?.hasTelemetry ? (
+          <>
+            <Row label="Traffic in" value={formatBps(node.rxBps)} />
+            <Row label="Traffic out" value={formatBps(node.txBps)} />
+            <Row label="Freshness" value={freshnessLabel(node.freshnessState)} />
+          </>
+        ) : (
+          <p style={{ fontSize: 11, color: "var(--muted)" }}>
+            No interface telemetry has been collected, so throughput is unavailable.
+          </p>
+        )}
+      </Section>
+
+      <Section title="EVIDENCE">
+        <Row label="Recognition" value={node.recognitionStatus} />
+        <Row label="Visual source" value={node.visual.source} />
+        <Row label="Visual signature" value={node.visual.signature} />
+        <Row label="Evidence type" value={node.visual.source === "generic" ? "unclassified" : null} />
+      </Section>
+
+      <Section title="EVENTS">
+        <p style={{ fontSize: 11, color: "var(--muted)" }}>
+          No data available — this view does not receive an event feed.
+        </p>
       </Section>
     </>
   );

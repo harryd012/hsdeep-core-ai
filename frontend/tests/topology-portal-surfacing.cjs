@@ -1,4 +1,4 @@
-/* Portal surfacing / integration verification for the Phase 9.5 live topology.
+﻿/* Portal surfacing / integration verification for the Phase 9.5 live topology.
  *
  *   node tests/topology-portal-surfacing.cjs
  *
@@ -16,6 +16,7 @@
  */
 const { chromium } = require('playwright');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 process.loadEnvFile(path.resolve(__dirname, '../.env.local'));
@@ -44,20 +45,27 @@ async function login(page) {
   await page.waitForTimeout(4000);
 }
 
-/** Summary strip values, read from the rendered DOM (never from the API). */
-async function readSummary(page) {
+/** KPI strip values, read from the rendered DOM (never from the API). */
+async function readKpis(page) {
   return page.evaluate(() => {
-    const strip = document.querySelector('[data-testid="topology-summary"]');
+    const strip = document.querySelector('[data-testid="topology-kpi-strip"]');
     if (!strip) return null;
     const out = {};
-    strip.querySelectorAll('span').forEach((span) => {
-      const strong = span.querySelector('strong');
-      if (!strong) return;
-      const label = span.textContent.replace(strong.textContent, '').trim();
-      if (label) out[label] = strong.textContent.trim();
+    strip.querySelectorAll('[data-testid^="kpi-"]').forEach((card) => {
+      const key = card.getAttribute('data-testid');
+      if (!key || key.endsWith('-value')) return;
+      const value = card.querySelector('[data-testid$="-value"]');
+      if (value) out[key.replace('kpi-', '')] = value.textContent.trim();
     });
     return out;
   });
+}
+
+/** The toolbar's "results/total" counter. */
+async function readCounter(page) {
+  const text = await page.locator('[data-testid="topology-search"]').locator('..').innerText();
+  const match = text.match(/(\d+)\s*\/\s*(\d+)/);
+  return match ? { results: Number(match[1]), total: Number(match[2]) } : null;
 }
 
 async function canvasStats(page) {
@@ -94,7 +102,7 @@ async function openRoute(page, route) {
     await page.goto(`${UI}${route}`, { waitUntil: 'domcontentloaded', timeout: 90000 });
   }
   await page
-    .waitForSelector('[data-testid="topology-summary"]', { timeout: 90000 })
+    .waitForSelector('[data-testid="topology-kpi-strip"]', { timeout: 90000 })
     .catch(() => {});
   return { relogged, url: page.url() };
 }
@@ -131,7 +139,7 @@ async function openRoute(page, route) {
     // Wait for the workspace to actually render. A dev-server compile of this
     // route can exceed any fixed sleep, so the selector is the signal.
     await page
-      .waitForSelector('[data-testid="topology-summary"]', { timeout: 90000 })
+      .waitForSelector('[data-testid="topology-kpi-strip"]', { timeout: 90000 })
       .catch(() => {});
     check(
       'clicking Topology navigates to the Phase 9.5 route',
@@ -151,22 +159,69 @@ async function openRoute(page, route) {
     const badgeText = (await badge.count()) ? (await badge.innerText()).trim() : '';
     check('freshness badge renders', badgeText.length > 0, badgeText.replace(/\s+/g, ' '));
 
-    const summary = await readSummary(page);
-    check('summary strip renders', summary !== null, summary ? Object.keys(summary).join(',') : 'missing');
-    const deviceCount = summary ? Number(summary.Devices) : 0;
-    check('summary reports the real device count', deviceCount > 0, `devices=${deviceCount}`);
+    const kpis = await readKpis(page);
+    check('KPI strip renders', kpis !== null, kpis ? Object.keys(kpis).join(',') : 'missing');
+    const deviceCount = kpis ? Number(kpis.devices) : 0;
+    check('KPI strip reports the real device count', deviceCount > 0, `devices=${deviceCount}`);
     check(
-      'summary reports zero links (no relationship evidence)',
-      summary !== null && Number(summary.Links) === 0,
-      summary ? `links=${summary.Links}` : null
+      'KPI strip reports zero links (no relationship evidence)',
+      kpis !== null && Number(kpis.links) === 0,
+      kpis ? `links=${kpis.links}` : null
+    );
+    check(
+      'KPI strip separates online from offline from real operational state',
+      kpis !== null && Number(kpis.online) > 0 && Number(kpis.offline) > 0,
+      kpis ? `online=${kpis.online} offline=${kpis.offline}` : null
+    );
+    check(
+      'KPI strip reports zero interfaces and the real unclassified count',
+      kpis !== null && Number(kpis.interfaces) === 0 && Number(kpis.unidentified) > 0,
+      kpis ? `interfaces=${kpis.interfaces} unidentified=${kpis.unidentified}` : null
+    );
+    check(
+      'traffic KPI does not claim a measurement that does not exist',
+      kpis !== null &&
+        (/no telemetry/i.test(kpis.traffic) || /bps|Kbps|Mbps|Gbps|Tbps/.test(kpis.traffic)),
+      kpis ? `traffic=${kpis.traffic}` : null
     );
 
-    /* 5 + 6: honest empty state, unknown resources, no fabricated links. */
+    /* 5: the zero-relationship empty state is designed, not blank. */
+    const emptyState = page.locator('[data-testid="topology-empty-state"]');
+    check('empty-state panel is present', (await emptyState.count()) > 0);
+    const emptyText = (await emptyState.count()) ? await emptyState.innerText() : '';
+    check(
+      'empty state states topology relationships are not yet discovered',
+      /topology relationships not yet discovered/i.test(emptyText),
+      emptyText.split('\n')[0] ?? null
+    );
+    check(
+      'empty state reports the real counts',
+      emptyText.includes(String(deviceCount)) &&
+        emptyText.includes('RELATIONSHIPS') &&
+        emptyText.includes('INTERFACES'),
+      null
+    );
     const body = await page.locator('body').innerText();
     check(
       'empty relationship state is stated honestly',
       body.includes('No network relationship data has been discovered')
     );
+
+    /* 5b: the canvas is the primary workspace, not a strip. */
+    const shell = await page.locator('[data-testid="topology-canvas-shell"]').boundingBox();
+    const viewport = page.viewportSize() ?? { width: 1600, height: 1000 };
+    check(
+      'canvas uses the available viewport height',
+      shell !== null && shell.height >= viewport.height * 0.45,
+      shell ? `height=${Math.round(shell.height)} of ${viewport.height}` : 'no canvas'
+    );
+    check(
+      'canvas spans the workspace width',
+      shell !== null && shell.width >= viewport.width * 0.75,
+      shell ? `width=${Math.round(shell.width)}` : null
+    );
+
+    /* 6: honesty on the canvas itself. */
     const stats = await canvasStats(page);
     check('no fabricated links are drawn', stats !== null && stats.edgeLines === 0);
     check(
@@ -180,42 +235,129 @@ async function openRoute(page, route) {
       `unknown=${stats ? stats.unknownResourceNodes : 0}`
     );
 
-    /* 5b: real operational state is surfaced (this tenant has both up and down). */
+    /* 7: overlays exist and explain the semantics they draw. */
     check(
-      'summary shows offline devices from real operational state',
-      summary !== null && Number(summary.Offline) > 0,
-      summary ? `offline=${summary.Offline}` : null
+      'legend is present',
+      (await page.locator('[data-testid="topology-legend"]').count()) > 0
+    );
+    const legendText = await page.locator('[data-testid="topology-legend"]').innerText();
+    check(
+      'legend explains device and link states',
+      /Online/i.test(legendText) && /Offline/i.test(legendText) && /Up/i.test(legendText),
+      legendText.replace(/\s+/g, ' ').slice(0, 90)
     );
     check(
-      'summary shows online devices from real operational state',
-      summary !== null && Number(summary.Online) > 0,
-      summary ? `online=${summary.Online}` : null
+      'minimap is present for a real graph',
+      (await page.locator('[data-testid="topology-minimap"]').count()) > 0
     );
 
-    /* 6b: the drawer opens from the canvas and shows the vendor registry output. */
+    /* 8: the floating controls actually work. */
+    const controls = page.locator('[data-testid="topology-canvas-controls"]');
+    const zoomIn = controls.locator('button[aria-label="Zoom in"]');
+    const fitButton = controls.locator('button[aria-label="Fit to screen"]');
+    const resetButton = controls.locator('button[aria-label="Reset view"]');
+    check(
+      'zoom / fit / reset controls are present',
+      (await zoomIn.count()) > 0 && (await fitButton.count()) > 0 && (await resetButton.count()) > 0
+    );
+    const scaleLabel = async () => (await controls.innerText()).trim().split('\n').pop();
+    await zoomIn.click();
+    await page.waitForTimeout(400);
+    const zoomed = await scaleLabel();
+    check('zoom in changes the scale', zoomed !== '100%', `scale=${zoomed}`);
+    await fitButton.click();
+    await page.waitForTimeout(700);
+    const fitted = await scaleLabel();
+    check('fit to screen recomputes the view', fitted !== zoomed, `scale=${fitted}`);
+    await resetButton.click();
+    await page.waitForTimeout(400);
+    const reset = await scaleLabel();
+    check('reset returns to 100%', reset === '100%', `scale=${reset}`);
+
+    /* 9: search and filters operate on the real rows. */
+    const initial = await readCounter(page);
+    check(
+      'search counter shows the real node total',
+      initial !== null && initial.total > 0 && initial.results === initial.total,
+      JSON.stringify(initial)
+    );
+    await page.locator('[data-testid="topology-search"]').fill('zzz-no-such-device');
+    await page.waitForTimeout(800);
+    const none = await readCounter(page);
+    check('a non-matching search filters everything out', none !== null && none.results === 0, JSON.stringify(none));
+    await page.locator('[data-testid="topology-search"]').fill('');
+    await page.waitForTimeout(800);
+    await page.locator('[data-testid="topology-more-filters"]').click();
+    await page.waitForTimeout(300);
+    check(
+      'the filter panel opens',
+      (await page.locator('[data-testid="topology-filter-panel"]').count()) > 0
+    );
+    await page.locator('[data-testid="topology-clear"]').click();
+    await page.waitForTimeout(600);
+    const restored = await readCounter(page);
+    check(
+      'clearing filters restores every row',
+      restored !== null && initial !== null && restored.results === initial.results,
+      JSON.stringify(restored)
+    );
+
+    /* 10: layout switching keeps the workspace alive. */
+    await page.locator('[data-testid="topology-layout"]').selectOption('force');
+    await page.waitForTimeout(1200);
+    check(
+      'switching layout re-renders without losing the graph',
+      (await page.locator('[role="application"] button').count()) > 0
+    );
+    await page.locator('[data-testid="topology-layout"]').selectOption('hierarchical');
+    await page.waitForTimeout(800);
+
+    /* 11: the drawer opens from the canvas and shows only real sections. */
     const firstNode = page.locator('[role="application"] button').first();
     if ((await firstNode.count()) > 0) {
       await firstNode.click();
-      await page.waitForTimeout(1500);
-      const drawer = page.locator('aside[aria-label="Topology detail"]');
+      await page.waitForTimeout(1200);
+      const drawer = page.locator('[data-testid="topology-drawer"]');
       const drawerText = (await drawer.count()) ? await drawer.innerText() : '';
       check('clicking a device opens the detail drawer', drawerText.length > 0);
+      check('drawer shows the resolved visual source', drawerText.includes('Visual source'));
+      check('drawer names the unknown resource', drawerText.includes('Unknown Resource'));
       check(
-        'device drawer shows the resolved visual source',
-        drawerText.includes('Visual source'),
-        drawerText ? drawerText.split('\n').slice(0, 4).join(' / ') : null
+        'drawer is sectioned for investigation',
+        ['OVERVIEW', 'OPERATIONAL STATE', 'INTERFACES', 'RELATIONSHIPS', 'TELEMETRY', 'EVIDENCE', 'EVENTS'].every(
+          (section) => drawerText.toUpperCase().includes(section)
+        ),
+        null
       );
-      check('device drawer names the unknown resource', drawerText.includes('Unknown Resource'));
+      check(
+        'sections without backend data say so instead of inventing values',
+        /No data available|No interface telemetry has been collected|No interfaces have been collected/.test(
+          drawerText
+        )
+      );
       await page.keyboard.press('Escape');
       await page.waitForTimeout(500);
     } else {
       check('clicking a device opens the detail drawer', false, 'no node button found');
     }
 
+    /* 12: the traffic-animation toggle is a real control. */
+    const animationToggle = page.locator('[data-testid="topology-animation-toggle"]');
+    const animationBefore = await animationToggle.getAttribute('aria-pressed');
+    await animationToggle.click();
+    await page.waitForTimeout(300);
+    const animationAfter = await animationToggle.getAttribute('aria-pressed');
+    check(
+      'traffic animation toggle changes state',
+      animationBefore !== animationAfter,
+      `${animationBefore} -> ${animationAfter}`
+    );
+    await animationToggle.click();
+
     /* 7: direct URL navigation after login. */
     const direct = await openRoute(page, TOPOLOGY_ROUTE);
-    const directSummary = await readSummary(page);
-    const directDevices = directSummary ? Number(directSummary.Devices) : 0;
+    const directSummary = await readKpis(page);
+    const directDevices = directSummary ? Number(directSummary.devices) : 0;
     check(
       'direct URL navigation works',
       direct.url.includes(TOPOLOGY_ROUTE),
@@ -224,7 +366,7 @@ async function openRoute(page, route) {
     check(
       'direct URL renders the graph, not the login form',
       (await page.locator('input[type=password]').count()) === 0 &&
-        (await page.locator('[data-testid="topology-summary"]').count()) > 0,
+        (await page.locator('[data-testid="topology-kpi-strip"]').count()) > 0,
       `relogin=${direct.relogged}`
     );
 
@@ -234,7 +376,7 @@ async function openRoute(page, route) {
     try {
       // Wait for the workspace itself rather than a fixed sleep: a dev-server
       // recompile can take longer than any constant we could pick.
-      await page.waitForSelector('[data-testid="topology-summary"]', { timeout: 90000 });
+      await page.waitForSelector('[data-testid="topology-kpi-strip"]', { timeout: 90000 });
     } catch {
       reloaded = false;
     }
@@ -244,7 +386,7 @@ async function openRoute(page, route) {
       reloggedOnReload = retry.relogged;
       reloaded = true;
     }
-    const afterReload = await readSummary(page);
+    const afterReload = await readKpis(page);
     check(
       'browser refresh keeps the workspace rendered',
       reloaded && afterReload !== null,
@@ -252,14 +394,39 @@ async function openRoute(page, route) {
     );
     check(
       'browser refresh keeps the same real data',
-      afterReload !== null && Number(afterReload.Devices) === directDevices,
-      afterReload ? `devices=${afterReload.Devices}` : null
+      afterReload !== null && Number(afterReload.devices) === directDevices,
+      afterReload ? `devices=${afterReload.devices}` : null
     );
     check(
       'sidebar navigation and direct navigation agree',
       directDevices > 0 && directDevices === deviceCount,
       `sidebar=${deviceCount} direct=${directDevices}`
     );
+
+    /* 13: visual evidence, written OUTSIDE the repo so the worktree stays clean. */
+    try {
+      const captures = path.join(os.tmpdir(), 'hsdeep-topology-captures');
+      fs.mkdirSync(captures, { recursive: true });
+      await page.setViewportSize({ width: 1600, height: 1000 });
+      await page.waitForTimeout(800);
+      await page.screenshot({ path: path.join(captures, '01-workspace.png') });
+      const node = page.locator('[role="application"] button').first();
+      if ((await node.count()) > 0) {
+        await node.click();
+        await page.waitForTimeout(900);
+        await page.screenshot({ path: path.join(captures, '02-device-drawer.png') });
+      }
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await page.waitForTimeout(800);
+      await page.screenshot({ path: path.join(captures, '03-narrow-viewport.png') });
+      check('evidence screenshots captured', true, captures);
+    } catch (error) {
+      check(
+        'evidence screenshots captured',
+        false,
+        String(error && error.message ? error.message : error)
+      );
+    }
   } catch (error) {
     check(
       'run completed without throwing',

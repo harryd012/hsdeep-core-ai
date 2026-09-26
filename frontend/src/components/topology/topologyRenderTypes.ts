@@ -143,4 +143,6 @@ export interface TopologyFilters {
   deviceTypes: string[];
   relationshipTypes: string[];
   evidence: ("observed" | "inferred" | "manual" | "api" | "passive" | "active" | "unclassified")[];
+  /** Restrict to resources the backend never classified (recognition status). */
+  unidentifiedOnly: boolean;
 }
