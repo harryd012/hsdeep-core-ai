@@ -28,6 +28,14 @@ from app.schemas.site import SiteOut, SiteSummary
 from app.schemas.topology_graph import TopologyGraphOut
 from app.schemas.topology_live import TopologyLiveOut
 from app.services.infrastructure_overview_service import InfrastructureOverviewService
+from app.services.dependency_impact_service import (
+    DEFAULT_MAX_DEPTH,
+    DEFAULT_MAX_NODES,
+    MAX_ALLOWED_DEPTH,
+    MAX_ALLOWED_NODES,
+    DependencyImpactService,
+    ResourceNotFound,
+)
 from app.services.infrastructure_service import InfrastructureService
 from app.services.topology_graph_service import TopologyGraphService
 from app.services.topology_live_service import TopologyLiveService
@@ -206,3 +214,29 @@ async def get_topology(
     when the tenant has no sites/sources/devices.
     """
     return await service.tenant_topology(tenant_id)
+
+
+@router.get("/dependencies/{resource_id}")
+async def dependency_impact_view(
+    resource_id: uuid.UUID,
+    max_depth: int = Query(default=DEFAULT_MAX_DEPTH, ge=1, le=MAX_ALLOWED_DEPTH),
+    max_nodes: int = Query(default=DEFAULT_MAX_NODES, ge=1, le=MAX_ALLOWED_NODES),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dependencies and impact for one resource, from RECORDED evidence.
+
+    Tenant-scoped through `get_tenant_id`; the service reads only
+    `resource_relationships` and `devices` rows for that tenant, performs no
+    network access and needs no credential. Physical adjacency is reported under
+    `impact` only - it is never promoted to a service dependency - and every hop
+    carries its evidence source, freshness, resolution and conflict state so the
+    answer can be justified. Bounded by `max_depth` / `max_nodes`.
+    """
+    try:
+        return await DependencyImpactService(db).analyze(
+            tenant_id, resource_id, max_depth=max_depth, max_nodes=max_nodes
+        )
+    except ResourceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
