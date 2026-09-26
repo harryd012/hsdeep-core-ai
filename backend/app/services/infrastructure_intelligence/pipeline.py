@@ -88,6 +88,26 @@ def capability_of_metric(metric_type: str | None) -> str:
     return T.capability_for_metric(metric_type) or ""
 
 
+def capability_evidence(
+    assertion_evidence: dict | None,
+    capability: str,
+    collected: set[str] | frozenset[str],
+    classification: str | None,
+) -> dict:
+    """Provenance payload for ONE persisted capability assertion (Phase 9.4).
+
+    The classification is ADDED to whatever the assertion already carried - it
+    never replaces provider evidence - and is omitted entirely when the provider
+    has no declared collection method, because a fabricated classification is
+    worse than an absent one. This is metadata only: it cannot grant, widen or
+    imply any capability, and it never touches an Action-Plane flag.
+    """
+    payload = dict(assertion_evidence or {"collected": capability in collected})
+    if classification is not None:
+        payload["classification"] = classification
+    return payload
+
+
 def normalize_bundle(
     bundle,
     *,
@@ -254,12 +274,16 @@ class CanonicalTelemetrySaver:
         )
         from app.services.infrastructure_intelligence.providers import (
             capabilities_for_provider,
+            evidence_classification_for_provider,
         )
 
         now = observed_at or datetime.now(timezone.utc)
         type_of = device_type_by_id or {}
         provider = result.provider
         provider_caps = capabilities_for_provider(provider)
+        #: Phase 9.4 classification for every assertion this provider made, or
+        #: None when the provider declares no collection method (never guessed).
+        classification = evidence_classification_for_provider(provider)
 
         metrics_written = 0
         if include_metrics:
@@ -302,9 +326,8 @@ class CanonicalTelemetrySaver:
                     reason=assertion.reason,
                     provider=provider,
                     source=SOURCE_COLLECTOR,
-                    evidence=(
-                        assertion.evidence
-                        or {"collected": capability in collected}
+                    evidence=capability_evidence(
+                        assertion.evidence, capability, collected, classification
                     ),
                     asserted_at=now,
                 )

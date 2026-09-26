@@ -267,6 +267,51 @@ def capabilities_for_provider(provider: str | None) -> frozenset[str] | None:
     return PROVIDER_CAPABILITIES[provider]
 
 
+#: Evidence classification (Phase 9.4) for each provider a collector is wired
+#: for, answering "what kind of interaction produced this capability evidence?".
+#:
+#: Verified PER PROVIDER, never derived from ``PROVIDER_KINDS``: that grouping
+#: puts FortiGate (a REST integration) beside SNMP and ICMP (direct probes), so
+#: the kind is not a safe proxy for the collection method. Same reasoning for
+#: KIND_AGENT, which covers WinRM/WMI/SSH - all initiated by HSDEEP against the
+#: target, therefore ACTIVE.
+#:
+#: ``V.PROVIDER_MANUAL`` is deliberately ABSENT: operator-asserted facts were not
+#: collected by any mechanism, so they have no classification. Absence resolves
+#: to None and is never guessed.
+PROVIDER_EVIDENCE_CLASSIFICATION: dict[str, str] = {
+    # API integrations: HSDEEP asks a provider/controller/cloud API.
+    V.PROVIDER_PRTG: V.EVIDENCE_API,
+    V.PROVIDER_ZABBIX: V.EVIDENCE_API,
+    V.PROVIDER_FORTIGATE: V.EVIDENCE_API,
+    V.PROVIDER_FORTIMANAGER: V.EVIDENCE_API,
+    V.PROVIDER_MERAKI: V.EVIDENCE_API,
+    V.PROVIDER_VMWARE: V.EVIDENCE_API,
+    V.PROVIDER_KUBERNETES: V.EVIDENCE_API,
+    V.PROVIDER_AZURE: V.EVIDENCE_API,
+    V.PROVIDER_AWS: V.EVIDENCE_API,
+    V.PROVIDER_GCP: V.EVIDENCE_API,
+    # Direct interrogation of the target itself.
+    V.PROVIDER_SNMP: V.EVIDENCE_ACTIVE,
+    V.PROVIDER_ICMP: V.EVIDENCE_ACTIVE,
+    V.PROVIDER_SSH: V.EVIDENCE_ACTIVE,
+    V.PROVIDER_WMI: V.EVIDENCE_ACTIVE,
+    V.PROVIDER_WINRM: V.EVIDENCE_ACTIVE,
+}
+
+
+def evidence_classification_for_provider(provider: str | None) -> str | None:
+    """Classification of the evidence ``provider``'s collector produces.
+
+    ``None`` means "not stated for this provider" (manual entry, or a provider
+    with no declared collection method). It is never coerced into ACTIVE: a
+    capability row with no classification is honest, a mislabelled one is not.
+    """
+    if not provider:
+        return None
+    return PROVIDER_EVIDENCE_CLASSIFICATION.get(provider)
+
+
 def _descriptor(provider: str, wired: dict[str, str]) -> ProviderDescriptor:
     source_types = tuple(
         sorted(st for st, token in SOURCE_TYPE_TO_PROVIDER.items() if token == provider)

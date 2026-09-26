@@ -836,3 +836,72 @@ RECOGNITION_IDENTIFIED = "identified"
 RECOGNITION_UNKNOWN = "unknown"
 
 RECOGNITION_STATES: tuple[str, ...] = (RECOGNITION_IDENTIFIED, RECOGNITION_UNKNOWN)
+
+
+# ---------------------------------------------------------------------------
+# 7. Evidence classification (Phase 9.4).
+#
+# ``transport`` answers HOW evidence was obtained (icmp/tcp/snmp/ssh/http/api/
+# agent). It does NOT answer WHAT kind of interaction produced it, and the two
+# are not interchangeable: an SNMP walk and a vendor REST call are different
+# kinds of claim about a resource even when both cross the network.
+#
+# Three classifications exist, and they are the whole set. There is deliberately
+# no fourth "other" bucket, because a classification nobody can name is a
+# classification nobody can reason about later:
+#
+#   ACTIVE   HSDEEP initiated an interaction with the target itself.
+#   PASSIVE  the evidence was observed without interacting with the target.
+#   API      HSDEEP asked a provider/controller/cloud API about the target.
+#
+# Classification is PROVENANCE ONLY. It never identifies a resource, is never an
+# identity key, and never feeds recognition - identity stays deterministic and
+# evidence-based (recognition.identity / discovery.identity).
+# ---------------------------------------------------------------------------
+EVIDENCE_ACTIVE = "active"
+EVIDENCE_PASSIVE = "passive"
+EVIDENCE_API = "api"
+
+EVIDENCE_CLASSIFICATIONS: tuple[str, ...] = (
+    EVIDENCE_ACTIVE,
+    EVIDENCE_PASSIVE,
+    EVIDENCE_API,
+)
+
+#: Default classification for every transport this repository implements.
+#:
+#: This is a DATA table on purpose: adding a transport is one row, and reviewing
+#: a classification is reading one line. A transport absent from this table
+#: resolves to None (see ``evidence_classification``) and is NEVER guessed into
+#: ACTIVE - the first passive transport to arrive would otherwise be silently
+#: mislabelled as something HSDEEP did to the target.
+TRANSPORT_EVIDENCE_CLASSIFICATION: dict[str, str] = {
+    # HSDEEP interacts with the target itself.
+    "icmp": EVIDENCE_ACTIVE,
+    "tcp": EVIDENCE_ACTIVE,
+    "udp": EVIDENCE_ACTIVE,
+    "snmp": EVIDENCE_ACTIVE,
+    "ssh": EVIDENCE_ACTIVE,
+    "http": EVIDENCE_ACTIVE,
+    "https": EVIDENCE_ACTIVE,
+    "wmi": EVIDENCE_ACTIVE,
+    "winrm": EVIDENCE_ACTIVE,
+    # HSDEEP asks a provider/controller/cloud API about the target.
+    "api": EVIDENCE_API,
+    # An installed collector pushes observations it already made, so nothing in
+    # HSDEEP interacted with the target to obtain them.
+    "agent": EVIDENCE_PASSIVE,
+}
+
+
+def evidence_classification(transport: str | None) -> str | None:
+    """Canonical classification for ``transport``, or None when it is unknown.
+
+    None means "this transport is not one this platform can classify", and is
+    returned instead of ACTIVE on purpose. A caller that knows better states the
+    classification explicitly (``DiscoveryEvidence(classification=...)``), which
+    is exactly what a future passive (e.g. flow/Zeek) provider must do.
+    """
+    if not transport:
+        return None
+    return TRANSPORT_EVIDENCE_CLASSIFICATION.get(str(transport).strip().lower())

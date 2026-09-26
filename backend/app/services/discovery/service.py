@@ -621,6 +621,11 @@ def _probe_evidence(ev: DiscoveryEvidence) -> dict[str, Any]:
     return {
         "address": ev.address,
         "transport": ev.transport,
+        # Phase 9.4: WHAT kind of interaction produced this evidence
+        # (active | passive | api). Deliberately separate from ``transport``
+        # (HOW it was obtained); None when the transport cannot be classified -
+        # never guessed.
+        "classification": ev.classification,
         "source": ev.source,
         "provider": ev.provider,
         "reachable": ev.reachable,

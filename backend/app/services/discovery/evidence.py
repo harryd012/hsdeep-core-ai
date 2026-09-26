@@ -16,6 +16,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+#: The canonical evidence classification lives in ONE place - the provider-neutral
+#: vocabulary - so a future Nmap / Zeek / cloud provider imports the same three
+#: tokens instead of declaring its own (Phase 9.4).
+from app.services.infrastructure_intelligence.vocabulary import (
+    EVIDENCE_CLASSIFICATIONS,
+    evidence_classification,
+)
+
 TRANSPORT_ICMP = "icmp"
 TRANSPORT_TCP = "tcp"
 TRANSPORT_SNMP = "snmp"
@@ -48,6 +56,12 @@ class DiscoveryEvidence:
 
     address: str
     transport: str = TRANSPORT_ICMP
+    #: ACTIVE | PASSIVE | API - WHAT kind of interaction produced this evidence
+    #: (Phase 9.4). Deliberately a SEPARATE axis from ``transport`` (HOW it was
+    #: obtained), and never derived from a vendor or product name. Unset, it is
+    #: filled from the transport in ``__post_init__``; a transport this platform
+    #: cannot classify stays None instead of being guessed.
+    classification: str | None = None
     provider: str | None = None
     source: str | None = None
     hostname: str | None = None
@@ -70,11 +84,32 @@ class DiscoveryEvidence:
     #: untouched provider payload for audit/debugging (never contains secrets)
     raw_evidence: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """Fill the classification from the transport, or validate it.
+
+        Derivation is a deterministic data lookup and only runs when the caller
+        stated nothing. An explicitly stated value must be one of the three
+        canonical tokens, so a typo fails loudly here rather than becoming a
+        fourth classification nobody understands six months later.
+        """
+        if self.classification is None:
+            self.classification = evidence_classification(self.transport)
+        elif self.classification not in EVIDENCE_CLASSIFICATIONS:
+            raise ValueError(
+                f"unknown evidence classification {self.classification!r}; "
+                f"expected one of {list(EVIDENCE_CLASSIFICATIONS)}"
+            )
+
     def recognition_input(self) -> dict[str, Any]:
         """Evidence dict for ``recognition.engine.recognize``.
 
         Only populated fields are emitted, so the recogniser can tell "no
         evidence" apart from "evidence says empty".
+
+        ``classification`` is deliberately NOT passed: it records provenance,
+        not identity. Feeding it to recognition would make identity depend on
+        how a fact was obtained, which is exactly what deterministic identity
+        must not do.
         """
         out: dict[str, Any] = {"ip": self.address}
         mapping = {
@@ -104,6 +139,10 @@ class DiscoveryEvidence:
         Used across polls: a later poll that lost a signal (e.g. SNMP went
         unreachable) must not erase evidence an earlier poll obtained. The
         newer non-empty value wins; otherwise the older value is preserved.
+
+        ``classification`` follows the same rule: a later observation whose
+        transport cannot be classified does NOT blank the classification the
+        earlier observation established.
         """
         def pick(new: Any, old: Any) -> Any:
             return new if new not in (None, "", []) else old
@@ -129,6 +168,7 @@ class DiscoveryEvidence:
             availability_zone=pick(
                 other.availability_zone, self.availability_zone
             ),
+            classification=pick(other.classification, self.classification),
             capabilities=sorted(set(self.capabilities) | set(other.capabilities)),
             neighbors=other.neighbors or self.neighbors,
             reachable=(
