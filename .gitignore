@@ -55,3 +55,77 @@ next-env.d.ts
 
 # OS files
 .DS_Store
+
+# ---------------------------------------------------------------------------
+# Additional hygiene. Verified with `git ls-files -i -c --exclude-standard`:
+# no currently tracked file matches any pattern below, so these only affect
+# untracked local artifacts.
+# ---------------------------------------------------------------------------
+
+# Environment files: every variant is ignored, examples stay opt-in so a
+# template can be committed deliberately. A real backend/.env exists on disk
+# and stays ignored.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Keys, certificates and keystores
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+.ppk
+
+# Local databases
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# Python tool caches
+.mypy_cache/
+.ruff_cache/
+
+# Frontend tool caches
+.eslintcache
+coverage/
+.nyc_output/
+
+# Root-level diagnostics / scratch artifacts
+/_*.txt
+/backend_*_err.txt
+/backend_*_log.txt
+/inspect*.py
+/repo-files.txt
+/prtg_*.html
+/*.png
+
+# Frontend scratch: probe/fix/audit scripts and screenshots. Project config
+# (package.json, tsconfig.json, next.config.ts, eslint.config.mjs, Dockerfile,
+# postcss.config.mjs, pnpm-workspace.yaml, README.md, .dockerignore) is NOT
+# matched by any of these.
+frontend/_*
+frontend/*.png
+frontend/*probe*.js
+frontend/inspect*.js
+frontend/audit_*.js
+frontend/measure*.js
+frontend/dom_*.js
+frontend/debug_*.js
+frontend/fix_*.js
+frontend/check_soc_table.js
+frontend/screenshot-verify.js
+frontend/shot-one.js
+frontend/verify-density.js
+frontend/qa-shots/
+frontend/screenshots/
+frontend/validation_screenshots/
+frontend/layout-validation/
+
+# Shell redirection artifact (file literally named "nul'")
+frontend/nul'
+
