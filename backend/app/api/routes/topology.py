@@ -25,6 +25,7 @@ from app.schemas.topology_link import (
     TopologyLinkSummary,
     TopologyLinkUpdate,
 )
+from app.schemas.relationship_materialization import RelationshipMaterializationOut
 from app.schemas.topology import (
     VALID_RELATIONSHIP_STATUSES,
     VALID_RELATIONSHIP_TYPES,
@@ -38,6 +39,7 @@ from app.schemas.topology import (
     TopologyNeighborsOut,
     TopologySummary,
 )
+from app.services.relationship_evidence_service import RelationshipEvidenceService
 from app.services.topology_service import TopologyService
 
 router = APIRouter(prefix="/topology", tags=["topology"])
@@ -104,6 +106,38 @@ async def create_relationship(
     )
     await db.commit()
     return edge
+
+
+@router.post(
+    "/relationships/materialize",
+    response_model=RelationshipMaterializationOut,
+    dependencies=[Depends(require_active_subscription)],
+)
+async def materialize_relationships(
+    dry_run: bool = Query(
+        default=True,
+        description="Report what would be written without writing anything.",
+    ),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Convert ALREADY-RECORDED evidence into relationship rows.
+
+    Passive and non-invasive: no probing, no scanning, no inference. The sources
+    are recorded structure only (``devices.parent_resource_id`` -> ``contains``,
+    ``bgp_neighbors`` -> ``peers_with``). An endpoint that does not resolve to a
+    device in this tenant produces NO edge, and the report explains why any
+    source contributed nothing.
+
+    Defaults to a dry run so the plan can be inspected before anything is
+    written.
+    """
+    service = RelationshipEvidenceService(db)
+    report = await service.materialize(tenant_id, dry_run=dry_run)
+    # get_db() does not commit; every write route in this module commits itself.
+    # Without this the materialised edges would be rolled back on request exit.
+    await db.commit()
+    return report
 
 
 @router.get("/relationships", response_model=ResourceRelationshipPagination)

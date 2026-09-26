@@ -814,12 +814,18 @@ EVIDENCE_SOURCE_BGP = "bgp"
 EVIDENCE_SOURCE_SDWAN = "sdwan"
 EVIDENCE_SOURCE_CLOUD = "cloud"
 EVIDENCE_SOURCE_MANUAL = "manual"
+#: Recorded structural binding (Phase 9.6): an edge materialised from a column or
+#: row the platform already persisted (e.g. ``devices.parent_resource_id``), not
+#: from a live observation. Deliberately NOT in the classification table below:
+#: nothing recorded HOW the binding was obtained, so it stays unclassified rather
+#: than being presented as something HSDEEP observed itself.
+EVIDENCE_SOURCE_INVENTORY = "inventory"
 
 RELATIONSHIP_EVIDENCE_SOURCES: tuple[str, ...] = (
     EVIDENCE_SOURCE_LLDP, EVIDENCE_SOURCE_CDP, EVIDENCE_SOURCE_ARP,
     EVIDENCE_SOURCE_MAC, EVIDENCE_SOURCE_SNMP, EVIDENCE_SOURCE_ROUTING,
     EVIDENCE_SOURCE_BGP, EVIDENCE_SOURCE_SDWAN, EVIDENCE_SOURCE_CLOUD,
-    EVIDENCE_SOURCE_MANUAL,
+    EVIDENCE_SOURCE_MANUAL, EVIDENCE_SOURCE_INVENTORY,
 )
 
 #: Key under which a relationship's per-source evidence ledger is stored in

@@ -124,6 +124,26 @@ class BgpNeighborRepository:
         stmt = stmt.order_by(BgpNeighbor.neighbor_ip).limit(limit).offset(offset)
         return list((await self.db.execute(stmt)).scalars().all())
 
+    async def list_for_tenant(
+        self, tenant_id: uuid.UUID, *, limit: int = 10_000
+    ) -> list[BgpNeighbor]:
+        """Every BGP neighbour recorded for a tenant, in ONE query.
+
+        Added for Phase 9.6 relationship materialisation, which converts recorded
+        peering evidence into edges for the whole tenant at once. Mirrors
+        ``list_for_resource`` above; soft-deleted rows are excluded.
+        """
+        stmt = (
+            select(BgpNeighbor)
+            .where(
+                BgpNeighbor.tenant_id == tenant_id,
+                BgpNeighbor.is_deleted.is_(False),
+            )
+            .order_by(BgpNeighbor.resource_id, BgpNeighbor.neighbor_ip)
+            .limit(limit)
+        )
+        return list((await self.db.execute(stmt)).scalars().all())
+
     async def count_for_resource(
         self, resource_id: uuid.UUID, tenant_id: uuid.UUID
     ) -> int:
