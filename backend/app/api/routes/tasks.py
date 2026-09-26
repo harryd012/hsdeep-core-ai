@@ -4,7 +4,7 @@ Task API routes — task lifecycle management.
 from __future__ import annotations
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_tenant_id as get_current_tenant
@@ -105,15 +105,44 @@ async def count_tasks_by_status(
     return await service.count_by_status(tenant_id, assigned_agent_id=assigned_agent_id)
 
 
+def _request_actor(request: Request) -> str | None:
+    """The authenticated human behind a request, for audit attribution.
+
+    The principal is resolved once by the auth layer and published on
+    ``request.state`` (see ``_publish_principal`` in ``app.core.auth``), so this
+    reads the already-resolved identity instead of parsing credentials itself:
+    no second identity system, no token/password handling, and nothing
+    sensitive is ever stored. Only the human-readable identity already persisted
+    for the user (their email) or, failing that, their stable id is recorded.
+
+    Returns ``None`` when the request carries no principal, so the service keeps
+    its existing fallback rather than inventing a user.
+    """
+    principal = getattr(getattr(request, "state", None), "principal", None)
+    if principal is None:
+        return None
+    email = getattr(principal, "email", None)
+    if email:
+        return str(email)
+    user_id = getattr(principal, "user_id", None)
+    return f"user:{user_id}" if user_id else None
+
+
 @router.post("", response_model=TaskRead, status_code=status.HTTP_201_CREATED)
 async def create_task(
     body: TaskCreate,
+    request: Request,
     service: TaskService = Depends(get_task_service),
     tenant_id: uuid.UUID = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new task."""
-    task = await service.create_task(tenant_id, **body.model_dump())
+    """Create a new task.
+
+    Actor attribution (M9.12b): when the request was authenticated, the human
+    who created the task is recorded in the audit trail. A human API operation
+    is never silently attributed to ``SYSTEM``.
+    """
+    task = await service.create_task(tenant_id, actor=_request_actor(request), **body.model_dump())
     await db.commit()
     return task
 

@@ -182,3 +182,20 @@ class TestDispatchQueuedTasks:
             assert second.status == "assigned"
             assert second.assigned_agent_id == first_agent
             assert second.assigned_at == first_at
+
+
+@pytest.fixture(autouse=True)
+def _automation_enabled_for_dispatch_tests(monkeypatch):
+    """These tests exercise AUTOMATIC dispatch, which the product runs only when
+    an administrator has explicitly enabled it (Phase 9.12 / M9.12b).
+
+    The default stays OFF - test_agent_orchestration_policy.py asserts that - and
+    this module opts in explicitly, because without the opt-in there is
+    deliberately nothing for the dispatcher to do.
+    """
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("AUTONOMOUS_TASK_ASSIGNMENT", "true")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
