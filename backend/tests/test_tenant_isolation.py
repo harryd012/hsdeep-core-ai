@@ -115,6 +115,11 @@ ROUTER_ENDPOINTS: list[tuple[str, str]] = [
     ("/api/incidents?tenant_id={tid}", "incident list"),
     # infrastructure
     ("/api/infrastructure/sites?tenant_id={tid}", "infra list"),
+    # infrastructure live topology (Phase 9.5 read model)
+    (
+        "/api/infrastructure/topology/graph/live?tenant_id={tid}",
+        "topology live graph",
+    ),
     # monitoring
     ("/api/monitoring/sources?tenant_id={tid}", "monitoring sources"),
     # priorities
