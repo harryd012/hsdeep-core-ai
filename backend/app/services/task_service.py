@@ -119,8 +119,13 @@ class TaskService:
         assigned_agent_id: uuid.UUID,
         assigned_by_agent_id: uuid.UUID | None = None,
         manager_agent_id: uuid.UUID | None = None,
+        actor: str | None = None,
     ) -> Task:
-        """Assign a task to an agent (CREATED → ASSIGNED)."""
+        """Assign a task to an agent (CREATED → ASSIGNED).
+
+        Actor attribution (M9.12b): a human assignment records who ordered it.
+        ``actor`` is audit metadata only and is never written to a Task column.
+        """
         task = await self.get(task_id, tenant_id)
         self._validate_transition(task.status, "assigned")
 
@@ -130,6 +135,13 @@ class TaskService:
             "action": "assigned",
             "from_status": task.status,
             "to_status": "assigned",
+            # Who ordered the assignment: the authenticated human. When an
+            # agent-driven flow (explicit opt-in) assigns work, the assigning
+            # agent is named; only genuinely platform-generated work says
+            # SYSTEM. A human action is never recorded as SYSTEM.
+            "actor": actor
+            or (f"agent:{assigned_by_agent_id}" if assigned_by_agent_id else "SYSTEM"),
+            "assigned_to": str(assigned_agent_id),
             "assigned_agent_id": str(assigned_agent_id),
             "assigned_by_agent_id": str(assigned_by_agent_id) if assigned_by_agent_id else None,
         }

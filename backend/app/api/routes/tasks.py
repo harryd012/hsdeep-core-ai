@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_tenant_id as get_current_tenant
+from app.repositories.agent_repository import AgentRepository
 from app.core.db import get_db
 from app.schemas.task import (
     TaskAssign,
@@ -161,6 +162,7 @@ async def get_task(
 @router.post("/{task_id}/assign", response_model=TaskRead)
 async def assign_task(
     task_id: uuid.UUID,
+    request: Request,
     body: TaskAssign | None = None,
     assigned_agent_id: uuid.UUID | None = Query(default=None),
     assigned_by_agent_id: uuid.UUID | None = Query(default=None),
@@ -170,7 +172,25 @@ async def assign_task(
     tenant_id: uuid.UUID = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
-    """Assign a task to an agent."""
+    """Assign a task to an agent (human-controlled assignment).
+
+    Server-side authorization (M9.12b). A frontend that hides agents is never
+    the control, so this route enforces, before any write:
+
+    * tenant ownership — ``AgentRepository.get`` is tenant-scoped, so another
+      tenant's agent id is indistinguishable from an unknown one (404) and no
+      cross-tenant existence is leaked;
+    * capability — when the agent declares ``supported_task_types``, the task's
+      type must be among them;
+    * eligibility — the Agent model's own ``can_accept_task`` predicate
+      (active, available/busy, under max workload) is reused rather than
+      re-deriving a second rule;
+    * lifecycle — the service's existing ``_validate_transition`` still owns
+      CREATED -> ASSIGNED.
+
+    The authenticated principal is recorded in the audit trail so a human
+    assignment is never attributed to SYSTEM.
+    """
     try:
         payload = body or TaskAssign(
             assigned_agent_id=assigned_agent_id,
@@ -182,12 +202,36 @@ async def assign_task(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="assigned_agent_id is required",
             )
+        agent = await AgentRepository(db).get(payload.assigned_agent_id, tenant_id)
+        if agent is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent not found in this tenant",
+            )
+        task = await service.get(task_id, tenant_id)
+        if agent.supported_task_types and task.task_type not in agent.supported_task_types:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Agent {agent.name!r} does not support task type {task.task_type!r}"
+                ),
+            )
+        if not agent.can_accept_task:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Agent {agent.name!r} cannot accept work "
+                    f"(status={agent.status}, availability={agent.availability}, "
+                    f"workload={agent.current_workload}/{agent.max_workload})"
+                ),
+            )
         task = await service.assign_task(
             task_id,
             tenant_id,
             payload.assigned_agent_id,
             payload.assigned_by_agent_id,
             payload.manager_agent_id,
+            actor=_request_actor(request),
         )
         await agent_service.assign_task(payload.assigned_agent_id, tenant_id)
         await db.commit()
