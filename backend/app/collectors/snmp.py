@@ -74,22 +74,22 @@ from app.collectors.switching import (
 logger = logging.getLogger(__name__)
 
 # Standard MIB OIDs
-_OID_SYS_DESCR = ".1.3.6.1.2.1.1.1.0"
-_OID_SYS_NAME = ".1.3.6.1.2.1.1.5.0"
-_OID_IF_DESCR = ".1.3.6.1.2.1.2.2.1.2"
-_OID_IF_ADMIN_STATUS = ".1.3.6.1.2.1.2.2.1.7"
-_OID_IF_OPER_STATUS = ".1.3.6.1.2.1.2.2.1.8"
-_OID_IF_IN_OCTETS = ".1.3.6.1.2.1.2.2.1.10"
-_OID_IF_OUT_OCTETS = ".1.3.6.1.2.1.2.2.1.16"
-_OID_IF_IN_ERRORS = ".1.3.6.1.2.1.2.2.1.14"
-_OID_IF_OUT_ERRORS = ".1.3.6.1.2.1.2.2.1.20"
-_OID_IF_SPEED = ".1.3.6.1.2.1.2.2.1.5"
+_OID_SYS_DESCR = "1.3.6.1.2.1.1.1.0"
+_OID_SYS_NAME = "1.3.6.1.2.1.1.5.0"
+_OID_IF_DESCR = "1.3.6.1.2.1.2.2.1.2"
+_OID_IF_ADMIN_STATUS = "1.3.6.1.2.1.2.2.1.7"
+_OID_IF_OPER_STATUS = "1.3.6.1.2.1.2.2.1.8"
+_OID_IF_IN_OCTETS = "1.3.6.1.2.1.2.2.1.10"
+_OID_IF_OUT_OCTETS = "1.3.6.1.2.1.2.2.1.16"
+_OID_IF_IN_ERRORS = "1.3.6.1.2.1.2.2.1.14"
+_OID_IF_OUT_ERRORS = "1.3.6.1.2.1.2.2.1.20"
+_OID_IF_SPEED = "1.3.6.1.2.1.2.2.1.5"
 
 # -- LLDP (IEEE 802.1AB LLDP-MIB) ------------------------------------------
 # Standard tables, so this works on any LLDP-speaking device regardless of
 # vendor. The remote table's row index is
 # <lldpRemTimeMark>.<lldpRemLocalPortNum>.<lldpRemIndex>.
-_LLDP_REM_TABLE = ".1.0.8802.1.1.2.1.4.1.1"
+_LLDP_REM_TABLE = "1.0.8802.1.1.2.1.4.1.1"
 _LLDP_REM_CHASSIS_ID = f"{_LLDP_REM_TABLE}.5"
 _LLDP_REM_PORT_ID = f"{_LLDP_REM_TABLE}.7"
 _LLDP_REM_PORT_DESC = f"{_LLDP_REM_TABLE}.8"
@@ -97,15 +97,15 @@ _LLDP_REM_SYS_NAME = f"{_LLDP_REM_TABLE}.9"
 # lldpRemManAddr carries the neighbour's management address. Its row index ends
 # with <addrSubtype>.<addrLen>.<addr octets>, so the IP is recoverable from the
 # OID itself when the address family is IPv4.
-_LLDP_REM_MAN_ADDR = ".1.0.8802.1.1.2.1.4.2.1.4"
+_LLDP_REM_MAN_ADDR = "1.0.8802.1.1.2.1.4.2.1.4"
 # Scalar proving LLDP is actually enabled locally. Used to tell "LLDP enabled
 # but no neighbours" apart from "LLDP not enabled" (Step 10).
-_LLDP_LOC_CHASSIS_ID = ".1.0.8802.1.1.2.1.3.2.0"
+_LLDP_LOC_CHASSIS_ID = "1.0.8802.1.1.2.1.3.2.0"
 
 # -- Cisco CDP (CISCO-CDP-MIB) --------------------------------------------
 # Optional: absent on non-Cisco gear. Row index is
 # <cdpCacheIfIndex>.<cdpCacheDeviceIndex>.
-_CDP_CACHE_TABLE = ".1.3.6.1.4.1.9.9.23.1.2.1.1"
+_CDP_CACHE_TABLE = "1.3.6.1.4.1.9.9.23.1.2.1.1"
 _CDP_CACHE_ADDRESS = f"{_CDP_CACHE_TABLE}.4"
 _CDP_CACHE_VERSION = f"{_CDP_CACHE_TABLE}.5"
 _CDP_CACHE_DEVICE_ID = f"{_CDP_CACHE_TABLE}.6"
@@ -126,12 +126,48 @@ _IPV4_RE = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
 _HEX4_RE = re.compile(r"[0-9a-fA-F]{8}")
 
 
+def _normalize_oid(oid: Any) -> str:
+    """Canonical dotted OID text, without a leading dot.
+
+    A real agent (and pysnmp's client) reports OIDs as ``1.3.6.1...``, while MIB
+    constants are commonly written ``.1.3.6.1...``. Mixing the two silently
+    breaks every lookup: a walk's subtree test, the row-index suffix parsing that
+    turns columns into interfaces/neighbours, and the scalar dict lookups that
+    read sysDescr/sysName. Normalizing at the boundary means both spellings
+    resolve to the same OID, verified against a real SNMP agent.
+    """
+    return str(oid).strip().lstrip(".")
+
+
+def _iter_walk_var_binds(var_binds: Any):
+    """Flatten pysnmp's GETNEXT/GETBULK varbind TABLE into individual var binds.
+
+    hlapi's ``nextCmd``/``bulkCmd`` hand back a list of ROWS (one per
+    repetition), while ``getCmd`` hands back a flat list. Iterating a table as
+    if it were flat yields the ROW itself, whose text form is
+    ``"<oid> = <value>"`` - a string that can never pass an OID comparison, so
+    every walk silently collected zero rows against a real agent while looking
+    merely empty. Both shapes are accepted here so neither can do that again.
+    """
+    for entry in var_binds or ():
+        if (
+            isinstance(entry, (list, tuple))
+            and entry
+            and not isinstance(entry[0], (str, bytes, bytearray, int))
+        ):
+            for inner in entry:
+                yield inner
+        else:
+            yield entry
+
+
 def _suffix_after(oid: str, base: str) -> str | None:
     """The table-row index suffix of `oid` under `base`, or None if unrelated."""
-    prefix = base + "."
-    if not oid.startswith(prefix):
+    prefix = _normalize_oid(base) + "."
+    text = _normalize_oid(oid)
+    if not text.startswith(prefix):
         return None
-    suffix = oid[len(prefix):]
+    suffix = text[len(prefix):]
     return suffix or None
 
 
@@ -214,9 +250,57 @@ class SNMPCollector(BaseCollector):
 
     # -- config helpers -------------------------------------------------------
 
+    def __init__(self, source) -> None:
+        super().__init__(source)
+        # ONE SNMP engine + transport target per collector instance.
+        #
+        # Building a fresh engine for every request (the previous behaviour)
+        # leaked an engine, a UDP transport and a dispatcher timer task for each
+        # of the ~20 requests in a single collection run - enough to exhaust a
+        # scheduled fleet's resources and to crash the interpreter at shutdown.
+        # Reuse also lets pysnmp's own request cache do its job.
+        self._engine = None
+        self._udp_target = None
+
+    def _snmp_engine(self):
+        if self._engine is None:
+            from pysnmp.hlapi.asyncio import SnmpEngine  # type: ignore[import]
+
+            self._engine = SnmpEngine()
+        return self._engine
+
+    def _transport_target(self):
+        if self._udp_target is None:
+            try:
+                from pysnmp.hlapi.asyncio import UdpTransportTarget  # type: ignore[import]
+            except ImportError as exc:
+                raise CollectorConfigError("pysnmp is required.") from exc
+
+            # Built eagerly (resolves the hostname) as pysnmp requires.
+            self._udp_target = UdpTransportTarget(
+                (self.source.hostname, self._port()), timeout=5, retries=2
+            )
+        return self._udp_target
+
     def _require_config(self) -> None:
         if not self.source.hostname:
             raise CollectorConfigError("SNMP config missing required field: hostname")
+
+    async def aclose(self) -> None:
+        """Close the SNMP engine's dispatcher and its timer tasks.
+
+        pysnmp keeps a transport dispatcher (with pending timer tasks) per
+        SnmpEngine. Leaving it running after the run leaks a live task per
+        collection and crashes the interpreter at shutdown. Never raises.
+        """
+        engine, self._engine = self._engine, None
+        self._udp_target = None
+        if engine is None:
+            return
+        try:
+            engine.closeDispatcher()
+        except Exception:  # noqa: BLE001 - cleanup must never fail a run
+            logger.debug("SNMP engine close failed", exc_info=True)
 
     def _community(self) -> str:
         return self.source.api_key or "public"
@@ -256,12 +340,8 @@ class SNMPCollector(BaseCollector):
         except ImportError as exc:
             raise CollectorConfigError("pysnmp is required.") from exc
 
-        engine = SnmpEngine()
-        transport = UdpTransportTarget(
-            (self.source.hostname, self._port()),
-            timeout=5,
-            retries=2,
-        )
+        engine = self._snmp_engine()
+        transport = self._transport_target()
         auth = self._build_auth()
         object_types = [ObjectType(ObjectIdentity(oid)) for oid in oids]
 
@@ -273,7 +353,7 @@ class SNMPCollector(BaseCollector):
             return {}
 
         return {
-            str(var_bind[0]): str(var_bind[1]) for var_bind in var_binds
+            _normalize_oid(var_bind[0]): str(var_bind[1]) for var_bind in var_binds
         }
 
     async def _walk(self, base_oid: str) -> list[tuple[str, str]]:
@@ -298,13 +378,8 @@ class SNMPCollector(BaseCollector):
             )
         except ImportError as exc:
             raise CollectorConfigError("pysnmp is required.") from exc
-
-        engine = SnmpEngine()
-        transport = UdpTransportTarget(
-            (self.source.hostname, self._port()),
-            timeout=5,
-            retries=2,
-        )
+        engine = self._snmp_engine()
+        transport = self._transport_target()
         auth = self._build_auth()
         rows: list[tuple[str, str]] = []
         error: str | None = None
@@ -318,7 +393,8 @@ class SNMPCollector(BaseCollector):
         # failed: interfaces, LLDP/CDP, VLAN, STP and LAG all returned zero rows.
         # The walk must therefore be driven explicitly, advancing from the last
         # OID the agent returned until it leaves the subtree.
-        current = base_oid
+        current = _normalize_oid(base_oid)
+        base = current
         seen: set[str] = set()
         while True:
             try:
@@ -341,11 +417,11 @@ class SNMPCollector(BaseCollector):
                 break
 
             advanced = False
-            for var_bind in var_binds:
-                oid = str(var_bind[0])
+            for var_bind in _iter_walk_var_binds(var_binds):
+                oid = _normalize_oid(var_bind[0])
                 # The agent moved past the subtree: the walk COMPLETED. This is
                 # not an error, so `error` stays None.
-                if oid != base_oid and not oid.startswith(base_oid + "."):
+                if oid != base and not oid.startswith(base + "."):
                     return rows, error
                 # endOfMibView repeats the requested OID with no progress.
                 if oid in seen:
@@ -370,7 +446,7 @@ class SNMPCollector(BaseCollector):
             values = await self._get(oid)
         except Exception:  # noqa: BLE001 - absence is not an error
             return False
-        return bool(str(values.get(oid, "")).strip())
+        return bool(str(values.get(_normalize_oid(oid), "")).strip())
 
     async def _collect_lldp(self) -> tuple[dict[str, dict[str, str]], str]:
         """Read the standard LLDP remote tables.

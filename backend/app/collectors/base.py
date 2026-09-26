@@ -270,6 +270,17 @@ class BaseCollector(abc.ABC):
         need vendor-specific save behavior."""
         return await saver.save(self.source, bundle)
 
+    async def aclose(self) -> None:
+        """Release anything this collector owns. Default: nothing.
+
+        Called by the CollectionOrchestrator after EVERY run, so a collector
+        that holds a client, a session pool or an SNMP engine's dispatcher can
+        hand the resources back instead of leaking them once per run.
+        Implementations must never raise: cleanup failures cannot be allowed to
+        change a run's outcome.
+        """
+        return None
+
 
 class CollectorRegistry:
     _collectors: dict[str, type[BaseCollector]] = {}

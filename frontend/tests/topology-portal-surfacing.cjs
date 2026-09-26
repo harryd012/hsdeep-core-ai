@@ -163,9 +163,10 @@ async function openRoute(page, route) {
     check('KPI strip renders', kpis !== null, kpis ? Object.keys(kpis).join(',') : 'missing');
     const deviceCount = kpis ? Number(kpis.devices) : 0;
     check('KPI strip reports the real device count', deviceCount > 0, `devices=${deviceCount}`);
+    const linksTotal = kpis ? Number(kpis.links) : -1;
     check(
-      'KPI strip reports zero links (no relationship evidence)',
-      kpis !== null && Number(kpis.links) === 0,
+      'KPI strip reports the real relationship count',
+      kpis !== null && Number.isFinite(linksTotal) && linksTotal >= 0,
       kpis ? `links=${kpis.links}` : null
     );
     check(
@@ -173,9 +174,10 @@ async function openRoute(page, route) {
       kpis !== null && Number(kpis.online) > 0 && Number(kpis.offline) > 0,
       kpis ? `online=${kpis.online} offline=${kpis.offline}` : null
     );
+    const interfacesTotal = kpis ? Number(kpis.interfaces) : -1;
     check(
-      'KPI strip reports zero interfaces and the real unclassified count',
-      kpis !== null && Number(kpis.interfaces) === 0 && Number(kpis.unidentified) > 0,
+      'KPI strip reports interfaces and the real unclassified count',
+      kpis !== null && interfacesTotal >= 0 && Number(kpis.unidentified) > 0,
       kpis ? `interfaces=${kpis.interfaces} unidentified=${kpis.unidentified}` : null
     );
     check(
@@ -185,27 +187,37 @@ async function openRoute(page, route) {
       kpis ? `traffic=${kpis.traffic}` : null
     );
 
-    /* 5: the zero-relationship empty state is designed, not blank. */
+    /* 5: the empty state is designed when there is no relationship evidence -
+       and must NOT be shown once real relationships exist. */
     const emptyState = page.locator('[data-testid="topology-empty-state"]');
-    check('empty-state panel is present', (await emptyState.count()) > 0);
-    const emptyText = (await emptyState.count()) ? await emptyState.innerText() : '';
-    check(
-      'empty state states topology relationships are not yet discovered',
-      /topology relationships not yet discovered/i.test(emptyText),
-      emptyText.split('\n')[0] ?? null
-    );
-    check(
-      'empty state reports the real counts',
-      emptyText.includes(String(deviceCount)) &&
-        emptyText.includes('RELATIONSHIPS') &&
-        emptyText.includes('INTERFACES'),
-      null
-    );
-    const body = await page.locator('body').innerText();
-    check(
-      'empty relationship state is stated honestly',
-      body.includes('No network relationship data has been discovered')
-    );
+    const emptyCount = await emptyState.count();
+    if (linksTotal === 0) {
+      check('empty-state panel is present', emptyCount > 0);
+      const emptyText = emptyCount ? await emptyState.innerText() : '';
+      check(
+        'empty state states topology relationships are not yet discovered',
+        /topology relationships not yet discovered/i.test(emptyText),
+        emptyText.split('\n')[0] ?? null
+      );
+      check(
+        'empty state reports the real counts',
+        emptyText.includes(String(deviceCount)) &&
+          emptyText.includes('RELATIONSHIPS') &&
+          emptyText.includes('INTERFACES'),
+        null
+      );
+      const body = await page.locator('body').innerText();
+      check(
+        'empty relationship state is stated honestly',
+        body.includes('No network relationship data has been discovered')
+      );
+    } else {
+      check(
+        'empty state disappears once real relationships exist',
+        emptyCount === 0,
+        `links=${linksTotal}`
+      );
+    }
 
     /* 5b: the canvas is the primary workspace, not a strip. */
     const shell = await page.locator('[data-testid="topology-canvas-shell"]').boundingBox();
@@ -221,9 +233,15 @@ async function openRoute(page, route) {
       shell ? `width=${Math.round(shell.width)}` : null
     );
 
-    /* 6: honesty on the canvas itself. */
+    /* 6: honesty on the canvas itself - links drawn match links reported. */
     const stats = await canvasStats(page);
-    check('no fabricated links are drawn', stats !== null && stats.edgeLines === 0);
+    check(
+      linksTotal > 0
+        ? 'real relationships are drawn as links'
+        : 'no fabricated links are drawn',
+      stats !== null && (linksTotal > 0 ? stats.edgeLines > 0 : stats.edgeLines === 0),
+      `links=${linksTotal} lines=${stats ? stats.edgeLines : 0}`
+    );
     check(
       'device nodes are drawn from real rows',
       stats !== null && stats.nodeButtons > 0,
@@ -234,6 +252,24 @@ async function openRoute(page, route) {
       stats !== null && stats.unknownResourceNodes > 0,
       `unknown=${stats ? stats.unknownResourceNodes : 0}`
     );
+
+    /* 6b: a real link opens a drawer carrying the collected evidence. */
+    if (linksTotal > 0 && stats && stats.edgeLines > 0) {
+      await page
+        .locator('[role="application"] svg line[stroke="transparent"]')
+        .first()
+        .click({ force: true });
+      await page.waitForTimeout(900);
+      const drawerText = await page.locator('[data-testid="topology-drawer"]').innerText();
+      check('clicking a link opens the link drawer', drawerText.length > 0);
+      check(
+        'link drawer shows the collected interface evidence',
+        /Gi0\/1|Te1\/1/.test(drawerText) || /lldp/i.test(drawerText),
+        drawerText.replace(/\s+/g, ' ').slice(0, 90)
+      );
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(400);
+    }
 
     /* 7: overlays exist and explain the semantics they draw. */
     check(

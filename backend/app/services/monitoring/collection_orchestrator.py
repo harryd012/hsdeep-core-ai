@@ -118,6 +118,9 @@ class CollectionOrchestrator:
             tenant_id=source.tenant_id, monitoring_source_id=source.id, trigger=trigger
         )
 
+        # Bound before the try so the cleanup below can always see it.
+        collector = None
+
         try:
             collector_cls = CollectorRegistry.get(source.source_type)
             connection_info = decrypt_connection_info(source)
@@ -210,6 +213,19 @@ class CollectionOrchestrator:
             await self.source_repo.mark_sync_result(source, status="error", error=str(exc))
             await _meter()
             return CollectionOutcome(run_record, self.alert_service.drain_created_incidents())
+
+        finally:
+            # Release whatever the collector owns (an SNMP engine's dispatcher and
+            # its timers, for example). A collector that leaks them per run
+            # exhausts the process on a scheduled fleet, so this is closed on
+            # EVERY path - success, config error, vendor failure. Cleanup failure
+            # is logged and never allowed to change the run's outcome.
+            close = getattr(collector, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:  # noqa: BLE001 - cleanup must not fail a run
+                    logger.debug("collector cleanup failed", exc_info=True)
 
     async def _run_failover_intelligence(self, tenant_id) -> None:
         """Best-effort post-collection WAN failover detection.

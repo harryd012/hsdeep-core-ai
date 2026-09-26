@@ -58,6 +58,18 @@ _CAPABILITY_TO_FLAG: dict[str, str] = {
     "api": "supports_rest",
 }
 
+#: Which devices a neighbour address may resolve to. BOTH stay tenant-scoped;
+#: they differ only in whether the observing source must own the peer device.
+#:
+#: SOURCE - the probe path: a discovery run's neighbours were found by that run,
+#:          so its own batch is the correct resolution set.
+#: TENANT - the collector path: an SNMP endpoint's LLDP/CDP peer is a different
+#:          device, normally owned by a different monitoring source. Resolving
+#:          it source-scoped (as this code did before Phase 9.7B) silently
+#:          dropped every physical adjacency collection ever recorded.
+PEER_SCOPE_SOURCE = "source"
+PEER_SCOPE_TENANT = "tenant"
+
 # Flags that must NEVER be set by discovery (they imply write privileges).
 _PRIVILEGED_FLAGS: frozenset[str] = frozenset({
     "supports_config", "supports_reboot", "supports_firmware",
@@ -421,6 +433,7 @@ class DiscoveryService:
         source_id: uuid.UUID,
         neighbors: list[NeighborEvidence],
         batch_index: dict[str, uuid.UUID],
+        peer_scope: str = PEER_SCOPE_SOURCE,
     ) -> tuple[int, int]:
         """Write edges ONLY for neighbours that resolve to a real resource.
 
@@ -429,13 +442,26 @@ class DiscoveryService:
         LLDP-only poll therefore cannot erase the ARP evidence an earlier poll
         obtained, and "stale evidence" stays distinguishable from "current
         evidence" without re-probing anything.
+
+        ``peer_scope`` decides WHICH devices a neighbour address may resolve to,
+        and both scopes stay inside ``tenant_id``:
+        * ``PEER_SCOPE_SOURCE`` (probe path): only devices this very source
+          reported, because a probe run's neighbours are its own discoveries.
+        * ``PEER_SCOPE_TENANT`` (collector path): any device in the same tenant.
+          An SNMP endpoint's LLDP/CDP peer is a DIFFERENT device, usually
+          collected by a different monitoring source, so a source-scoped lookup
+          could never resolve one and physical adjacency would be silently
+          dropped (Phase 9.7B).
         """
         written = 0
         unresolved = 0
         observed_at = datetime.now(timezone.utc)
         for nb in neighbors:
             target_id = batch_index.get(nb.address) or await self._device_id_for_address(
-                tenant_id, monitoring_source_id, nb.address
+                tenant_id,
+                monitoring_source_id,
+                nb.address,
+                tenant_wide=peer_scope == PEER_SCOPE_TENANT,
             )
             if target_id is None:
                 # No evidence-backed endpoint -> no edge. Reported, not faked.
@@ -498,6 +524,10 @@ class DiscoveryService:
         it again. Delegates to the same `_write_neighbors` the probe path uses,
         so exactly one method decides whether an adjacency is evidence-backed.
 
+        Resolution is TENANT-wide (never cross-tenant): an SNMP endpoint's
+        LLDP/CDP peer is a different device, normally polled by a different
+        monitoring source, so a source-scoped lookup could never resolve it.
+
         Never creates a Device: a neighbour that does not resolve to an existing
         device in this tenant is counted as unresolved and produces NO edge.
 
@@ -509,16 +539,42 @@ class DiscoveryService:
             source_id=source_device_id,
             neighbors=neighbors,
             batch_index={},
+            peer_scope=PEER_SCOPE_TENANT,
         )
 
     async def _device_id_for_address(
-        self, tenant_id: uuid.UUID, monitoring_source_id: uuid.UUID, address: str
+        self,
+        tenant_id: uuid.UUID,
+        monitoring_source_id: uuid.UUID,
+        address: str,
+        *,
+        tenant_wide: bool = False,
     ) -> uuid.UUID | None:
+        """Resolve an observed neighbour address to ONE device in THIS tenant.
+
+        Tenant-scoped by construction: another tenant's device can never match,
+        however the address was obtained. ``tenant_wide`` only widens the search
+        from "this monitoring source's devices" to "this tenant's devices" -
+        never across tenants - and is used by the collector path, where an
+        SNMP endpoint's LLDP/CDP peer legitimately belongs to another source.
+
+        Resolution is deterministic: when several devices share the address, the
+        device the observing source owns wins, then the oldest row. A tie never
+        falls back to "whichever row the database happened to return first".
+        """
         stmt = select(Device.id).where(
             Device.tenant_id == tenant_id,
-            Device.monitoring_source_id == monitoring_source_id,
             Device.ip_address == address,
         )
+        if tenant_wide:
+            stmt = stmt.order_by(
+                Device.monitoring_source_id != monitoring_source_id,
+                Device.created_at,
+                Device.id,
+            ).limit(1)
+        else:
+            stmt = stmt.where(Device.monitoring_source_id == monitoring_source_id)
+            return (await self.db.execute(stmt)).scalar_one_or_none()
         return (await self.db.execute(stmt)).scalar_one_or_none()
 
     async def _find_existing_device(
