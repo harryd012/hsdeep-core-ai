@@ -558,7 +558,7 @@ export default function OperationalTopologyPanel() {
   ];
 
   return (
-    <section style={{ paddingTop: "clamp(84px,8.5vh,104px)", padding: "0 16px 24px" }}>
+    <section style={{ padding: "4px 0 24px" }}>
       <header
         style={{
           display: "flex",

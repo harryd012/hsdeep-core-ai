@@ -67,7 +67,14 @@ export default function TopologyCanvas({
   animateEnabled,
   animatedEdgeIds,
 }: TopologyCanvasProps) {
-  const drag = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(null);
+  const drag = useRef<{
+    x: number;
+    y: number;
+    offsetX: number;
+    offsetY: number;
+    active: boolean;
+  } | null>(null);
+  const layerRef = useRef<HTMLDivElement | null>(null);
 
   const point = useCallback(
     (id: string) => positions.get(id) ?? { x: 0, y: 0 },
@@ -109,6 +116,14 @@ export default function TopologyCanvas({
     });
   };
 
+  /**
+   * Panning starts only once the pointer has actually moved.
+   *
+   * Capturing the pointer on pointerdown (the obvious implementation) retargets
+   * the compatibility click to the container, so a plain click on a node or a
+   * link never reaches its handler and the detail drawer never opens. The
+   * threshold keeps clicks as clicks and drags as drags.
+   */
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     drag.current = {
@@ -116,16 +131,24 @@ export default function TopologyCanvas({
       y: event.clientY,
       offsetX: viewport.offsetX,
       offsetY: viewport.offsetY,
+      active: false,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
   };
 
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!drag.current) return;
+    const state = drag.current;
+    if (!state) return;
+    const dx = event.clientX - state.x;
+    const dy = event.clientY - state.y;
+    if (!state.active) {
+      if (Math.hypot(dx, dy) < 4) return;
+      state.active = true;
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
     onViewportChange({
       scale: viewport.scale,
-      offsetX: drag.current.offsetX + (event.clientX - drag.current.x),
-      offsetY: drag.current.offsetY + (event.clientY - drag.current.y),
+      offsetX: state.offsetX + dx,
+      offsetY: state.offsetY + dy,
     });
   };
 
@@ -144,7 +167,12 @@ export default function TopologyCanvas({
       onPointerUp={endDrag}
       onPointerLeave={endDrag}
       onClick={(event) => {
-        if (event.target === event.currentTarget) onClearSelection();
+        // Background click (the container itself or the transformed layer, i.e.
+        // empty canvas) clears the selection. A click on a node/link targets
+        // those elements and is handled there.
+        if (event.target === event.currentTarget || event.target === layerRef.current) {
+          onClearSelection();
+        }
       }}
       style={{
         position: "relative",
@@ -161,6 +189,7 @@ export default function TopologyCanvas({
       aria-label="Live infrastructure topology"
     >
       <div
+        ref={layerRef}
         style={{
           position: "absolute",
           left: 0,

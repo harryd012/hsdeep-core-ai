@@ -52,7 +52,7 @@ const navConfig: NavGroup[] = [
   { id: "infrastructure", label: "Infrastructure", icon: Server, route: "/infrastructure", permission: "sites.read", children: [
     { label: "Overview", route: "/infrastructure" },
     { label: "Asset Inventory", route: "/infrastructure/assets" },
-    { label: "Topology", route: "/infrastructure-topology" },
+    { label: "Topology", route: "/infrastructure-topology/live" },
   ] },
   { id: "org", label: "Organization", icon: Building2, route: "/organization", children: [
     { label: "Hierarchy", route: "/organization" },
