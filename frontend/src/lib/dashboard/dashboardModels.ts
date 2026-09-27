@@ -104,13 +104,16 @@ export interface InfrastructureOverviewData {
     /** Verdict derived ONLY from rows that actually have data. */
     status: "healthy" | "warning" | "critical";
   };
+  /** Estate totals as reported by the API. A field the backend did not report
+   *  stays null so the UI can say "N/A" instead of inventing a 0 that is
+   *  indistinguishable from a measured zero. */
   summary: {
-    sites: number;
-    devices: number;
-    monitoringSources: number;
-    cloudResources: number;
-    sensors: number;
-    regions: number;
+    sites: number | null;
+    devices: number | null;
+    monitoringSources: number | null;
+    cloudResources: number | null;
+    sensors: number | null;
+    regions: number | null;
   } | null;
   devices: DeviceRow[];
   sensors: SensorRow[];

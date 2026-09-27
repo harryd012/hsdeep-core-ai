@@ -256,7 +256,13 @@ export function buildInfrastructureOverview(input: {
   cloud: CloudStatus | undefined;
   apiUp: boolean | undefined;
   dashboardSummary:
-    | { sites: number; devices: number; monitoring_sources: number; sensors: number; cloud_resources: number }
+    | {
+        sites?: number | null;
+        devices?: number | null;
+        monitoring_sources?: number | null;
+        sensors?: number | null;
+        cloud_resources?: number | null;
+      }
     | undefined;
   events: Event[] | undefined;
 }): InfrastructureOverviewData {
@@ -298,12 +304,21 @@ export function buildInfrastructureOverview(input: {
     health: { rows, status },
     summary: dashboardSummary
       ? {
-          sites: dashboardSummary.sites,
-          devices: dashboardSummary.devices,
-          monitoringSources: dashboardSummary.monitoring_sources,
-          cloudResources: dashboardSummary.cloud_resources,
-          sensors: dashboardSummary.sensors,
-          regions: network?.sites_total ? Math.max(1, Math.round(network.sites_total / 15)) : 3,
+          // Pass through only what the API actually reported. A field the
+          // backend did not send becomes null - the UI renders "N/A" - instead
+          // of a confident 0 that is indistinguishable from a measured zero.
+          sites: dashboardSummary.sites ?? null,
+          devices: dashboardSummary.devices ?? null,
+          monitoringSources: dashboardSummary.monitoring_sources ?? null,
+          cloudResources: dashboardSummary.cloud_resources ?? null,
+          sensors: dashboardSummary.sensors ?? null,
+          // No real source exists for this cell: the dashboard summary payload
+          // carries no region data and NetworkStatus only reports
+          // sites_online/sites_total. The old
+          // `sites_total / 15`-or-3 heuristic invented a number; honest null
+          // renders as "N/A" (see InfrastructureMap). Wire this to the real
+          // Site.region values if the overview ever receives site rows.
+          regions: null,
         }
       : null,
     devices: (devices ?? []).slice(0, 25).map((d) => ({
