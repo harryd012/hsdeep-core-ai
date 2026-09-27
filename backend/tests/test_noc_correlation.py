@@ -40,8 +40,6 @@ from app.services.noc_correlation import NocCorrelationEngine
 
 pytestmark = pytest.mark.asyncio
 
-_NOW = datetime.now(timezone.utc)
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -107,6 +105,13 @@ async def _make_event(
     site_id: uuid.UUID | None = None,
     minutes_ago: int = 5,
 ) -> NormalizedEvent:
+    # Anchor the reading to the moment this test runs, NOT to module import:
+    # the engine only considers events inside `now - time_window_minutes`
+    # (default 15), so an import-time constant silently ages out of the window
+    # during a long session - the full suite runs ~18 minutes, which turned
+    # these tests into "no group formed" failures that only reproduced in the
+    # whole-suite run and never in isolation.
+    now = datetime.now(timezone.utc)
     event = NormalizedEvent(
         tenant_id=tenant_id,
         event_signature=signature,
@@ -116,9 +121,9 @@ async def _make_event(
         title=title,
         device_id=device_id,
         site_id=site_id,
-        event_timestamp=_NOW - timedelta(minutes=minutes_ago),
+        event_timestamp=now - timedelta(minutes=minutes_ago),
         telemetry_type="metric",
-        last_occurred_at=_NOW - timedelta(minutes=minutes_ago),
+        last_occurred_at=now - timedelta(minutes=minutes_ago),
     )
     db.add(event)
     await db.commit()
