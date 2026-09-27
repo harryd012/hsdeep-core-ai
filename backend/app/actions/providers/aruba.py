@@ -34,6 +34,7 @@ import logging
 from typing import Any
 
 from app.actions.base import (
+    ActionNotSupported,
     ActionProviderRegistry,
     DeviceActionType,
 )
@@ -73,14 +74,26 @@ class ArubaActionProvider(VendorSnmpHealthProvider):
 
     health_actions = frozenset({DeviceActionType.ARUBA_QUERY_HEALTH})
 
-    async def read_health(self, collector: SNMPCollector) -> dict[str, Any]:
+    async def read_health(
+        self, collector: SNMPCollector, action: DeviceActionType
+    ) -> dict[str, Any]:
         """Read controller CPU load + memory usage from WLSX-SYSTEMEXT-MIB.
+
+        The shared envelope hands over the requested action so one provider can
+        serve several device actions through one transport (see the Cisco
+        provider). Aruba implements exactly one action, so anything else is a
+        routing mistake, not a device failure - it raises ActionNotSupported
+        instead of being reported as an SNMP error.
 
         Memory is read from the dedicated memory table; when a controller
         does not populate it, the RAM row of the storage table is used
         instead. Units differ (KB vs MB) and are reported explicitly so a
         caller can never misread the scale.
         """
+        if action is not DeviceActionType.ARUBA_QUERY_HEALTH:
+            raise ActionNotSupported(
+                f"Aruba provider does not support action={action.value}"
+            )
         descr = walk_column({}, await collector._walk(_OID_PROC_DESCR))  # noqa: SLF001
         load = walk_column({}, await collector._walk(_OID_PROC_LOAD))  # noqa: SLF001
 

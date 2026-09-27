@@ -100,6 +100,13 @@ def extract_readings(output: dict[str, Any]) -> list[tuple[str, float]]:
             value = proc.get(key)
             if isinstance(value, (int, float)):
                 readings.append((f"{label}.{key}", float(value)))
+    for proc in output.get("processors", []) or []:
+        # Aruba (WLSX-SYSTEMEXT-MIB) reports one load percentage per processor
+        # rather than the Cisco "several CPU windows" shape.
+        load = proc.get("load_pct")
+        if isinstance(load, (int, float)):
+            index = proc.get("index", "")
+            readings.append((f"processor.{index}.load_pct", float(load)))
     memory = output.get("memory")
     if isinstance(memory, dict) and isinstance(memory.get("used_pct"), (int, float)):
         readings.append(("memory.used_pct", float(memory["used_pct"])))
