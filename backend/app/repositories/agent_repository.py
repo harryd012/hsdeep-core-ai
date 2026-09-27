@@ -102,6 +102,12 @@ class AgentRepository:
             Agent.is_active.is_(True),
             Agent.status == "active",
             Agent.availability.in_(["available", "busy"]),
+            # A method that promises agents "available for new work assignments"
+            # must not return agents that are already at capacity. The routing
+            # engine happened to re-check this in Python, but every other caller
+            # (and the available-agents listing) trusted this query, so the
+            # contract is enforced here where it belongs.
+            Agent.current_workload < Agent.max_workload,
         )
         if department is not None:
             stmt = stmt.where(Agent.department == department)
