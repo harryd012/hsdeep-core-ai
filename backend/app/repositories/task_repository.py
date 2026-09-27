@@ -23,12 +23,24 @@ class TaskRepository:
         await self.db.refresh(task)
         return task
 
-    async def get(self, task_id: uuid.UUID, tenant_id: uuid.UUID) -> Task | None:
+    async def get(
+        self, task_id: uuid.UUID, tenant_id: uuid.UUID, *, for_update: bool = False
+    ) -> Task | None:
         stmt = select(Task).where(
             Task.id == task_id,
             Task.tenant_id == tenant_id,
             Task.is_deleted.is_(False),
         )
+        if for_update:
+            # Serialize mutually exclusive lifecycle transitions on this row.
+            # A second concurrent request blocks here until the first commits,
+            # then reads the COMMITTED status and is refused by the transition
+            # validator instead of both requests succeeding. Without this the
+            # read-validate-write sequence in TaskService and the approval /
+            # execution gates were open to a check-then-act race (e.g. two
+            # concurrent executions both passing the gate, or two approvals both
+            # granting a decision).
+            stmt = stmt.with_for_update()
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 

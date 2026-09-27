@@ -80,8 +80,10 @@ class TaskService:
     def __init__(self, task_repo: TaskRepository):
         self.task_repo = task_repo
 
-    async def get(self, task_id: uuid.UUID, tenant_id: uuid.UUID) -> Task:
-        task = await self.task_repo.get(task_id, tenant_id)
+    async def get(
+        self, task_id: uuid.UUID, tenant_id: uuid.UUID, *, for_update: bool = False
+    ) -> Task:
+        task = await self.task_repo.get(task_id, tenant_id, for_update=for_update)
         if task is None:
             raise TaskNotFound(f"Task {task_id} not found")
         return task
@@ -151,7 +153,7 @@ class TaskService:
         Actor attribution (M9.12b): a human assignment records who ordered it.
         ``actor`` is audit metadata only and is never written to a Task column.
         """
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
         self._validate_transition(task.status, "assigned")
 
         now = datetime.now(timezone.utc)
@@ -204,7 +206,7 @@ class TaskService:
         protected-action gate therefore applies to a reassigned task exactly as
         before (invariants E and F).
         """
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
 
         # Deterministic no-op handling: repeating the same reassignment is
         # refused as a conflict rather than silently succeeding or churning
@@ -273,7 +275,7 @@ class TaskService:
         self, task_id: uuid.UUID, tenant_id: uuid.UUID, agent_id: uuid.UUID
     ) -> Task:
         """Agent accepts the task (ASSIGNED → ACCEPTED)."""
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
         self._validate_transition(task.status, "accepted")
         self._require_assigned_agent(task, agent_id)
 
@@ -301,7 +303,7 @@ class TaskService:
         execution_plan: dict | None = None,
     ) -> Task:
         """Agent starts execution (INVESTIGATING → EXECUTING)."""
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
         # M9.13: the same centralized gate guards the transition INTO executing,
         # not just the adapter call, so a task that requires approval cannot be
         # advanced along the lifecycle as if it had been executed (which would
@@ -353,7 +355,7 @@ class TaskService:
         evidence: dict | None = None,
     ) -> Task:
         """Agent submits work for verification (EXECUTING → VERIFYING)."""
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
         self._validate_transition(task.status, "verifying")
         self._require_assigned_agent(task, agent_id)
 
@@ -385,7 +387,7 @@ class TaskService:
         passed: bool = True,
     ) -> Task:
         """Verify task completion (VERIFYING → VERIFIED or FAILED)."""
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
         self._validate_transition(task.status, "verified" if passed else "failed")
 
         now = datetime.now(timezone.utc)
@@ -425,7 +427,7 @@ class TaskService:
         reason: str | None = None,
     ) -> Task:
         """Move a task that genuinely requires approval into WAITING_FOR_APPROVAL."""
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
         if not task.approval_required:
             raise ApprovalNotRequiredError(
                 f"Task {task_id} does not require approval"
@@ -473,7 +475,7 @@ class TaskService:
         reason: str | None = None,
     ) -> Task:
         """Grant approval so protected execution may proceed."""
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
         if not task.approval_required:
             raise ApprovalNotRequiredError(
                 f"Task {task_id} does not require approval"
@@ -513,7 +515,7 @@ class TaskService:
         reason: str | None = None,
     ) -> Task:
         """Refuse approval. The protected action is never executed."""
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
         if not task.approval_required:
             raise ApprovalNotRequiredError(
                 f"Task {task_id} does not require approval"
@@ -585,7 +587,7 @@ class TaskService:
         - the task is advanced to verifying so the command center reflects the
           real backend state instead of fake synthetic lifecycle transitions.
         """
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
         # P0 PROTECTED-ACTION GATE: refuse before any tool adapter is resolved
         # or invoked. Reads persisted approval state only.
         self._assert_approval_gate(task)
@@ -806,7 +808,7 @@ class TaskService:
         so the audit trail never reports a human action as SYSTEM. ``actor`` is
         audit metadata only and is never written to a Task column.
         """
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
         if task.status in _TERMINAL_STATES:
             raise TaskTransitionNotAllowed(
                 f"Cannot cancel task in terminal state '{task.status}'"
@@ -847,7 +849,7 @@ class TaskService:
         self, task_id: uuid.UUID, tenant_id: uuid.UUID
     ) -> Task:
         """Record verified task (VERIFIED → RECORDED)."""
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
         self._validate_transition(task.status, "recorded")
 
         now = datetime.now(timezone.utc)
@@ -874,7 +876,7 @@ class TaskService:
         self, task_id: uuid.UUID, tenant_id: uuid.UUID, agent_id: uuid.UUID
     ) -> Task:
         """Agent starts investigation (ACCEPTED → INVESTIGATING)."""
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
         self._validate_transition(task.status, "investigating")
         self._require_assigned_agent(task, agent_id)
 
