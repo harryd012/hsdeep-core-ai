@@ -95,9 +95,17 @@ async def create_agent(
     body: AgentCreate,
     service: AgentService = Depends(get_agent_service_dep),
     tenant_id: uuid.UUID = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
 ):
     """Register a new agent in the organization."""
-    return await service.create_agent(tenant_id, **body.model_dump())
+    agent = await service.create_agent(tenant_id, **body.model_dump())
+    # Committed like every other write in this API. Without it the new agent
+    # existed only inside this request's session: the 201 was returned from the
+    # in-session object and the row was rolled back when the session closed, so
+    # every subsequent request for that agent (get, update, availability)
+    # answered 404.
+    await db.commit()
+    return agent
 
 
 @router.get("/{agent_id}", response_model=AgentRead)
@@ -119,14 +127,19 @@ async def update_agent(
     body: AgentUpdate,
     service: AgentService = Depends(get_agent_service_dep),
     tenant_id: uuid.UUID = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
 ):
     """Update an agent's profile."""
     try:
-        return await service.update_agent(
+        agent = await service.update_agent(
             agent_id, tenant_id, **body.model_dump(exclude_unset=True)
         )
     except AgentNotFound as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    # Commit the same way the other write paths do, so an update is durable
+    # rather than a change that only appears to have been applied.
+    await db.commit()
+    return agent
 
 
 @router.get("/{agent_id}/reports", response_model=list[AgentRead])
@@ -149,9 +162,15 @@ async def set_agent_availability(
     availability: str = Query(..., pattern="^(available|busy|away|offline)$"),
     service: AgentService = Depends(get_agent_service_dep),
     tenant_id: uuid.UUID = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
 ):
     """Set an agent's availability status."""
     try:
-        return await service.set_availability(agent_id, tenant_id, availability)
+        agent = await service.set_availability(agent_id, tenant_id, availability)
     except AgentNotFound as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    # Durability matters most here: availability drives routing eligibility, so
+    # a change visible only inside this request would mislead the next routing
+    # decision.
+    await db.commit()
+    return agent
