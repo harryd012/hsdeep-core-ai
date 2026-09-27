@@ -162,6 +162,51 @@ async def get_task(
         return await service.get(task_id, tenant_id)
     except TaskNotFound as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+async def _assert_assignable_agent(
+    db: AsyncSession,
+    service: TaskService,
+    task_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+) -> None:
+    """Shared server-side authorization for assignment AND reassignment.
+
+    Kept in one place on purpose: duplicating these checks is how a security
+    rule drifts between two call sites. Enforces, before any write:
+
+    * tenant ownership - the tenant-scoped AgentRepository lookup makes another
+      tenant's agent id indistinguishable from an unknown one (404), leaking no
+      cross-tenant existence;
+    * capability - when the agent declares supported_task_types, the task's type
+      must be among them;
+    * eligibility - the Agent model's own can_accept_task predicate (active,
+      available/busy, under max workload) is reused, never re-derived.
+
+    The task is fetched tenant-scoped, so a foreign task id is a 404 here too.
+    """
+    agent = await AgentRepository(db).get(agent_id, tenant_id)
+    if agent is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Agent not found in this tenant",
+        )
+    task = await service.get(task_id, tenant_id)
+    if agent.supported_task_types and task.task_type not in agent.supported_task_types:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Agent {agent.name!r} does not support task type {task.task_type!r}",
+        )
+    if not agent.can_accept_task:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Agent {agent.name!r} cannot accept work "
+                f"(status={agent.status}, availability={agent.availability}, "
+                f"workload={agent.current_workload}/{agent.max_workload})"
+            ),
+        )
+
+
 @router.post("/{task_id}/assign", response_model=TaskRead)
 async def assign_task(
     task_id: uuid.UUID,
@@ -205,29 +250,9 @@ async def assign_task(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="assigned_agent_id is required",
             )
-        agent = await AgentRepository(db).get(payload.assigned_agent_id, tenant_id)
-        if agent is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Agent not found in this tenant",
-            )
-        task = await service.get(task_id, tenant_id)
-        if agent.supported_task_types and task.task_type not in agent.supported_task_types:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    f"Agent {agent.name!r} does not support task type {task.task_type!r}"
-                ),
-            )
-        if not agent.can_accept_task:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"Agent {agent.name!r} cannot accept work "
-                    f"(status={agent.status}, availability={agent.availability}, "
-                    f"workload={agent.current_workload}/{agent.max_workload})"
-                ),
-            )
+        await _assert_assignable_agent(
+            db, service, task_id, tenant_id, payload.assigned_agent_id
+        )
         task = await service.assign_task(
             task_id,
             tenant_id,
@@ -506,6 +531,73 @@ async def _assert_approver_authorized(
         )
 
 
+@router.post("/{task_id}/reassign", response_model=TaskRead)
+async def reassign_task(
+    task_id: uuid.UUID,
+    request: Request,
+    body: TaskAssign | None = None,
+    assigned_agent_id: uuid.UUID | None = Query(default=None),
+    assigned_by_agent_id: uuid.UUID | None = Query(default=None),
+    manager_agent_id: uuid.UUID | None = Query(default=None),
+    reason: str | None = Query(default=None),
+    service: TaskService = Depends(get_task_service),
+    agent_service: AgentService = Depends(get_agent_service),
+    tenant_id: uuid.UUID = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reassign an already-assigned task to a different agent.
+
+    Reuses the SAME server-side authorization as assignment (shared
+    ``_assert_assignable_agent``: tenant-scoped target agent, capability,
+    eligibility) and the existing lifecycle authority - only a state the
+    declared matrix allows to reach ``reassigned`` may be moved, so a completed
+    or cancelled task cannot be resurrected by reassigning it.
+
+    The approval fields are never touched: reassignment changes who executes the
+    work, not what was approved, so it can neither grant nor revoke approval and
+    the protected-action gate applies exactly as before.
+
+    Workload follows the work: the new agent is incremented and the previous one
+    released through the existing counters. The actor is the authenticated
+    principal - a client cannot supply audit identity.
+    """
+    try:
+        payload = body or TaskAssign(
+            assigned_agent_id=assigned_agent_id,
+            assigned_by_agent_id=assigned_by_agent_id,
+            manager_agent_id=manager_agent_id,
+        )
+        if payload.assigned_agent_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="assigned_agent_id is required",
+            )
+        await _assert_assignable_agent(
+            db, service, task_id, tenant_id, payload.assigned_agent_id
+        )
+        previous = await service.get(task_id, tenant_id)
+        previous_agent_id = previous.assigned_agent_id
+
+        task = await service.reassign_task(
+            task_id,
+            tenant_id,
+            payload.assigned_agent_id,
+            payload.assigned_by_agent_id,
+            payload.manager_agent_id,
+            actor=_request_actor(request),
+            reason=reason,
+        )
+        await agent_service.assign_task(payload.assigned_agent_id, tenant_id)
+        if previous_agent_id and previous_agent_id != payload.assigned_agent_id:
+            await agent_service.release_task(previous_agent_id, tenant_id)
+        await db.commit()
+        return task
+    except TaskNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except TaskTransitionNotAllowed as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+
+
 @router.post("/{task_id}/request-approval", response_model=TaskRead)
 async def request_task_approval(
     task_id: uuid.UUID,
@@ -606,15 +698,25 @@ async def reject_task(
 @router.post("/{task_id}/cancel", response_model=TaskRead)
 async def cancel_task(
     task_id: uuid.UUID,
+    request: Request,
     body: TaskStatusChange | None = None,
     service: TaskService = Depends(get_task_service),
     tenant_id: uuid.UUID = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
-    """Cancel a task."""
+    """Cancel a task.
+
+    Cancellation is audited against the authenticated principal, and the
+    existing transition matrix remains the authority on which states may be
+    cancelled - so a task that is already executing, verifying or verified is
+    refused rather than silently killed mid-flight.
+    """
     try:
         task = await service.cancel_task(
-            task_id, tenant_id, reason=body.reason if body else None
+            task_id,
+            tenant_id,
+            reason=body.reason if body else None,
+            actor=_request_actor(request),
         )
         await db.commit()
         return task
@@ -677,6 +779,11 @@ async def start_execution(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except TaskTransitionNotAllowed as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except ApprovalRequiredError as e:
+        # The gate now also guards the transition INTO executing, so starting
+        # execution on an unapproved task is an authorization refusal (403),
+        # not a state conflict.
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
 
 @router.patch("/{task_id}", response_model=TaskRead)

@@ -181,6 +181,87 @@ class TaskService:
             assigned_at=now,
         )
 
+    async def reassign_task(
+        self,
+        task_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        new_agent_id: uuid.UUID,
+        assigned_by_agent_id: uuid.UUID | None = None,
+        manager_agent_id: uuid.UUID | None = None,
+        actor: str | None = None,
+        reason: str | None = None,
+    ) -> Task:
+        """Move an already-assigned task to a different agent.
+
+        Uses the EXISTING state machine (``assigned|failed → reassigned`` then
+        ``reassigned → assigned``), recorded as one auditable pair and persisted
+        in a single update, so the task ends where the operator expects without
+        inventing a second lifecycle.
+
+        Deliberately does NOT touch the approval fields: reassignment changes
+        WHO executes the work, not WHAT was approved, so it can neither grant
+        approval to a task that has none nor revoke one that exists. The
+        protected-action gate therefore applies to a reassigned task exactly as
+        before (invariants E and F).
+        """
+        task = await self.get(task_id, tenant_id)
+
+        # Deterministic no-op handling: repeating the same reassignment is
+        # refused as a conflict rather than silently succeeding or churning
+        # audit history with an identical event.
+        if task.assigned_agent_id == new_agent_id and task.status == "assigned":
+            raise TaskTransitionNotAllowed(
+                f"Task {task_id} is already assigned to agent {new_agent_id}"
+            )
+
+        self._validate_transition(task.status, "reassigned")
+        previous_agent_id = task.assigned_agent_id
+        now = datetime.now(timezone.utc)
+        audit_actor = actor or (
+            f"agent:{assigned_by_agent_id}" if assigned_by_agent_id else "SYSTEM"
+        )
+
+        task.audit_log.append(
+            {
+                "timestamp": now.isoformat(),
+                "action": "reassigned",
+                "from_status": task.status,
+                "to_status": "reassigned",
+                "actor": audit_actor,
+                "previous_agent_id": str(previous_agent_id) if previous_agent_id else None,
+                "new_agent_id": str(new_agent_id),
+                "reason": reason,
+            }
+        )
+
+        # The existing machine models the second half of the move explicitly.
+        self._validate_transition("reassigned", "assigned")
+        task.audit_log.append(
+            {
+                "timestamp": now.isoformat(),
+                "action": "assigned",
+                "from_status": "reassigned",
+                "to_status": "assigned",
+                "actor": audit_actor,
+                "assigned_to": str(new_agent_id),
+                "assigned_agent_id": str(new_agent_id),
+                "assigned_by_agent_id": (
+                    str(assigned_by_agent_id) if assigned_by_agent_id else None
+                ),
+                "previous_agent_id": str(previous_agent_id) if previous_agent_id else None,
+                "reason": reason,
+            }
+        )
+
+        return await self.task_repo.update(
+            task,
+            status="assigned",
+            assigned_agent_id=new_agent_id,
+            assigned_by_agent_id=assigned_by_agent_id,
+            manager_agent_id=manager_agent_id,
+            assigned_at=now,
+        )
+
     @staticmethod
     def _require_assigned_agent(task: Task, agent_id: uuid.UUID) -> None:
         if task.assigned_agent_id is not None and task.assigned_agent_id != agent_id:
@@ -221,6 +302,12 @@ class TaskService:
     ) -> Task:
         """Agent starts execution (INVESTIGATING → EXECUTING)."""
         task = await self.get(task_id, tenant_id)
+        # M9.13: the same centralized gate guards the transition INTO executing,
+        # not just the adapter call, so a task that requires approval cannot be
+        # advanced along the lifecycle as if it had been executed (which would
+        # otherwise let an agent reach submit_for_verification from a task that
+        # was never approved). The gate itself is unchanged.
+        self._assert_approval_gate(task)
         self._validate_transition(task.status, "executing")
         self._require_assigned_agent(task, agent_id)
 
@@ -711,13 +798,24 @@ class TaskService:
         task_id: uuid.UUID,
         tenant_id: uuid.UUID,
         reason: str | None = None,
+        actor: str | None = None,
     ) -> Task:
-        """Cancel a task (→ CANCELLED)."""
+        """Cancel a task (→ CANCELLED).
+
+        Actor attribution (M9.13): a human cancellation records who ordered it,
+        so the audit trail never reports a human action as SYSTEM. ``actor`` is
+        audit metadata only and is never written to a Task column.
+        """
         task = await self.get(task_id, tenant_id)
         if task.status in _TERMINAL_STATES:
             raise TaskTransitionNotAllowed(
                 f"Cannot cancel task in terminal state '{task.status}'"
             )
+        # The declared transition matrix stays the authority: states with no
+        # `cancelled` edge (investigating / executing / verifying / verified)
+        # must not be cancellable either, so cancellation cannot quietly bypass
+        # the lifecycle every other operation is validated against.
+        self._validate_transition(task.status, "cancelled")
 
         now = datetime.now(timezone.utc)
         audit_entry = {
@@ -725,6 +823,7 @@ class TaskService:
             "action": "cancelled",
             "from_status": task.status,
             "to_status": "cancelled",
+            "actor": actor or "SYSTEM",
             "reason": reason,
         }
 

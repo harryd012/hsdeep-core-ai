@@ -77,6 +77,16 @@ class AgentService:
         """Increment workload when assigning a task."""
         await self.agent_repo.increment_workload(agent_id, tenant_id)
 
+    async def release_task(self, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
+        """Give back one unit of workload when work leaves an agent.
+
+        Reuses the existing repository counter so reassignment does not leave
+        the previous agent's workload inflated. Deliberately does NOT record a
+        completion or failure statistic - the work did not finish, it was moved,
+        so ``complete_task`` would be the wrong call here.
+        """
+        await self.agent_repo.decrement_workload(agent_id, tenant_id)
+
     async def complete_task(
         self,
         agent_id: uuid.UUID,
