@@ -42,8 +42,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/billing/webhook", tags=["billing"])
 
-settings = get_settings()
-
 # Event types we know how to handle. Anything else is logged and ignored
 # (Stripe should NOT retry unknown event types).
 _HANDLED_EVENT_TYPES = frozenset({
@@ -70,6 +68,12 @@ async def stripe_webhook(
     billing: BillingService = Depends(get_billing_service),
 ):
     """Handle Stripe webhook events."""
+    # Read the settings per request: a module-level snapshot froze the webhook
+    # secret at import time, so a secret set later (or a cleared settings cache,
+    # as several test modules do) left this route answering 501 "not
+    # configured" instead of verifying the signature it had just been given.
+    settings = get_settings()
+
     if not settings.stripe_webhook_secret:
         raise HTTPException(
             status_code=501,
