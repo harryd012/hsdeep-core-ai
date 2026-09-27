@@ -6,9 +6,11 @@ import { getNetworkStatus, getDashboardSummary, NetworkStatus, DashboardSummary 
 export type SiteStatus = "healthy" | "warning" | "critical" | "unknown";
 
 export interface SitesData {
-  total: number;
-  online: number;
-  healthPct: number;
+  /** null = the backend did not answer (renders N/A). 0 = a measured zero. */
+  total: number | null;
+  online: number | null;
+  /** null when either part of the ratio is unavailable - never a 0% claim. */
+  healthPct: number | null;
   status: SiteStatus;
   loading: boolean;
   error: string | null;
@@ -27,9 +29,9 @@ const REFRESH_MS = 60_000;
  */
 export function useSitesData(refreshMs = REFRESH_MS): SitesData {
   const [data, setData] = useState<SitesData>({
-    total: 0,
-    online: 0,
-    healthPct: 0,
+    total: null,
+    online: null,
+    healthPct: null,
     status: "unknown",
     loading: true,
     error: null,
@@ -47,20 +49,20 @@ export function useSitesData(refreshMs = REFRESH_MS): SitesData {
 
         if (cancelled) return;
 
-        // Canonical total: prefer network status, fall back to dashboard summary
-        const total = net?.sites_total ?? summary?.sites ?? 0;
-        const online = net?.sites_online ?? 0;
-        const healthPct = total > 0 ? Math.round((online / total) * 100) : 0;
+        // Canonical total: prefer network status, fall back to dashboard summary.
+        // A source that did not answer yields null, never 0: "no data" and
+        // "zero sites" are different operational facts.
+        const total = net?.sites_total ?? summary?.sites ?? null;
+        const online = net?.sites_online ?? null;
+        // A percentage needs BOTH parts; without them it is unavailable, not 0%.
+        const healthPct =
+          total !== null && total > 0 && online !== null
+            ? Math.round((online / total) * 100)
+            : null;
 
-        let status: SiteStatus;
-        if (total === 0) {
-          status = "unknown";
-        } else if (healthPct >= 90) {
-          status = "healthy";
-        } else if (healthPct >= 70) {
-          status = "warning";
-        } else {
-          status = "critical";
+        let status: SiteStatus = "unknown";
+        if (total !== null && total > 0 && healthPct !== null) {
+          status = healthPct >= 90 ? "healthy" : healthPct >= 70 ? "warning" : "critical";
         }
 
         setData({
@@ -69,7 +71,7 @@ export function useSitesData(refreshMs = REFRESH_MS): SitesData {
           healthPct,
           status,
           loading: false,
-          error: null,
+          error: net === null && summary === null ? "Site data unavailable" : null,
         });
       } catch (err) {
         if (!cancelled) {

@@ -6,10 +6,12 @@ import { getAutomationStatus, getDashboardSummary, AutomationStatus } from "@/li
 export type CollectorStatus = "healthy" | "warning" | "critical" | "unknown";
 
 export interface CollectorsData {
-  total: number;
-  connected: number;
-  successRatePct: number;
-  runsLast24h: number;
+  /** null = the backend did not answer (renders N/A). 0 = a measured zero. */
+  total: number | null;
+  connected: number | null;
+  /** null when the automation status is unreadable - never a 0% claim. */
+  successRatePct: number | null;
+  runsLast24h: number | null;
   status: CollectorStatus;
   loading: boolean;
   error: string | null;
@@ -30,10 +32,10 @@ const REFRESH_MS = 60_000;
  */
 export function useCollectorsData(refreshMs = REFRESH_MS): CollectorsData {
   const [data, setData] = useState<CollectorsData>({
-    total: 0,
-    connected: 0,
-    successRatePct: 0,
-    runsLast24h: 0,
+    total: null,
+    connected: null,
+    successRatePct: null,
+    runsLast24h: null,
     status: "unknown",
     loading: true,
     error: null,
@@ -51,21 +53,21 @@ export function useCollectorsData(refreshMs = REFRESH_MS): CollectorsData {
 
         if (cancelled) return;
 
-        // Canonical total: prefer automation sources_connected, fall back to dashboard summary
-        const connected = auto?.sources_connected ?? 0;
-        const total = auto?.sources_total ?? summary?.monitoring_sources ?? connected;
-        const successRatePct = auto?.success_rate_pct ?? 0;
-        const runsLast24h = auto?.runs_last_24h ?? 0;
+        // Canonical total: prefer the automation source, fall back to the
+        // dashboard summary. It is NOT derived from `connected`: a "connected"
+        // count is a different fact from a "configured" total, and inventing one
+        // from the other manufactures a number the backend never reported.
+        const total = auto?.sources_total ?? summary?.monitoring_sources ?? null;
+        const connected = auto?.sources_connected ?? null;
+        const successRatePct = auto?.success_rate_pct ?? null;
+        const runsLast24h = auto?.runs_last_24h ?? null;
 
-        let status: CollectorStatus;
-        if (total === 0) {
-          status = "unknown";
-        } else if (successRatePct >= 90) {
-          status = "healthy";
-        } else if (successRatePct >= 70) {
-          status = "warning";
-        } else {
-          status = "critical";
+        // Status is only derived from measured inputs. Previously an unreachable
+        // automation API produced successRatePct = 0 and therefore a fabricated
+        // "critical" verdict for a fleet whose run history was simply unknown.
+        let status: CollectorStatus = "unknown";
+        if (total !== null && total > 0 && successRatePct !== null) {
+          status = successRatePct >= 90 ? "healthy" : successRatePct >= 70 ? "warning" : "critical";
         }
 
         setData({
@@ -75,7 +77,7 @@ export function useCollectorsData(refreshMs = REFRESH_MS): CollectorsData {
           runsLast24h,
           status,
           loading: false,
-          error: null,
+          error: auto === null && summary === null ? "Collector data unavailable" : null,
         });
       } catch (err) {
         if (!cancelled) {
