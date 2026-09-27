@@ -7,7 +7,9 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import Principal
 from app.core.auth import get_tenant_id as get_current_tenant
+from app.core.auth import require_permission
 from app.repositories.agent_repository import AgentRepository
 from app.core.db import get_db
 from app.schemas.task import (
@@ -219,6 +221,7 @@ async def assign_task(
     agent_service: AgentService = Depends(get_agent_service),
     tenant_id: uuid.UUID = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
+    _: Principal = Depends(require_permission("tickets.write")),
 ):
     """Assign a task to an agent (human-controlled assignment).
 
@@ -544,6 +547,7 @@ async def reassign_task(
     agent_service: AgentService = Depends(get_agent_service),
     tenant_id: uuid.UUID = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
+    _: Principal = Depends(require_permission("tickets.write")),
 ):
     """Reassign an already-assigned task to a different agent.
 
@@ -606,6 +610,7 @@ async def request_task_approval(
     service: TaskService = Depends(get_task_service),
     tenant_id: uuid.UUID = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
+    _: Principal = Depends(require_permission("tickets.write")),
 ):
     """Request approval for a task that requires it.
 
@@ -638,6 +643,7 @@ async def approve_task(
     service: TaskService = Depends(get_task_service),
     tenant_id: uuid.UUID = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
+    _: Principal = Depends(require_permission("tickets.execute")),
 ):
     """Approve a task awaiting approval, so protected execution may proceed.
 
@@ -673,6 +679,7 @@ async def reject_task(
     service: TaskService = Depends(get_task_service),
     tenant_id: uuid.UUID = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
+    _: Principal = Depends(require_permission("tickets.execute")),
 ):
     """Reject a task awaiting approval. The protected action is never executed."""
     try:
@@ -703,6 +710,7 @@ async def cancel_task(
     service: TaskService = Depends(get_task_service),
     tenant_id: uuid.UUID = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
+    _: Principal = Depends(require_permission("tickets.write")),
 ):
     """Cancel a task.
 
@@ -734,6 +742,7 @@ async def worker_execute_task(
     service: TaskService = Depends(get_task_service),
     tenant_id: uuid.UUID = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
+    _: Principal = Depends(require_permission("tickets.execute")),
 ):
     """Execute a real assigned task through the worker gate."""
     try:
@@ -767,6 +776,7 @@ async def start_execution(
     service: TaskService = Depends(get_task_service),
     tenant_id: uuid.UUID = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
+    _: Principal = Depends(require_permission("tickets.execute")),
 ):
     """Agent starts execution."""
     try:
