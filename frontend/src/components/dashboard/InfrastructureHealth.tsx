@@ -37,8 +37,11 @@ const InfrastructureHealth = memo(function InfrastructureHealth({
   );
 });
 
-function panelStatus(rows: InfrastructureHealthRow[]): "critical" | "warning" | "healthy" {
+function panelStatus(rows: InfrastructureHealthRow[]): "critical" | "warning" | "healthy" | "info" {
   const pcts = rows.filter((r) => r.pct !== null).map((r) => r.pct as number);
+  // No row carried a reading: there is no verdict to display, so the panel must
+  // not fall through to a green "healthy" (it used to, with zero data).
+  if (pcts.length === 0) return "info";
   if (pcts.some((p) => p < 70)) return "critical";
   if (pcts.some((p) => p < 90)) return "warning";
   return "healthy";

@@ -87,7 +87,9 @@ const SubscriptionStatusPanel = memo(function SubscriptionStatusPanel() {
     <Panel
       title="SUBSCRIPTION STATUS"
       icon={<CreditCard size={18} />}
-      status={isProblem ? "critical" : subscription?.status === "trialing" ? "warning" : "healthy"}
+      // An unknown subscription (still loading, or the query failed) must not be
+      // coloured as a healthy one.
+      status={!subscription ? "info" : isProblem ? "critical" : subscription.status === "trialing" ? "warning" : "healthy"}
     >
       {/* Problem banner (exact backend states only) */}
       {subscription && isProblem && (

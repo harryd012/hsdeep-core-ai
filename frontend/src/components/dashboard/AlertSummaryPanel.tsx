@@ -26,7 +26,13 @@ const AlertSummaryPanel = memo(function AlertSummaryPanel({
   const { critical, warning, info, total, rawEventCount } = data;
 
   return (
-    <Panel title="ALERT SUMMARY" status={critical > 0 ? "warning" : "healthy"} className="alert-summary">
+    <Panel
+      title="ALERT SUMMARY"
+      // Only claim a health state once the data is actually in: during loading
+      // or after a failure an "all clear" colour would be asserted from nothing.
+      status={state === "loading" || state === "error" ? "info" : critical > 0 ? "warning" : "healthy"}
+      className="alert-summary"
+    >
       {state === "loading" && <div className="alert-summary__empty">Loading alert data…</div>}
       {state === "error" && <div className="alert-summary__empty">Alert data unavailable.</div>}
       {state === "empty" && <div className="alert-summary__empty">No active alerts.</div>}

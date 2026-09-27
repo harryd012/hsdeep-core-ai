@@ -20,6 +20,12 @@ import {
   recoverIncident, closeIncident, archiveIncident,
 } from "@/lib/api";
 
+/** A metric the backend did not report renders as "—", never as a measured 0. */
+function nullOr(value: number | null | undefined): number | string {
+  return value === null || value === undefined ? "—" : value;
+}
+
+
 function timeAgo(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
   const minutes = Math.max(0, Math.round(diffMs / 60000));
@@ -151,11 +157,11 @@ function IncidentIntelligenceContent() {
           )}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 16, marginBottom: 24 }}>
             {[
-              { label: "Active Incidents", value: metrics?.active_incidents ?? 0, icon: AlertTriangle, color: "var(--red)" },
-              { label: "Correlated", value: metrics?.correlated_incidents ?? 0, icon: Layers, color: "var(--cyan)" },
-              { label: "Suppressed", value: metrics?.suppressed_alerts ?? 0, icon: TrendingDown, color: "var(--amber)" },
-              { label: "Duplicates Removed", value: metrics?.duplicate_alerts_removed ?? 0, icon: XCircle, color: "var(--amber)" },
-              { label: "Noise Reduction", value: `${metrics?.noise_reduction_pct ?? 0}%`, icon: Zap, color: "var(--green)" },
+              { label: "Active Incidents", value: nullOr(metrics?.active_incidents), icon: AlertTriangle, color: "var(--red)" },
+              { label: "Correlated", value: nullOr(metrics?.correlated_incidents), icon: Layers, color: "var(--cyan)" },
+              { label: "Suppressed", value: nullOr(metrics?.suppressed_alerts), icon: TrendingDown, color: "var(--amber)" },
+              { label: "Duplicates Removed", value: nullOr(metrics?.duplicate_alerts_removed), icon: XCircle, color: "var(--amber)" },
+              { label: "Noise Reduction", value: metrics ? `${metrics.noise_reduction_pct}%` : "—", icon: Zap, color: "var(--green)" },
             ].map(({ label, value, icon: Icon, color }) => (
               <div key={label} style={{ textAlign: "center", padding: 16, border: "1px solid var(--line)", borderRadius: 8 }}>
                 <Icon size={20} style={{ color, margin: "0 auto 8px" }} />

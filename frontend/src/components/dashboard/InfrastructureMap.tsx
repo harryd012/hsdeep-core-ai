@@ -53,7 +53,13 @@ const InfrastructureMap = memo(function InfrastructureMap({
   ];
 
   return (
-    <Panel title="INFRASTRUCTURE MAP" status="healthy" className="infra-map">
+    <Panel
+      title="INFRASTRUCTURE MAP"
+      // The tile grid only reports what the API sent, so a green status while
+      // there is no summary at all would assert health from nothing.
+      status={summary ? "healthy" : "info"}
+      className="infra-map"
+    >
       <div className="infra-map__grid">
         {cells.map((cell) => (
           <div key={cell.label} className="infra-map__cell">
