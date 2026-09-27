@@ -86,6 +86,35 @@ async def _read_tenant(tenant_id: uuid.UUID) -> tuple[str, str]:
     return row[0], row[1]
 
 
+async def _rename_audit_counts(tenant_id: uuid.UUID) -> tuple[int, int]:
+    """(rows for this tenant, rows for every OTHER tenant) for 'tenant.renamed'.
+
+    The suite shares one database, so other tenants may legitimately carry their
+    own rename audits - counting them globally cannot be an invariant of this
+    code. Renaming a tenant, however, must never ADD a row for somebody else.
+    """
+    async with AsyncSessionLocal() as db:
+        mine = (
+            await db.execute(
+                text(
+                    "SELECT count(*) FROM audit_events "
+                    "WHERE action = 'tenant.renamed' AND tenant_id = :t"
+                ),
+                {"t": tenant_id},
+            )
+        ).scalar_one()
+        others = (
+            await db.execute(
+                text(
+                    "SELECT count(*) FROM audit_events "
+                    "WHERE action = 'tenant.renamed' AND tenant_id <> :t"
+                ),
+                {"t": tenant_id},
+            )
+        ).scalar_one()
+    return mine, others
+
+
 class TestRename:
     async def test_rename_name_returns_before_after_and_persists(self):
         tenant, admin = await _make_tenant("Old Name")
@@ -176,21 +205,21 @@ class TestAudit:
             await _drop(tenant.id)
 
     async def test_audit_is_tenant_scoped(self):
-        """The event belongs to the renamed tenant, not the actor's tenant."""
+        """The event belongs to the renamed tenant, not the actor's tenant.
+
+        Asserted as a DELTA rather than an absolute count: other tenants in this
+        shared database may already carry rename audits of their own, so the
+        invariant under test is that this rename does not add a row for anyone
+        other than the tenant that was renamed - while still recording one for
+        that tenant.
+        """
         tenant, admin = await _make_tenant("Scoped Audit")
         try:
+            _, others_before = await _rename_audit_counts(tenant.id)
             await _patch(tenant.id, _token(admin), {"name": "Scoped Renamed"})
-            async with AsyncSessionLocal() as db:
-                wrong = (
-                    await db.execute(
-                        text(
-                            "SELECT count(*) FROM audit_events "
-                            "WHERE action = 'tenant.renamed' AND tenant_id <> :t"
-                        ),
-                        {"t": tenant.id},
-                    )
-                ).scalar_one()
-            assert wrong == 0
+            mine_after, others_after = await _rename_audit_counts(tenant.id)
+            assert others_after == others_before  # nobody else gained a row
+            assert mine_after == 1                # and this tenant did
         finally:
             await _drop(tenant.id)
 
