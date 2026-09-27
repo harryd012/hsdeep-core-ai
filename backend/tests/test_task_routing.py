@@ -60,7 +60,10 @@ async def _make_agent(db, tenant_id: uuid.UUID, **overrides) -> Agent:
     fields.update(overrides)
     agent = Agent(tenant_id=tenant_id, **fields)
     db.add(agent)
-    await db.flush()
+    # COMMITTED on purpose: the RoutingEngine under test uses its own session
+    # (see the engine fixture), so rows merely flushed in this session would be
+    # invisible to it and every candidate assertion would see an empty list.
+    await db.commit()
     await db.refresh(agent)
     return agent
 
@@ -76,7 +79,10 @@ async def _make_task(db, tenant_id: uuid.UUID, **overrides) -> Task:
     fields.update(overrides)
     task = Task(tenant_id=tenant_id, **fields)
     db.add(task)
-    await db.flush()
+    # COMMITTED for the same reason as _make_agent: the engine reads through a
+    # different session, so an uncommitted row does not exist as far as the
+    # routing query is concerned.
+    await db.commit()
     await db.refresh(task)
     return task
 
