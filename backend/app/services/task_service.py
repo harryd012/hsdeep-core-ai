@@ -708,7 +708,7 @@ class TaskService:
         failure_reason: str,
     ) -> Task:
         """Mark task as failed (→ FAILED)."""
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
         allowed_from = {"investigating", "executing", "verifying", "retrying"}
         if task.status not in allowed_from:
             raise TaskTransitionNotAllowed(
@@ -736,7 +736,7 @@ class TaskService:
         self, task_id: uuid.UUID, tenant_id: uuid.UUID, agent_id: uuid.UUID
     ) -> Task:
         """Retry a failed task (FAILED → RETRYING)."""
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
         self._validate_transition(task.status, "retrying")
 
         if task.retry_count >= task.max_retries:
@@ -771,7 +771,7 @@ class TaskService:
         reason: str | None = None,
     ) -> Task:
         """Escalate a task to a higher authority."""
-        task = await self.get(task_id, tenant_id)
+        task = await self.get(task_id, tenant_id, for_update=True)
         allowed_from = {"investigating", "failed"}
         if task.status not in allowed_from:
             raise TaskTransitionNotAllowed(

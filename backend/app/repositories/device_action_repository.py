@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import desc, select, func
+from sqlalchemy import desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.device_action import DeviceActionRequest
@@ -26,6 +26,35 @@ class DeviceActionRequestRepository:
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def claim_status(
+        self,
+        request_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        *,
+        from_status: str,
+        to_status: str,
+    ) -> bool:
+        """Atomically move a request from one status to another, or report refusal.
+
+        A single conditional UPDATE ... RETURNING IS the claim: PostgreSQL evaluates
+        the status predicate and the write as one atomic operation, so when two
+        approvers act on the same request concurrently exactly one wins and the
+        loser gets False, which must never execute anything. Tenant scope is part
+        of the predicate, so a foreign tenant can never claim the row.
+        """
+        stmt = (
+            update(DeviceActionRequest)
+            .where(
+                DeviceActionRequest.id == request_id,
+                DeviceActionRequest.tenant_id == tenant_id,
+                DeviceActionRequest.status == from_status,
+            )
+            .values(status=to_status)
+            .returning(DeviceActionRequest.id)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none() is not None
 
     async def get_by_correlation_id(self, correlation_id: str, tenant_id: uuid.UUID) -> DeviceActionRequest | None:
         stmt = select(DeviceActionRequest).where(

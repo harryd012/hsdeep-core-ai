@@ -145,6 +145,18 @@ class DeviceActionService:
             ) from exc
         spec = ACTION_CATALOG[action_type]
 
+        # Idempotent replay (Part 5): when the caller supplies a correlation id it
+        # IS the request identity, so a repeated request must not create a second
+        # action request and must not execute an external action twice. The
+        # lookup is tenant scoped, so a correlation id belonging to another
+        # tenant is invisible here and can never adopt another tenant's request.
+        if correlation_id is not None:
+            existing = await self.requests.get_by_correlation_id(
+                correlation_id, tenant_id
+            )
+            if existing is not None:
+                return existing
+
         device = await self._get_device(tenant_id, device_id)
         source = await self._get_source(device)
         explicit = await self.capabilities.get_for_device(device_id, tenant_id)
@@ -233,6 +245,22 @@ class DeviceActionService:
                 f"Request is {request.status!r}, not awaiting approval."
             )
 
+        # CLAIM: a single conditional UPDATE decides the winner atomically. Two
+        # approvers acting at the same time can no longer both pass the check
+        # above and both execute an infrastructure action - the loser is refused
+        # here, before any external call is made.
+        claim_target = "denied" if decision == "DENY" else "executing"
+        claimed = await self.requests.claim_status(
+            request_id,
+            tenant_id,
+            from_status="awaiting_approval",
+            to_status=claim_target,
+        )
+        if not claimed:
+            raise ApprovalDecisionError(
+                "This request was already decided by another approval."
+            )
+
         approval = None
         if request.approval_request_id is not None:
             approval = await self.approvals.get(request.approval_request_id, tenant_id)
@@ -273,7 +301,10 @@ class DeviceActionService:
                 action_type="approved", note=note,
                 context={"modified": decision == "MODIFY"},
             )
-        request.status = "approved"
+        # The durable claim already moved the status to "executing"; keep this
+        # instance consistent with it. Execution itself records the final
+        # succeeded / failed state, and verification the verified state.
+        request.status = "executing"
         request.resolved_by = approver_id
         request.resolved_at = datetime.now(timezone.utc)
         request.resolution_note = note
@@ -284,6 +315,18 @@ class DeviceActionService:
             description=f"Approved {request.action} via {decision}",
             context=self._json_safe({"correlation_id": request.correlation_id, "decision": decision, "note": note}),
         )
+
+        # Durability before the external effect: the claim and the recorded
+        # approval decision are committed here, so a crash during execution can
+        # never leave the action re-decidable, and the provider call runs
+        # outside a long database transaction.
+        await self.db.commit()
+        # Re-fetch after committing: the previous instance is expired, and
+        # touching an expired attribute in async SQLAlchemy would trigger a lazy
+        # load outside an awaitable context.
+        request = await self.requests.get(request_id, tenant_id)
+        if request is None:
+            raise DeviceActionNotFound()
 
         device = await self._get_device(tenant_id, request.device_id)
         source = await self._get_source(device)
@@ -476,7 +519,12 @@ class DeviceActionService:
         request.execution_job_id = job.id
         request.status = "executing"
         request.started_at = now
-        await self.db.flush()
+        # The execution claim (status=executing plus execution_job_id) is
+        # committed BEFORE the provider is invoked: it is the durable record that
+        # this governed action ran, and committing here releases the row lock so
+        # the external call happens outside a database transaction.
+        await self.db.commit()
+        await self.db.refresh(request)
 
         started = time.monotonic()
         try:
