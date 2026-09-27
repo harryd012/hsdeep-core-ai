@@ -8,9 +8,10 @@ LLM instances. Critical for RTX 3060 12GB + 32GB RAM constraint.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -95,6 +96,22 @@ class Agent(Base, UUIDPKMixin, TimestampMixin, SoftDeleteMixin):
     metadata_json: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )
+
+    # -- Descriptive / presentation attributes already published by the API --
+    # app/schemas/agent.py has declared these on AgentBase (create + read) and
+    # AgentUpdate, but the model never implemented them, so the published
+    # contract was unimplementable: Agent(**payload) raised TypeError on
+    # `description` and AgentRead could not serialize them. Additive, nullable
+    # (config defaulted) so existing rows and callers are unaffected.
+    description: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    config: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    last_active_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true", index=True
     )

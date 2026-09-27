@@ -56,6 +56,17 @@ class RoutingEngine:
                 tenant_id, department=department, level=level, limit=limit * 3
             )
 
+        # Apply the caller's optional constraints to whichever source produced
+        # the candidates. The task-type path is the primary one and cannot
+        # express them in its query, so enforcing them here keeps department and
+        # level authoritative on EVERY routing path instead of only on the
+        # fallbacks - previously a SOC request could be satisfied by the NOC
+        # agent whenever a task-type match existed.
+        if department is not None:
+            candidates = [a for a in candidates if a.department == department]
+        if level is not None:
+            candidates = [a for a in candidates if a.level == level]
+
         # Filter by availability and workload
         eligible = [
             a for a in candidates

@@ -20,7 +20,7 @@ class AgentBase(BaseModel):
     skills: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
     supported_task_types: list[str] = Field(default_factory=list)
-    permissions: dict = Field(default_factory=dict)
+    permissions: list[str] = Field(default_factory=list)
     max_workload: int = Field(default=5, ge=1, le=50)
     config: dict = Field(default_factory=dict)
 
@@ -38,7 +38,7 @@ class AgentUpdate(BaseModel):
     skills: list[str] | None = None
     capabilities: list[str] | None = None
     supported_task_types: list[str] | None = None
-    permissions: dict | None = None
+    permissions: list[str] | None = None
     max_workload: int | None = Field(None, ge=1, le=50)
     config: dict | None = None
     status: str | None = Field(None, max_length=20)
