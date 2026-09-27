@@ -22,21 +22,34 @@ const InfrastructureMap = memo(function InfrastructureMap({
   summary,
 }: {
   summary: {
-    sites: number;
-    devices: number;
-    monitoringSources: number;
-    cloudResources: number;
-    sensors: number;
-    regions: number;
+    sites?: number | null;
+    devices?: number | null;
+    monitoringSources?: number | null;
+    cloudResources?: number | null;
+    sensors?: number | null;
+    regions?: number | null;
   } | null;
 }) {
+  // Every cell shows only what the backend actually reported.
+  //
+  // The previous form (`summary?.sites ?? 0`) turned "this field is missing
+  // from the API response" into a confident 0 - which is how CLOUD read 0 while
+  // the estate simply had no cloud data, and it is indistinguishable from a
+  // genuinely measured zero. An absent or non-finite value is therefore
+  // labelled N/A; the loading state (no summary at all) stays "…".
+  const cellValue = (value: number | null | undefined): number | string => {
+    if (value === null || value === undefined) return "N/A";
+    if (typeof value !== "number" || !Number.isFinite(value)) return "N/A";
+    return value;
+  };
+
   const cells: MapCell[] = [
-    { label: "SITES", value: summary?.sites ?? 0, Icon: Globe2 },
-    { label: "DEVICES", value: summary?.devices ?? 0, Icon: Server },
-    { label: "SOURCES", value: summary?.monitoringSources ?? 0, Icon: Database },
-    { label: "CLOUD", value: summary?.cloudResources ?? 0, Icon: Cloud },
-    { label: "SENSORS", value: summary?.sensors ?? 0, Icon: Radio },
-    { label: "REGIONS", value: summary?.regions ?? 0, Icon: Network },
+    { label: "SITES", value: cellValue(summary?.sites), Icon: Globe2 },
+    { label: "DEVICES", value: cellValue(summary?.devices), Icon: Server },
+    { label: "SOURCES", value: cellValue(summary?.monitoringSources), Icon: Database },
+    { label: "CLOUD", value: cellValue(summary?.cloudResources), Icon: Cloud },
+    { label: "SENSORS", value: cellValue(summary?.sensors), Icon: Radio },
+    { label: "REGIONS", value: cellValue(summary?.regions), Icon: Network },
   ];
 
   return (
