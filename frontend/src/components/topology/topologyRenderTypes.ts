@@ -34,7 +34,7 @@ export interface RenderNode {
   interfaces: { total: number; up: number; down: number; hasTelemetry: boolean } | null;
   rxBps: number | null;
   txBps: number | null;
-  relationshipCount: number;
+  relationshipCount: number | null;
   vendorLabel: string;
   deviceType: string | null;
   deviceTypeRaw: string | null;

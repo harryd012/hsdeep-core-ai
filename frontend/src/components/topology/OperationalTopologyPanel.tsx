@@ -226,7 +226,7 @@ function buildNodes(payload: TopologyLive): RenderNode[] {
         : null,
       rxBps: live?.interfaces.rx_bps ?? null,
       txBps: live?.interfaces.tx_bps ?? null,
-      relationshipCount: live?.relationship_count ?? 0,
+      relationshipCount: live?.relationship_count ?? null,
       vendorLabel: visual.vendorLabel,
       deviceType,
       deviceTypeRaw,

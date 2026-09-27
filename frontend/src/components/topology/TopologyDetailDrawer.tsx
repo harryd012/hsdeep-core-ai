@@ -240,7 +240,9 @@ function DeviceDetail({ node }: { node: RenderNode }) {
       </Section>
 
       <Section title="RELATIONSHIPS">
-        <Row label="Recorded relationships" value={String(node.relationshipCount)} />
+        {/* null = the live payload was not readable, so the count is unknown;
+            a missing count must not be reported as "0 relationships". */}
+        <Row label="Recorded relationships" value={node.relationshipCount === null ? "N/A" : String(node.relationshipCount)} />
         {node.relationshipCount === 0 ? (
           <p style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
             No relationship evidence recorded: discovery proves this resource exists, not how it is
