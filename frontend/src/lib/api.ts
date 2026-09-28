@@ -2200,8 +2200,11 @@ export interface AlertIntelligenceMetrics {
   suppressed_alerts: number;
   duplicate_alerts_removed: number;
   noise_reduction_pct: number;
-  total_raw_alerts: number;
-  total_displayed_alerts: number;
+  // NOTE: total_raw_alerts / total_displayed_alerts exist only on the unused
+  // AlertIntelligenceService dataclass. The shipped endpoint
+  // (GET /api/incidents/intelligence) does not return them, so they are
+  // deliberately NOT declared here - declaring them typed them as present and
+  // any future render would have printed `undefined`.
 }
 
 export interface CollectorHealth {
@@ -2209,14 +2212,13 @@ export interface CollectorHealth {
   source_name: string;
   current_state: "healthy" | "degraded" | "failing" | "unknown";
   success_rate_pct: number;
-  failure_rate_pct: number;
-  last_success_at: string | null;
-  last_failure_at: string | null;
   total_runs: number;
-  successful_runs: number;
-  failed_runs: number;
-  retry_count: number;
+  last_success_at: string | null;
   last_error: string | null;
+  // NOTE: failure_rate_pct / last_failure_at / successful_runs / failed_runs /
+  // retry_count are NOT returned by GET /api/incidents/collector-health (the
+  // route builds CollectorHealthItem from exactly the fields above), so they are
+  // deliberately not declared - a declared-but-absent field renders `undefined`.
 }
 
 export interface CollectorHealthList {
