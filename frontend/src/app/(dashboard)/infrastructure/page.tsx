@@ -8,6 +8,11 @@ import {
   getTopology, TopologyOut,
 } from "@/lib/api";
 
+/** A total the backend did not report is not a measured 0 - it is unknown. */
+function tileValue(value: number | null | undefined): string {
+  return value === null || value === undefined ? "N/A" : String(value);
+}
+
 export default function InfrastructurePage() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [devices, setDevices] = useState<Device[]>([]);
@@ -49,10 +54,10 @@ export default function InfrastructurePage() {
           {error && <p style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--amber)", fontSize: 12 }}><AlertTriangle size={14} /> {error}</p>}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 16 }}>
             {([
-              [loaded ? String(summary?.sites ?? 0) : "…", "SITES", Globe2],
-              [loaded ? String(summary?.devices ?? 0) : "…", "DEVICES", Server],
-              [loaded ? String(summary?.sensors ?? 0) : "…", "SENSORS", Radio],
-              [loaded ? String(summary?.cloud_resources ?? 0) : "…", "CLOUD", Cloud],
+              [loaded ? tileValue(summary?.sites) : "…", "SITES", Globe2],
+              [loaded ? tileValue(summary?.devices) : "…", "DEVICES", Server],
+              [loaded ? tileValue(summary?.sensors) : "…", "SENSORS", Radio],
+              [loaded ? tileValue(summary?.cloud_resources) : "…", "CLOUD", Cloud],
             ] as const).map(([value, label, Icon]) => (
               <div key={label} style={{ textAlign: "center", padding: 16, border: "1px solid var(--line)", borderRadius: 8 }}>
                 <Icon size={32} style={{ color: "var(--cyan)", margin: "0 auto 8px" }} />
