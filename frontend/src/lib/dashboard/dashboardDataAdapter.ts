@@ -220,9 +220,12 @@ export function buildAiOperations(
     aiStatus,
     activeAgents: metrics?.active_agents ?? null,
     totalAgents: metrics?.total_agents ?? null,
-    activeTasks: metrics?.working ?? 0,
-    queuedTasks: metrics?.queued ?? 0,
-    failedTasks: metrics?.failed ?? 0,
+    // Same rule as the agent counts above: an absent metrics payload means the
+    // task counters are unknown, not zero (the panel used to read "0 FAILED"
+    // next to its own "AI data unavailable" note).
+    activeTasks: metrics?.working ?? null,
+    queuedTasks: metrics?.queued ?? null,
+    failedTasks: metrics?.failed ?? null,
     currentFocus: inFlight.slice(0, 3).map((t) => t.title),
     recommendations,
     lastUpdated: safeTimestamp(overview?.generated_at ?? insights?.generated_at ?? null),

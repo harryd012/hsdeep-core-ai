@@ -66,9 +66,10 @@ export interface AiOperationsData {
   aiStatus: "online" | "degraded" | "offline";
   activeAgents: number | null;
   totalAgents: number | null;
-  activeTasks: number;
-  queuedTasks: number;
-  failedTasks: number;
+  /** null when the AI metrics payload was unavailable (never a fabricated 0). */
+  activeTasks: number | null;
+  queuedTasks: number | null;
+  failedTasks: number | null;
   /** Most recent real task titles currently in flight (max 3). */
   currentFocus: string[];
   /** Real AI correlation insights (getAIInsights). */

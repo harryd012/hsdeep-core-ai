@@ -97,15 +97,15 @@ const AiOperations = memo(function AiOperations({
             </div>
             <div>
               <dt>ACTIVE TASKS</dt>
-              <dd>{data.activeTasks}</dd>
+              <dd>{data.activeTasks === null ? "—" : data.activeTasks}</dd>
             </div>
             <div>
               <dt>QUEUED</dt>
-              <dd>{data.queuedTasks}</dd>
+              <dd>{data.queuedTasks === null ? "—" : data.queuedTasks}</dd>
             </div>
             <div>
               <dt>FAILED</dt>
-              <dd>{data.failedTasks}</dd>
+              <dd>{data.failedTasks === null ? "—" : data.failedTasks}</dd>
             </div>
           </dl>
 
