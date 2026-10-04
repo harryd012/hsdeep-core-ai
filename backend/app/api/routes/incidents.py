@@ -8,7 +8,6 @@ authenticated-principal dependency yet.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -19,14 +18,13 @@ from app.core.db import get_db
 from app.core.entitlements import require_active_subscription
 from app.repositories.alert_repository import AlertRepository
 from app.repositories.business_service_repository import BusinessServiceRepository
-from app.repositories.collector_run_repository import CollectorRunRepository
 from app.repositories.device_repository import DeviceRepository
 from app.repositories.incident_repository import IncidentRepository
 from app.repositories.maintenance_window_repository import MaintenanceWindowRepository
-from app.repositories.monitoring_source_repository import MonitoringSourceRepository
 from app.repositories.site_repository import SiteRepository
 from app.schemas.incident import IncidentDetailOut, IncidentOut, IncidentSeverity, IncidentStatus
 from app.schemas.priority import Priority, PrioritizedIncidentOut
+from app.services.collector_health_service import CollectorHealthService
 from app.services.incident_service import IncidentNotFound, IncidentService
 from app.services.priority.business_impact_engine import BusinessImpactEngine
 from app.services.priority.decision_engine import DecisionEngine
@@ -65,20 +63,41 @@ def get_priority_service(db: AsyncSession = Depends(get_db)) -> PriorityService:
 # ---------------------------------------------------------------------------
 
 class AlertIntelligenceMetrics(BaseModel):
-    active_incidents: int = 0
-    correlated_incidents: int = 0
-    suppressed_alerts: int = 0
-    duplicate_alerts_removed: int = 0
-    noise_reduction_pct: float = 0.0
+    """Response model for ``GET /api/incidents/intelligence``.
+
+    Every field is REQUIRED. All five previously defaulted to ``0``, so a field
+    that was ever omitted from the response would have serialised as a
+    fabricated *measured zero* instead of failing loudly.
+    """
+
+    active_incidents: int
+    correlated_incidents: int
+    suppressed_alerts: int
+    duplicate_alerts_removed: int
+    noise_reduction_pct: float
 
 
 class CollectorHealthItem(BaseModel):
+    """One MonitoringSource's collector health.
+
+    PHASE 3.1: ``failure_rate_pct`` / ``successful_runs`` / ``failed_runs`` /
+    ``retry_count`` / ``last_failure_at`` are now shipped. They were always
+    computed by ``CollectorHealthService`` but the route re-derived a subset
+    inline and dropped them, so the failure side of the measurement was
+    invisible (the frontend documented the omission in lib/api.ts).
+    """
+
     source_id: str
     source_name: str
     current_state: str
     success_rate_pct: float
+    failure_rate_pct: float
     total_runs: int
+    successful_runs: int
+    failed_runs: int
+    retry_count: int
     last_success_at: str | None
+    last_failure_at: str | None
     last_error: str | None
 
 
@@ -106,8 +125,19 @@ async def get_alert_intelligence_metrics(
     #   correlated = open incidents with more than one member alert
     active, correlated = await incident_repo.intelligence_counts(tenant_id)
 
-    # Suppressed alerts
-    suppressed = await alert_repo.count(tenant_id, is_suppressed=True)
+    # Alert volume in ONE scan: raw readings, rows the operator sees, and
+    # suppressed rows. This replaces the former separate
+    # count(tenant_id, is_suppressed=True) round trip (identical filter, so an
+    # identical `suppressed` value) and in the same pass supplies the raw volume.
+    total_raw_alerts, total_displayed_alerts, suppressed = await alert_repo.occurrence_volume(tenant_id)
+
+    # Duplicates removed = readings collapsed into an existing alert row instead
+    # of being displayed = raw volume - what the operator sees - what was
+    # suppressed outright. This is the definition documented on
+    # AlertIntelligenceService.get_metrics(). Until PHASE 3.1 this field was
+    # simply set equal to `suppressed`, so the "Duplicates Removed" KPI always
+    # mirrored the "Suppressed" card and was not its own measurement.
+    duplicate_alerts_removed = max(0, total_raw_alerts - total_displayed_alerts - suppressed)
 
     # Noise reduction: suppressed / (total open alerts)
     total_open_alerts = await alert_repo.count(tenant_id, status="open")
@@ -118,7 +148,7 @@ async def get_alert_intelligence_metrics(
         active_incidents=active,
         correlated_incidents=correlated,
         suppressed_alerts=suppressed,
-        duplicate_alerts_removed=suppressed,
+        duplicate_alerts_removed=duplicate_alerts_removed,
         noise_reduction_pct=noise_pct,
     )
 
@@ -129,46 +159,49 @@ async def get_collector_health(
     window_hours: int = Query(default=24, ge=1, le=168),
     db: AsyncSession = Depends(get_db),
 ):
-    """Collector health summary for the Incidents dashboard."""
-    source_repo = MonitoringSourceRepository(db)
-    run_repo = CollectorRunRepository(db)
+    """Collector health summary for the Incidents dashboard.
 
-    since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
-    sources = await source_repo.list(tenant_id)
+    Delegates to the existing `CollectorHealthService` (Sprint 15) rather than
+    re-aggregating CollectorRun rows here. The inline version this replaced:
 
-    items: list[CollectorHealthItem] = []
-    healthy = degraded = failing = unknown = 0
+      * fetched at most 100 runs per source (`limit=100`), so `total_runs`
+        under-reported on any source busier than that in the window;
+      * counted only `status == "success"` as a success, treating "partial" as a
+        failure — the service counts ("success", "partial") as successful;
+      * never computed a failure rate at all, and dropped `failed_runs`,
+        `successful_runs`, `retry_count` and `last_failure_at` from the response.
 
-    for source in sources:
-        runs = await run_repo.list(tenant_id, monitoring_source_id=source.id, since=since, limit=100)
-        total = len(runs)
-        succeeded = sum(1 for r in runs if r.status == "success")
-        rate = round((succeeded / total) * 100, 1) if total > 0 else 0.0
-        last_success = next((r.finished_at for r in sorted(runs, key=lambda r: r.started_at, reverse=True) if r.status == "success"), None)
-        last_error = next((r.error for r in sorted(runs, key=lambda r: r.started_at, reverse=True) if r.status == "error"), None)
+    The source set is unchanged: `MonitoringSourceRepository.list()` and
+    `get_health_for_tenant()` both filter `tenant_id` + not soft-deleted.
+    """
+    health = await CollectorHealthService(db).get_health_for_tenant(
+        tenant_id, window_hours=window_hours
+    )
 
-        if total == 0:
-            state = "unknown"
-            unknown += 1
-        elif rate >= 90:
-            state = "healthy"
-            healthy += 1
-        elif rate >= 50:
-            state = "degraded"
-            degraded += 1
-        else:
-            state = "failing"
-            failing += 1
+    items = [
+        CollectorHealthItem(
+            source_id=str(h.source_id),
+            source_name=h.source_name,
+            current_state=h.current_state,
+            success_rate_pct=h.success_rate_pct,
+            failure_rate_pct=h.failure_rate_pct,
+            total_runs=h.total_runs,
+            successful_runs=h.successful_runs,
+            failed_runs=h.failed_runs,
+            retry_count=h.retry_count,
+            last_success_at=h.last_success_at.isoformat() if h.last_success_at else None,
+            last_failure_at=h.last_failure_at.isoformat() if h.last_failure_at else None,
+            last_error=h.last_error,
+        )
+        for h in health
+    ]
 
-        items.append(CollectorHealthItem(
-            source_id=str(source.id),
-            source_name=source.name,
-            current_state=state,
-            success_rate_pct=rate,
-            total_runs=total,
-            last_success_at=last_success.isoformat() if last_success else None,
-            last_error=last_error,
-        ))
+    # The service's current_state is always one of these four values, so the
+    # buckets stay complete and disjoint (every source is counted exactly once).
+    healthy = sum(1 for h in health if h.current_state == "healthy")
+    degraded = sum(1 for h in health if h.current_state == "degraded")
+    failing = sum(1 for h in health if h.current_state == "failing")
+    unknown = sum(1 for h in health if h.current_state == "unknown")
 
     return CollectorHealthList(
         collectors=items,

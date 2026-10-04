@@ -332,6 +332,41 @@ class AlertRepository:
         result = await self.db.execute(stmt)
         return result.scalar_one()
 
+    async def occurrence_volume(self, tenant_id: uuid.UUID) -> tuple[int, int, int]:
+        """Raw vs displayed vs suppressed alert volume from ONE scan.
+
+        The authoritative inputs for the ``duplicate_alerts_removed`` metric on
+        ``GET /api/incidents/intelligence``, using the definitions documented on
+        ``AlertIntelligenceService.get_metrics()`` (the Sprint 15 service that
+        the endpoint's single-scan aggregates superseded — see
+        docs/architecture/phase-3-1-backend-contract-integrity.md):
+
+          * ``raw``        - ``SUM(occurrence_count)`` over every non-deleted
+                             alert: how many individual sensor readings would
+                             have been shown without dedup/suppression.
+          * ``displayed``  - rows an operator actually sees (non-deleted, not
+                             suppressed).
+          * ``suppressed`` - non-deleted suppressed rows.
+
+        Returning all three from one scan keeps this to a single pass over the
+        tenant's alerts, and it is what lets ``duplicate_alerts_removed`` be its
+        own measurement rather than a copy of ``suppressed_alerts`` (which is
+        what it was before PHASE 3.1). Filters mirror ``count()``'s base clause
+        exactly (``tenant_id`` + not soft-deleted), so ``suppressed`` here is
+        identical to ``count(tenant_id, is_suppressed=True)``.
+        """
+        stmt = (
+            select(
+                func.coalesce(func.sum(Alert.occurrence_count), 0),
+                func.count().filter(Alert.is_suppressed.is_(False)),
+                func.count().filter(Alert.is_suppressed.is_(True)),
+            )
+            .select_from(Alert)
+            .where(Alert.tenant_id == tenant_id, Alert.is_deleted.is_(False))
+        )
+        row = (await self.db.execute(stmt)).one()
+        return int(row[0]), int(row[1]), int(row[2])
+
     async def summary(self, tenant_id: uuid.UUID) -> dict:
         stmt = (
             select(Alert.severity, Alert.status, func.count())

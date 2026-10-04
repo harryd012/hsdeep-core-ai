@@ -2212,13 +2212,20 @@ export interface CollectorHealth {
   source_name: string;
   current_state: "healthy" | "degraded" | "failing" | "unknown";
   success_rate_pct: number;
+  failure_rate_pct: number;
   total_runs: number;
+  successful_runs: number;
+  failed_runs: number;
+  retry_count: number;
   last_success_at: string | null;
+  last_failure_at: string | null;
   last_error: string | null;
-  // NOTE: failure_rate_pct / last_failure_at / successful_runs / failed_runs /
-  // retry_count are NOT returned by GET /api/incidents/collector-health (the
-  // route builds CollectorHealthItem from exactly the fields above), so they are
-  // deliberately not declared - a declared-but-absent field renders `undefined`.
+  // PHASE 3.1: failure_rate_pct / successful_runs / failed_runs / retry_count /
+  // last_failure_at ARE now returned by GET /api/incidents/collector-health —
+  // the route delegates to CollectorHealthService (the authoritative
+  // CollectorRun aggregation) instead of re-deriving a subset inline. Until then
+  // this interface deliberately omitted them, because a declared-but-absent
+  // field renders `undefined`.
 }
 
 export interface CollectorHealthList {
