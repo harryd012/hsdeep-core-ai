@@ -11,13 +11,14 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_tenant_id
+from app.core.auth import Principal, get_current_user, get_tenant_id
 from app.core.db import get_db
 from app.core.entitlements import require_active_subscription
 from app.repositories.resource_relationship_repository import (
     ResourceRelationshipRepository,
 )
 from app.repositories.topology_link_repository import TopologyLinkRepository
+from app.repositories.user_repository import UserRepository
 from app.schemas.topology_link import (
     TopologyLinkCreate,
     TopologyLinkPagination,
@@ -39,6 +40,7 @@ from app.schemas.topology import (
     TopologyNeighborsOut,
     TopologySummary,
 )
+from app.services.audit_service import AuditService
 from app.services.relationship_evidence_service import RelationshipEvidenceService
 from app.services.topology_service import TopologyService
 
@@ -57,6 +59,46 @@ def get_link_repo(db: AsyncSession = Depends(get_db)) -> TopologyLinkRepository:
     return TopologyLinkRepository(db)
 
 
+def _relationship_audit_values(edge) -> dict:
+    """The recorded fields that explain one graph edge, for the audit trail.
+
+    Every value is a stored column on the row itself, so an audit record can never
+    assert more than the relationship does. Nothing derived, nothing inferred and
+    no secrets.
+    """
+    return {
+        "relationship_type": edge.relationship_type,
+        "source_resource_id": str(edge.source_resource_id),
+        "target_resource_id": str(edge.target_resource_id),
+        "discovered_by": edge.discovered_by,
+        "confidence": edge.confidence,
+        "status": edge.status,
+        "is_inferred": edge.is_inferred,
+    }
+
+
+async def _resolve_audit_actor(
+    db: AsyncSession, principal: Principal
+) -> tuple[uuid.UUID | None, str]:
+    """Resolve the audited actor against ``users`` before it is used as an FK.
+
+    ``audit_events.actor_id`` is a foreign key to ``users.id``, but
+    ``core.auth.get_current_user`` resolves the principal from its claims with NO
+    database round-trip. A principal's ``user_id`` is therefore not guaranteed to
+    be a real row (a deleted user, an MSP tenant override, an API-key principal).
+    Inserting an unknown id raises an IntegrityError, and because a failed flush
+    inside the audit SAVEPOINT still leaves the ORM object pending, that error
+    poisons the caller's transaction and turns a graph write into a 500.
+
+    So the actor is recorded as an FK only when the row exists in THIS tenant; the
+    email is always kept, and the caller preserves the raw claim in the event
+    context. This is the smallest change that keeps the audited actor trustworthy
+    without altering the shared AuditService for every other caller.
+    """
+    user = await UserRepository(db).get_by_id(principal.user_id, principal.tenant_id)
+    return (user.id if user is not None else None), principal.email
+
+
 # ---------------------------------------------------------------------------
 # Relationship CRUD
 # ---------------------------------------------------------------------------
@@ -70,6 +112,7 @@ def get_link_repo(db: AsyncSession = Depends(get_db)) -> TopologyLinkRepository:
 )
 async def create_relationship(
     payload: ResourceRelationshipCreate,
+    principal: Principal = Depends(get_current_user),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     repo: ResourceRelationshipRepository = Depends(get_relationship_repo),
     db: AsyncSession = Depends(get_db),
@@ -91,7 +134,7 @@ async def create_relationship(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="source_resource_id and target_resource_id must differ",
         )
-    edge, _created = await repo.upsert(
+    edge, created = await repo.upsert(
         tenant_id,
         source_resource_id=payload.source_resource_id,
         target_resource_id=payload.target_resource_id,
@@ -103,6 +146,26 @@ async def create_relationship(
         discovered_by=payload.discovered_by,
         status=payload.status,
         attributes=payload.attributes,
+    )
+    # Audit through the EXISTING AuditService (best-effort: it can never break the
+    # write). A first-time insert and an idempotent re-discovery refresh are
+    # distinct events, so they get distinct actions - the unique constraint means
+    # a repeated POST refreshes last_seen instead of creating a duplicate edge.
+    actor_id, actor_email = await _resolve_audit_actor(db, principal)
+    await AuditService(db).record(
+        tenant_id=tenant_id,
+        action="topology_relationship.created" if created else "topology_relationship.refreshed",
+        actor_id=actor_id,
+        actor_email=actor_email,
+        entity_type="resource_relationship",
+        entity_id=edge.id,
+        description=(
+            f"Relationship {edge.relationship_type!r} "
+            f"{edge.source_resource_id} -> {edge.target_resource_id} "
+            f"{'created' if created else 'refreshed by re-discovery'}"
+        ),
+        new_values=_relationship_audit_values(edge),
+        context={"actor_user_id": str(principal.user_id)},
     )
     await db.commit()
     return edge
@@ -118,6 +181,7 @@ async def materialize_relationships(
         default=True,
         description="Report what would be written without writing anything.",
     ),
+    principal: Principal = Depends(get_current_user),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ):
@@ -134,6 +198,33 @@ async def materialize_relationships(
     """
     service = RelationshipEvidenceService(db)
     report = await service.materialize(tenant_id, dry_run=dry_run)
+    # Materialisation is a graph WRITE path, so it is audited through the same
+    # existing AuditService as the manual relationship routes. Only counts the
+    # report actually produced are recorded - a dry run records that nothing was
+    # written.
+    actor_id, actor_email = await _resolve_audit_actor(db, principal)
+    await AuditService(db).record(
+        tenant_id=tenant_id,
+        action="topology_relationships.materialized",
+        actor_id=actor_id,
+        actor_email=actor_email,
+        entity_type="resource_relationship",
+        entity_id=None,
+        description=(
+            "Relationship materialisation plan inspected (dry run, nothing written)"
+            if dry_run
+            else "Recorded evidence materialised into relationships"
+        ),
+        new_values={
+            "dry_run": bool(report.get("dry_run", dry_run)),
+            "planned_total": report.get("planned_total", 0),
+            "written_total": report.get("written_total", 0),
+            "refreshed_total": report.get("refreshed_total", 0),
+            "unresolved_total": report.get("unresolved_total", 0),
+            "skipped_total": report.get("skipped_total", 0),
+        },
+        context={"actor_user_id": str(principal.user_id)},
+    )
     # get_db() does not commit; every write route in this module commits itself.
     # Without this the materialised edges would be rolled back on request exit.
     await db.commit()
@@ -379,6 +470,7 @@ async def get_relationship(
 async def update_relationship(
     relationship_id: uuid.UUID,
     payload: ResourceRelationshipUpdate,
+    principal: Principal = Depends(get_current_user),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     repo: ResourceRelationshipRepository = Depends(get_relationship_repo),
     db: AsyncSession = Depends(get_db),
@@ -392,6 +484,9 @@ async def update_relationship(
             detail=f"Invalid status {payload.status!r}. "
             f"Allowed: {', '.join(VALID_RELATIONSHIP_STATUSES)}",
         )
+    # Captured BEFORE the mutation so the audit record carries the real before/after
+    # pair rather than only the new state.
+    before = _relationship_audit_values(edge)
     edge = await repo.update(
         edge,
         relationship_subtype=payload.relationship_subtype,
@@ -400,6 +495,22 @@ async def update_relationship(
         confidence=payload.confidence,
         status=payload.status,
         attributes=payload.attributes,
+    )
+    actor_id, actor_email = await _resolve_audit_actor(db, principal)
+    await AuditService(db).record(
+        tenant_id=tenant_id,
+        action="topology_relationship.updated",
+        actor_id=actor_id,
+        actor_email=actor_email,
+        entity_type="resource_relationship",
+        entity_id=edge.id,
+        description=(
+            f"Relationship {edge.relationship_type!r} "
+            f"{edge.source_resource_id} -> {edge.target_resource_id} updated"
+        ),
+        old_values=before,
+        new_values=_relationship_audit_values(edge),
+        context={"actor_user_id": str(principal.user_id)},
     )
     await db.commit()
     return edge
@@ -411,6 +522,7 @@ async def update_relationship(
 )
 async def delete_relationship(
     relationship_id: uuid.UUID,
+    principal: Principal = Depends(get_current_user),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     repo: ResourceRelationshipRepository = Depends(get_relationship_repo),
     db: AsyncSession = Depends(get_db),
@@ -418,7 +530,23 @@ async def delete_relationship(
     edge = await repo.get(relationship_id, tenant_id)
     if edge is None:
         raise HTTPException(status_code=404, detail="Relationship not found")
+    before = _relationship_audit_values(edge)
     await repo.delete(edge)
+    actor_id, actor_email = await _resolve_audit_actor(db, principal)
+    await AuditService(db).record(
+        tenant_id=tenant_id,
+        action="topology_relationship.deleted",
+        actor_id=actor_id,
+        actor_email=actor_email,
+        entity_type="resource_relationship",
+        entity_id=edge.id,
+        description=(
+            f"Relationship {edge.relationship_type!r} "
+            f"{edge.source_resource_id} -> {edge.target_resource_id} soft-deleted"
+        ),
+        old_values=before,
+        context={"actor_user_id": str(principal.user_id)},
+    )
     await db.commit()
     return {"status": "deleted"}
 
