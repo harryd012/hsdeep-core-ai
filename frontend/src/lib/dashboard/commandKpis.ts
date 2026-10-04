@@ -6,6 +6,12 @@
  * no component polls anything, and no number is derived here that the adapter or
  * the backend already derived.
  *
+ * NAVIGATION (PHASE 2): every `href` points at an EXISTING route, and where the
+ * target already understands a filter the card carries it - /incidents reads
+ * `?severity=` via useSearchParams, so the critical and high-priority cards link
+ * to `?severity=critical` / `?severity=warning`. No new filtering mechanism is
+ * introduced and no duplicate incidents page is created.
+ *
  * TRUTH RULES (non-negotiable):
  *   value === null  -> the source did not answer / is unknown -> the UI shows N/A
  *   value === 0     -> a MEASURED zero -> the UI shows 0
@@ -170,9 +176,11 @@ export function buildCommandKpis(input: CommandKpiInput): CommandKpi[] {
       unit: null,
       state: problemState(criticalIncidents),
       context: available.incidents
-        ? `${openCount ?? 0} open incident(s) in total`
+        ? `${openCount ?? 0} open incident(s) in total - opens the queue filtered to critical`
         : `incident API — ${notAnswered}`,
-      href: "/incidents",
+      // PHASE 2: /incidents reads `?severity=` (useSearchParams), so the card
+      // carries the operator's context into the queue instead of dropping it.
+      href: "/incidents?severity=critical",
     },
     {
       key: "highPriority",
@@ -181,9 +189,11 @@ export function buildCommandKpis(input: CommandKpiInput): CommandKpi[] {
       unit: null,
       state: problemState(highPriority, false),
       context: available.incidents
-        ? "open incidents at warning severity"
+        ? "open incidents at warning severity - opens the queue filtered to warning"
         : `incident API — ${notAnswered}`,
-      href: "/incidents",
+      // "High priority" is the warning-severity band of the incident API, so the
+      // filter uses that same vocabulary rather than inventing a new one.
+      href: "/incidents?severity=warning",
     },
     {
       key: "degradedSystems",
