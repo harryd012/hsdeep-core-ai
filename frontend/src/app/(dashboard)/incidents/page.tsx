@@ -6,6 +6,7 @@
 // convention) so a loading fallback is shown while search params resolve.
 export const dynamic = "force-dynamic";
 
+import Link from "next/link";
 import { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import {
@@ -285,6 +286,18 @@ function IncidentIntelligenceContent() {
                   {/* Expanded Details */}
                   {isExpanded && (
                     <div style={{ padding: "16px", borderTop: "1px solid var(--line)", background: "rgba(0,0,0,0.2)" }}>
+                      {/* Entry point into the unified investigation workspace (PHASE 3) */}
+                      <Link
+                        href={`/incidents/${inc.id}`}
+                        style={{
+                          display: "inline-flex", alignItems: "center", gap: 6,
+                          marginBottom: 16, padding: "6px 14px", borderRadius: 6,
+                          border: "1px solid var(--cyan)", color: "var(--cyan)",
+                          fontSize: 12, textDecoration: "none",
+                        }}
+                      >
+                        <Layers size={12} /> Open investigation workspace
+                      </Link>
                       {/* Root Cause Summary */}
                       {inc.root_cause_summary && (
                         <div style={{ marginBottom: 16 }}>
