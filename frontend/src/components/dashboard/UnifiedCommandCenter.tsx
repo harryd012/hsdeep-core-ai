@@ -23,6 +23,8 @@ import NetworkIntelligenceWidget from "@/components/network-intelligence/Network
 
 import AttentionRequired from "@/components/dashboard/AttentionRequired";
 
+import LiveInfrastructureIntelligence from "@/components/dashboard/LiveInfrastructureIntelligence";
+
 import SocKpiCards from "@/components/soc/SocKpiCards";
 
 import SecurityOperationsPanel from "@/components/soc/SecurityOperationsPanel";
@@ -35,6 +37,9 @@ import SecurityOperationsPanel from "@/components/soc/SecurityOperationsPanel";
  * PHASE 2 level order (matches the captions rendered by AttentionRequired):
  *   L1-3  ATTENTION REQUIRED - attention, impact and health counters + the
  *         incidents/devices behind them + the backend's own evidence aggregates
+ *   L2-3  LIVE INFRASTRUCTURE INTELLIGENCE - the infrastructure involved, what
+ *         it affects and the evidence for it, between the counters and the
+ *         estate KPIs (existing graph + dependency/impact + correlation reads)
  *   L3    OPERATIONAL HEALTH (NOC) - KPI strip + estate totals
  *   L3    ALERT SUMMARY + SECURITY OVERVIEW - the alert situation and SOC counters
  *   L6    INFRASTRUCTURE OPERATIONS - overview tabs + Network Intelligence
@@ -91,8 +96,16 @@ export default function UnifiedCommandCenter({
           state={nocData.states.attention}
         />
 
+        {/* LIVE INFRASTRUCTURE INTELLIGENCE - the layer between the attention
+            counters and the estate KPI grid. It answers "what is happening,
+            what is involved, what is affected, and why believe it" by reusing
+            the existing topology graph, dependency/impact and HSI-GNCE
+            correlation reads. It adds no new system and fabricates nothing. */}
+        <LiveInfrastructureIntelligence nocData={nocData} />
+
         <nav className="dashboard-section-nav" aria-label="Dashboard sections">
           <a href="#attention">Attention</a>
+          <a href="#infrastructure-intelligence">Infrastructure Intel</a>
           <a href="#operational-health">NOC Overview</a>
           {socReady && <a href="#security-overview">SOC Overview</a>}
           <a href="#infrastructure">Infrastructure</a>
