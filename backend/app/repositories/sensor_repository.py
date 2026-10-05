@@ -100,12 +100,30 @@ class SensorRepository:
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
-    async def list_for_source(self, monitoring_source_id: uuid.UUID) -> list[Sensor]:
-        stmt = (
-            select(Sensor)
-            .where(Sensor.monitoring_source_id == monitoring_source_id, Sensor.is_deleted.is_(False))
-            .order_by(Sensor.name)
+    async def list_for_source(
+        self, monitoring_source_id: uuid.UUID, tenant_id: uuid.UUID | None = None
+    ) -> list[Sensor]:
+        """Sensors belonging to one monitoring source.
+
+        `tenant_id` is optional, but every REQUEST-driven caller must pass it.
+        The route layer already proves source ownership before calling this
+        (`MonitoringService.get_source(source_id, tenant_id)` -> 404), and
+        supplying the tenant here turns that guarantee from a convention into a
+        structural one: `Sensor` carries its own `tenant_id`, so even a row
+        whose `monitoring_source_id` link were wrong or corrupt could not leak
+        into another tenant's per-source read.
+
+        Callers that already hold a vetted source (collectors, tests) may omit
+        it. This mirrors `list_for_tenant()`, which is the path the dashboard's
+        tenant-wide listing uses.
+        """
+        stmt = select(Sensor).where(
+            Sensor.monitoring_source_id == monitoring_source_id,
+            Sensor.is_deleted.is_(False),
         )
+        if tenant_id is not None:
+            stmt = stmt.where(Sensor.tenant_id == tenant_id)
+        stmt = stmt.order_by(Sensor.name)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 

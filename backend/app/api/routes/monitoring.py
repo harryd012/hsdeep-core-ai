@@ -1,21 +1,25 @@
 """
 Monitoring Engine API.
 
-NOTE(auth): every endpoint here takes tenant_id explicitly (query param or
-body field) because there is no authenticated-principal dependency yet.
-Once the auth module exists, tenant_id should be derived from the current
-user/session instead and these signatures simplified - tracked as follow-up
-work, not done here to avoid guessing at an auth design that doesn't exist.
+NOTE(auth): every endpoint here derives its tenant from the authenticated
+principal via `Depends(get_tenant_id)` - the client cannot select a tenant.
+Where a write schema still requires a `tenant_id` field for backwards
+compatibility, the route OVERRIDES it with the principal's tenant before
+persisting (see `create_source`).
+
+NOTE(data source): sensor reads here serve the CANONICAL persisted rows written
+by the Collector Framework (`CollectionOrchestrator` -> `BundleSaver` ->
+`SensorRepository`). There is no provider-specific passthrough in this module:
+PRTG - like every other vendor - is read through `/sources/{source_id}/sensors`
+and `/sensors`, and the per-source read proves the source belongs to the
+caller's tenant before exposing anything.
 """
 from __future__ import annotations
 
-import re
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
-from xml.etree import ElementTree as ET
 
-import requests
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
@@ -37,7 +41,6 @@ from app.schemas.monitoring import (
     MonitoringSourceCreate,
     MonitoringSourceOut,
     MonitoringSourceUpdate,
-    PrtgSensorOut,
     ReadinessReportOut,
     ReadinessResultOut,
     SensorOut,
@@ -278,12 +281,15 @@ async def list_source_sensors(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     service: MonitoringService = Depends(get_monitoring_service),
 ):
-    # Validates the source belongs to this tenant before exposing its sensors.
+    # Two independent layers, deliberately: the ownership check below decides
+    # whether this tenant may see the source at all (404 if not), and passing
+    # the tenant into the repository keeps the row filter tenant-aware as well -
+    # so a corrupt/duplicated source link could not leak rows across tenants.
     try:
         await service.get_source(source_id, tenant_id)
     except MonitoringSourceNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return await service.sensor_repo.list_for_source(source_id)
+    return await service.sensor_repo.list_for_source(source_id, tenant_id=tenant_id)
 
 
 @router.get("/sensors", response_model=list[SensorOut])
@@ -304,116 +310,38 @@ async def list_sensors(
     )
 
 
-# PRTG credentials are ENVIRONMENT-PROVIDED (see .env.example: PRTG_DEV_*).
-# The hard-coded literals that used to live here were removed in Phase 8: when the
-# variables are unset NO credential is sent (fail-closed), never a built-in secret.
-def _prtg_setting(name: str, default: str = "") -> str:
-    import os
-
-    return os.getenv(name, default)
-
-
-PRTG_BASE_URL = _prtg_setting("PRTG_DEV_URL", "https://127.0.0.1")
-PRTG_USERNAME = _prtg_setting("PRTG_DEV_USERNAME")
-PRTG_PASSWORD = _prtg_setting("PRTG_DEV_PASSHASH")
-
-
-def _normalize_prtg_status(value: str | None) -> str:
-    raw = (value or "").strip().lower()
-    mapping = {
-        "3": "up",
-        "4": "warning",
-        "5": "down",
-        "6": "unusual",
-        "7": "unknown",
-        "8": "paused",
-        "9": "not available",
-    }
-    if raw in mapping:
-        return mapping[raw]
-    if raw in {"up", "warning", "down", "unusual", "unknown", "paused", "not available"}:
-        return raw
-    return raw or "unknown"
-
-
-def _prtg_login_session() -> requests.Session:
-    import os
-
-    if not PRTG_USERNAME or not PRTG_PASSWORD:
-        # Fail closed: never fall back to a built-in credential.
-        raise RuntimeError(
-            "PRTG credentials are not configured. Set PRTG_DEV_URL, PRTG_DEV_USERNAME "
-            "and PRTG_DEV_PASSHASH in the environment before using PRTG endpoints."
-        )
-    session = requests.Session()
-    session.verify = os.getenv("PRTG_DEV_VERIFY_SSL", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
-    session.headers.update({"User-Agent": "HSDEEP-CORE-AI/1.0"})
-    session.get(f"{PRTG_BASE_URL}/public/checklogin.htm", timeout=20)
-    response = session.post(
-        f"{PRTG_BASE_URL}/public/checklogin.htm",
-        data={
-            "username": PRTG_USERNAME,
-            "password": PRTG_PASSWORD,
-            "loginurl": "/sensors.htm?id=0&filter_status=5",
-        },
-        timeout=20,
-        allow_redirects=True,
-    )
-    if response.status_code >= 400 or "login.htm" in response.url.lower():
-        raise HTTPException(status_code=502, detail="PRTG login failed")
-    return session
-
-
-@router.get("/prtg/root-sensors", response_model=list[PrtgSensorOut])
-async def list_prtg_root_sensors():
-    """Read the live Root Sensors page from the local PRTG probe.
-
-    This is intentionally a thin bridge to the real probe at 127.0.0.1 so the
-    UI can render a true live sensor list without inventing any frontend-only
-    state or synthetic task transitions.
-    """
-    try:
-        session = _prtg_login_session()
-        url = (
-            f"{PRTG_BASE_URL}/data/tabledata.xml?content=sensors"
-            "&columns=sensor,probegroupdevice,status,lastvalue,message,priority,favorite,"
-            "size=htmllong,checkbox,objid,baselink"
-            "&sortby=priority&tabletitle=AUTO&id=0"
-        )
-        xml_response = session.get(url, timeout=20, allow_redirects=True)
-        xml_response.raise_for_status()
-        root = ET.fromstring(xml_response.text)
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"PRTG probe request failed: {exc}") from exc
-    except ET.ParseError as exc:
-        raise HTTPException(status_code=502, detail=f"PRTG data was not valid XML: {exc}") from exc
-
-    sensors: list[PrtgSensorOut] = []
-    for item in root.findall("item"):
-        payload = {tag: (text.strip() if text else "") for tag, text in ((child.tag, child.text) for child in item)}
-        message = payload.get("message") or ""
-        message = re.sub(r"<.*?>", "", message)
-        status = payload.get("status") or payload.get("status_raw") or "unknown"
-        sensors.append(
-            PrtgSensorOut(
-                name=payload.get("sensor") or "Unknown sensor",
-                status=_normalize_prtg_status(payload.get("status_raw") or status),
-                status_raw=payload.get("status_raw") or status,
-                lastvalue=payload.get("lastvalue") or None,
-                message=message or None,
-                objid=payload.get("objid") or None,
-                baselink=payload.get("baselink") or None,
-                probe_group_device=payload.get("probegroupdevice") or None,
-                source="PRTG",
-            )
-        )
-
-    return sensors
-
+# ---------------------------------------------------------------------------
+# REMOVED (PHASE 5B): GET /prtg/root-sensors
+#
+# This endpoint was a legacy passthrough that logged into ONE
+# environment-configured PRTG probe (PRTG_DEV_URL / PRTG_DEV_USERNAME /
+# PRTG_DEV_PASSHASH) with a SYNCHRONOUS `requests` session, parsed PRTG's
+# tabledata XML inside the API layer, and returned the result to ANY
+# authenticated caller. It was therefore:
+#
+#   * not tenant-scoped - every authenticated tenant saw the same probe's
+#     sensors, with no MonitoringSource ownership check;
+#   * credential-global - one process-wide credential rather than a per-source
+#     encrypted credential owned by a tenant;
+#   * a SECOND PRTG transport and a SECOND PRTG status map
+#     (`_normalize_prtg_status` disagreed with the collector's
+#     `_PRTG_STATUS_MAP`, so the UI could contradict the recorded
+#     `Sensor.status`);
+#   * outside the Collector Framework entirely - no MonitoringSource, no
+#     CollectionOrchestrator, no CollectorRun audit row, no SourceHealthManager
+#     health state, no per-source rate limiting.
+#
+# PRTG sensor data is now read ONLY through the canonical path:
+#
+#   PRTGCollector.collect() -> CollectionOrchestrator -> BundleSaver
+#     -> Sensor rows -> GET /sources/{source_id}/sensors   (tenant-checked)
+#
+# PRTG HTTP transport therefore lives in exactly one place
+# (app/collectors/prtg.py), with the action plane
+# (app/actions/providers/prtg.py) reusing that same transport. The regression
+# tests that keep this closed live in
+# tests/test_monitoring_crud.py::TestSourceSensorsTenantIsolation.
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------

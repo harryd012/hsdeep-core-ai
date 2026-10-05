@@ -174,17 +174,3 @@ class SensorOut(BaseModel):
     last_value_at: datetime | None
     created_at: datetime
     updated_at: datetime
-
-
-class PrtgSensorOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    name: str
-    status: str
-    status_raw: str | None = None
-    lastvalue: str | None = None
-    message: str | None = None
-    objid: str | None = None
-    baselink: str | None = None
-    probe_group_device: str | None = None
-    source: str = "PRTG"

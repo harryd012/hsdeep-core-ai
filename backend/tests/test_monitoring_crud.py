@@ -570,3 +570,220 @@ class TestCredentialNonExposureProperty:
             await client.get("/api/monitoring/sources", headers=headers),
         ]:
             _assert_no_credentials_in_response(resp.json())
+
+
+# ---------------------------------------------------------------------------
+# PHASE 5B - canonical, tenant-scoped provider sensor reads
+#
+# The legacy `GET /api/monitoring/prtg/root-sensors` passthrough was a global
+# bridge to ONE environment-configured PRTG probe: it took no tenant, logged in
+# with a single process-wide credential, and returned that probe's sensors to
+# ANY authenticated caller. It has been REMOVED, which makes
+# `GET /api/monitoring/sources/{source_id}/sensors` the only path by which
+# provider sensor rows (PRTG included) reach a client.
+#
+# These tests lock in the properties that removal buys:
+#   1. tenant isolation - a caller can never read another tenant's source
+#      sensors, not even by supplying a tenant_id of their own choosing;
+#   2. one source of truth - the per-source rows ARE the canonical `Sensor`
+#      rows the tenant-wide listing returns, so the monitoring page cannot
+#      disagree with the rest of the platform.
+# ---------------------------------------------------------------------------
+
+LEGACY_PRTG_PASSTHROUGH = "/api/monitoring/prtg/root-sensors"
+
+
+@pytest_asyncio.fixture
+async def other_tenant():
+    """An unrelated, fully-active tenant used to prove cross-tenant denial."""
+    tenant_id = uuid.uuid4()
+    await _seed_sub_for(tenant_id)
+    try:
+        yield tenant_id
+    finally:
+        from sqlalchemy import delete as sa_delete
+
+        from app.models.tenant import Tenant
+
+        async with AsyncSessionLocal() as db:
+            await db.execute(sa_delete(Tenant).where(Tenant.id == tenant_id))
+            await db.commit()
+
+
+async def _create_source(client, tenant_id: uuid.UUID) -> dict:
+    """Create a PRTG monitoring source for `tenant_id`; return the API body."""
+    resp = await client.post(
+        "/api/monitoring/sources",
+        json=_source_payload(tenant_id),
+        headers=_auth_headers(tenant_id),
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+async def _persist_sensors(
+    tenant_id: uuid.UUID, source_id: str, *, count: int = 2, status: str = "up"
+) -> list[str]:
+    """Persist `count` canonical Sensor rows for `source_id`, the same way the
+    Collector Framework does (rows carry tenant_id AND monitoring_source_id).
+    Returns the sensor names so callers can assert on what was written."""
+    from app.models.sensor import Sensor
+
+    names: list[str] = []
+    async with AsyncSessionLocal() as db:
+        for index in range(count):
+            sensor_name = f"canon-{uuid.uuid4().hex[:8]}-{index}"
+            names.append(sensor_name)
+            db.add(
+                Sensor(
+                    tenant_id=tenant_id,
+                    monitoring_source_id=uuid.UUID(source_id),
+                    external_id=f"ext-{uuid.uuid4().hex[:10]}",
+                    name=sensor_name,
+                    metric_type="ping",
+                    unit="ms",
+                    current_value=float(index + 1),
+                    status=status,
+                    last_value_at=datetime.now(timezone.utc),
+                )
+            )
+        await db.commit()
+    return names
+
+
+class TestSourceSensorsTenantIsolation:
+    """`GET /api/monitoring/sources/{id}/sensors` is the canonical read path for
+    provider sensor data and must stay tenant-scoped."""
+
+    async def test_owner_sees_persisted_sensors(self, client, tenant):
+        created = await _create_source(client, tenant.id)
+        names = await _persist_sensors(tenant.id, created["id"])
+
+        resp = await client.get(
+            f"/api/monitoring/sources/{created['id']}/sensors",
+            headers=_auth_headers(tenant.id),
+        )
+        assert resp.status_code == 200, resp.text
+        assert sorted(row["name"] for row in resp.json()) == sorted(names)
+
+    async def test_other_tenant_gets_404_and_no_data(self, client, tenant, other_tenant):
+        created = await _create_source(client, tenant.id)
+        names = await _persist_sensors(tenant.id, created["id"])
+
+        resp = await client.get(
+            f"/api/monitoring/sources/{created['id']}/sensors",
+            headers=_auth_headers(other_tenant),
+        )
+        assert resp.status_code == 404
+        # The denial must convey NOTHING about the other tenant's source.
+        assert created["name"] not in resp.text
+        for name in names:
+            assert name not in resp.text, "cross-tenant sensor data leaked"
+
+    async def test_client_supplied_tenant_id_cannot_select_a_tenant(
+        self, client, tenant, other_tenant
+    ):
+        """Authenticated as `other_tenant` but asking for `tenant`'s sensor rows.
+
+        The legacy passthrough accepted no tenant at all - every caller saw the
+        same probe. The canonical route must ignore client-supplied tenant
+        input and keep using the JWT's tenant.
+        """
+        created = await _create_source(client, tenant.id)
+        names = await _persist_sensors(tenant.id, created["id"])
+
+        resp = await client.get(
+            f"/api/monitoring/sources/{created['id']}/sensors",
+            params={"tenant_id": str(tenant.id)},
+            headers=_auth_headers(other_tenant),
+        )
+        assert resp.status_code == 404, (
+            "a client-supplied tenant_id must not grant access to another tenant"
+        )
+        for name in names:
+            assert name not in resp.text
+
+    async def test_requires_authentication(self, client, tenant):
+        created = await _create_source(client, tenant.id)
+        resp = await client.get(f"/api/monitoring/sources/{created['id']}/sensors")
+        assert resp.status_code in (401, 403), (
+            f"an unauthenticated read must be rejected, got {resp.status_code}"
+        )
+
+    async def test_unknown_source_id_is_404(self, client, tenant):
+        resp = await client.get(
+            f"/api/monitoring/sources/{uuid.uuid4()}/sensors",
+            headers=_auth_headers(tenant.id),
+        )
+        assert resp.status_code == 404
+
+
+class TestLegacyPrtgPassthroughIsRemoved:
+    """The non-tenant-scoped `GET /prtg/root-sensors` bridge is gone for good."""
+
+    async def test_endpoint_is_not_routable(self, client, tenant):
+        resp = await client.get(
+            LEGACY_PRTG_PASSTHROUGH, headers=_auth_headers(tenant.id)
+        )
+        assert resp.status_code == 404, (
+            "the legacy global PRTG passthrough must not be reachable: "
+            f"got {resp.status_code}"
+        )
+
+    async def test_no_route_registers_the_legacy_path(self):
+        """Belt-and-braces: the path must be absent from the route table, so it
+        cannot be reintroduced without failing here."""
+        paths = {getattr(route, "path", "") for route in app.routes}
+        assert not any(path.endswith("/prtg/root-sensors") for path in paths), (
+            "a /prtg/root-sensors route is registered again"
+        )
+        assert any(path.endswith("/sources/{source_id}/sensors") for path in paths), (
+            "the canonical tenant-scoped sensor route must be registered"
+        )
+
+
+class TestSensorSourceOfTruthParity:
+    """The per-source rows ARE the canonical rows the tenant-wide listing
+    returns, so the monitoring page cannot contradict `/sensors`."""
+
+    async def test_source_rows_match_the_tenant_wide_listing(self, client, tenant):
+        created = await _create_source(client, tenant.id)
+        await _persist_sensors(tenant.id, created["id"], count=3, status="warning")
+
+        per_source_resp = await client.get(
+            f"/api/monitoring/sources/{created['id']}/sensors",
+            headers=_auth_headers(tenant.id),
+        )
+        assert per_source_resp.status_code == 200, per_source_resp.text
+        per_source = per_source_resp.json()
+        assert len(per_source) == 3
+
+        tenant_wide_resp = await client.get(
+            "/api/monitoring/sensors", headers=_auth_headers(tenant.id)
+        )
+        assert tenant_wide_resp.status_code == 200, tenant_wide_resp.text
+        by_id = {row["id"]: row for row in tenant_wide_resp.json()}
+
+        for row in per_source:
+            assert row["id"] in by_id, "per-source row missing from tenant-wide list"
+            assert by_id[row["id"]] == row, (
+                "per-source and tenant-wide reads must return identical rows "
+                "(a single source of truth)"
+            )
+            assert row["status"] == "warning"
+            assert row["metric_type"] == "ping"
+
+    async def test_other_tenants_rows_are_absent(self, client, tenant, other_tenant):
+        """A tenant's source-scoped read never contains another tenant's rows."""
+        ours = await _create_source(client, tenant.id)
+        await _persist_sensors(tenant.id, ours["id"], count=2)
+        theirs = await _create_source(client, other_tenant)
+        their_names = await _persist_sensors(other_tenant, theirs["id"], count=2)
+
+        resp = await client.get(
+            f"/api/monitoring/sources/{ours['id']}/sensors",
+            headers=_auth_headers(tenant.id),
+        )
+        assert resp.status_code == 200, resp.text
+        for name in their_names:
+            assert name not in resp.text

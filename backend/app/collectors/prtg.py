@@ -52,21 +52,71 @@ from app.collectors.base import (
 
 logger = logging.getLogger(__name__)
 
-# PRTG status codes -> normalized status. See PRTG API docs for the full
-# table; these are the ones that matter for alerting. Copied verbatim from
-# the old `PRTGAdapter` (not imported - that module is retired in task 10.3).
+# PRTG sensor status codes -> normalized status.
+#
+# Source of truth: Paessler's PRTG "filter_status table" (Sensor States), which
+# defines the numeric codes PRTG returns for a sensor:
+#
+#     1  Unknown              2  Collecting           3  Up
+#     4  Warning              5  Down                 6  NoProbe
+#     7  PausedByUser         8  PausedByDependency   9  PausedBySchedule
+#     10 Unusual              11 PausedByLicense      12 PausedUntil
+#     13 DownAcknowledged     14 DownPartial
+#
+# This platform stores exactly four values on `Sensor.status` - up | down |
+# warning | unknown (see `app/models/sensor.py`) - so the mapping is:
+#
+#   * 4 (Warning) must NOT be "down": that escalates every warning into an
+#     outage.
+#   * 5 (Down) must NOT be "warning": that SILENCES a real outage.
+#   * 7/8/9/11/12 are deliberately PAUSED sensors - alerting on them is
+#     wrong, so they resolve to "unknown" (visible, not alarming).
+#   * 13/14 are genuine down states and must be "down", not unknown.
+#
+# The previous values here (3:up, 4:down, 5:warning, 7:warning, 10:warning)
+# had warning and down inverted and treated a paused sensor as a warning.
 _PRTG_STATUS_MAP = {
+    1: "unknown",   # Unknown
+    2: "unknown",   # Collecting
     3: "up",        # Up
-    4: "down",      # Down
-    5: "warning",   # Down (Acknowledged)
-    7: "warning",   # Warning
-    10: "warning",  # Down (Partial)
+    4: "warning",   # Warning
+    5: "down",      # Down
+    6: "unknown",   # NoProbe
+    7: "unknown",   # Paused by user
+    8: "unknown",   # Paused by dependency
+    9: "unknown",   # Paused by schedule
+    10: "warning",  # Unusual
+    11: "unknown",  # Paused by license
+    12: "unknown",  # Paused until
+    13: "down",     # Down (Acknowledged)
+    14: "down",     # Down (Partial)
 }
 
-# Message/log status codes considered "active" alarms worth surfacing as
-# vendor-native alert signals - reuses the same down/warning codes as
-# _PRTG_STATUS_MAP (everything except "up").
-_ACTIVE_MESSAGE_STATUS_CODES = "4,5,7,10"
+# Text spellings of the same states, matched by substring so "Down
+# (Acknowledged)" and "Down Partial" resolve to "down" - the states that the
+# numeric codes 13/14 describe. Order matters: "down" is tested before "up"
+# so "Down (Acknowledged)" cannot fall through to the "up" needle.
+_PRTG_STATUS_TEXT = (
+    ("down", "down"),
+    ("warning", "warning"),
+    ("unusual", "warning"),
+    ("up", "up"),
+)
+
+# Message/log rows use PRTG's *log status values*, which are a DIFFERENT
+# numeric scale from the sensor codes above. Paessler documents the log status
+# values as the ones valid for table-based API calls (log.htm/sensors.htm via
+# /api/table.xml) - which is exactly what `content=messages` is. On that scale
+# the alarm states are:
+#
+#     608 Down          609 Warning      610 Unusual
+#     619 Down (Acknowledged)           620 Down (Partial)
+#
+# (For reference 607 is "Up" and 611 is "OK" on that scale.) The previous
+# value, "4,5,7,10", is the SENSOR scale for Warning/Down/PausedByUser/
+# Unusual - on the log scale those ids mean "Probe Denied (IP)", "Probe Denied
+# (Key)", "Web Server" and "Data", i.e. system noise rather than active alarms.
+_ACTIVE_MESSAGE_STATUS_CODES = "608,609,610,619,620"
 
 _STATUS_TIMEOUT = 10.0   # seconds, for the lightweight status.json check
 _TABLE_TIMEOUT = 20.0    # seconds, for table/historic data calls
@@ -362,7 +412,7 @@ class PRTGCollector(BaseCollector):
             name=row.get("name") or "unknown-sensor",
             metric_type="prtg_sensor",
             value=_parse_lastvalue(row.get("lastvalue_")),
-            status=_PRTG_STATUS_MAP.get(row.get("status_raw"), "unknown"),
+            status=_normalize_sensor_status(row),
             device_external_id=str(parent_id) if parent_id is not None else None,
         )
 
@@ -463,22 +513,75 @@ def _coerce_numeric(raw: Any) -> float | None:
     return None
 
 
+def _coerce_status_code(raw: Any) -> int | None:
+    """Interpret `raw` as a PRTG numeric status code, or return None.
+
+    Accepts ints, whole floats and digit-only strings: PRTG's tables are JSON
+    and the same logical field arrives as a number on some API surfaces and as
+    a quoted string on others (the checked-in fixtures in
+    `tests/fixtures/prtg_payloads.py` deliberately carry both forms).
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw) if raw.is_integer() else None
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if stripped.lstrip("-").isdigit():
+            return int(stripped)
+    return None
+
+
+def _status_from_text(value: Any) -> str | None:
+    """Map PRTG's human-readable status text to a canonical status, or None."""
+    if not isinstance(value, str):
+        return None
+    lowered = value.strip().lower()
+    for needle, status in _PRTG_STATUS_TEXT:
+        if needle in lowered:
+            return status
+    return None
+
+
+def _normalize_sensor_status(row: dict[str, Any]) -> str:
+    """Resolve a PRTG sensors-table row to the canonical status vocabulary.
+
+    PRTG exposes a sensor's status twice (`status` and `status_raw`) and which
+    one holds the numeric code versus the text differs between API surfaces and
+    versions, so both columns are accepted in both forms rather than betting on
+    one and silently degrading every sensor to "unknown":
+
+      1. numeric code, preferring `status`
+      2. text spelling, preferring `status_raw`
+      3. "unknown" - an unrecognised value is never upgraded into an alarm.
+
+    Sensor code 5 (Down) therefore resolves to "down" whichever column carries
+    it, and a deliberate "Paused" state never becomes alerting.
+    """
+    for column in ("status", "status_raw"):
+        code = _coerce_status_code(row.get(column))
+        if code is not None and code in _PRTG_STATUS_MAP:
+            return _PRTG_STATUS_MAP[code]
+
+    for column in ("status_raw", "status"):
+        status = _status_from_text(row.get(column))
+        if status is not None:
+            return status
+
+    return "unknown"
+
+
 def _derive_device_status(status_text: str | None) -> str:
     """PRTG's `devices` table returns a human-readable status string (e.g.
     "Up", "Down", "Down (Acknowledged)", "Warning", "Paused") rather than a
-    numeric code, so this maps by substring rather than reusing
-    `_PRTG_STATUS_MAP` (which is keyed on the numeric `status_raw` used by
-    sensors)."""
-    if not status_text:
-        return "unknown"
-    text = status_text.lower()
-    if "down" in text:
-        return "down"
-    if "warning" in text:
-        return "warning"
-    if "up" in text:
-        return "up"
-    return "unknown"
+    numeric code, so this maps by text instead of `_PRTG_STATUS_MAP`.
+
+    Shares `_status_from_text` with the sensor path so the two can never
+    disagree - including "Unusual", which PRTG also reports for devices and
+    which the sensor path maps to "warning"."""
+    return _status_from_text(status_text) or "unknown"
 
 
 def _derive_message_severity(status_text: str | None) -> str:

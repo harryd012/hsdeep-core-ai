@@ -8,6 +8,12 @@ import pytest
 from datetime import datetime, timezone
 
 from app.collectors.prtg import PRTGCollector
+from app.collectors.prtg import (
+    _ACTIVE_MESSAGE_STATUS_CODES,
+    _PRTG_STATUS_MAP,
+    _derive_device_status,
+    _normalize_sensor_status,
+)
 from app.collectors.base import NormalizedBundle
 from tests.fixtures.prtg_payloads import (
     PRTG_COLLECT_EMPTY,
@@ -157,3 +163,119 @@ class TestPRTGNormalize:
         assert bundle1.devices[0].external_id == bundle2.devices[0].external_id
         assert bundle1.devices[0].name == bundle2.devices[0].name
         assert bundle1.devices[0].status == bundle2.devices[0].status
+
+
+# ---------------------------------------------------------------------------
+# PHASE 5C - PRTG status contract
+#
+# Regression cover for a severity inversion: PRTG sensor code 4 is Warning and
+# code 5 is Down, but the map read (3:up, 4:down, 5:warning, 7:warning,
+# 10:warning) - so every genuine Down sensor was published as "warning" and
+# every Warning was escalated to "down". The canonical vocabulary stored on
+# `Sensor.status` is exactly up | down | warning | unknown.
+#
+# Source of truth: Paessler PRTG "filter_status table" (Sensor States), which
+# defines codes 1-14 as listed below.
+# ---------------------------------------------------------------------------
+
+#: PRTG's documented sensor status codes mapped to canonical `Sensor.status`.
+PRTG_DOCUMENTED_SENSOR_STATUS = {
+    1: "unknown",   # Unknown
+    2: "unknown",   # Collecting
+    3: "up",        # Up
+    4: "warning",   # Warning
+    5: "down",      # Down
+    6: "unknown",   # NoProbe
+    7: "unknown",   # Paused by user
+    8: "unknown",   # Paused by dependency
+    9: "unknown",   # Paused by schedule
+    10: "warning",  # Unusual
+    11: "unknown",  # Paused by license
+    12: "unknown",  # Paused until
+    13: "down",     # Down (Acknowledged)
+    14: "down",     # Down (Partial)
+}
+
+
+def _normalize_one_sensor(**row):
+    """Run one sensors-table row through the real normalize() path."""
+    collector = PRTGCollector(source=None)
+    bundle = collector.normalize({"devices": [], "sensors": [{"objid": "9001", **row}]})
+    return bundle.sensors[0].status
+
+
+class TestPRTGStatusContract:
+    """The PRTG -> canonical mapping is a data contract: inverting warning and
+    down turns a real outage into a benign warning, or vice versa."""
+
+    def test_map_matches_prtg_documented_codes(self):
+        assert _PRTG_STATUS_MAP == PRTG_DOCUMENTED_SENSOR_STATUS
+
+    @pytest.mark.parametrize(
+        "code,expected", sorted(PRTG_DOCUMENTED_SENSOR_STATUS.items())
+    )
+    def test_each_documented_code_normalizes(self, code, expected):
+        assert _normalize_one_sensor(name=f"s{code}", status=code, status_raw=code) == expected
+
+    def test_down_is_never_reported_as_warning(self):
+        """Regression: code 5 = Down. Reported as "warning" it silently
+        de-escalated every real outage."""
+        assert _normalize_one_sensor(name="d", status=5, status_raw=5) == "down"
+        assert _normalize_one_sensor(name="w", status=4, status_raw=4) == "warning"
+
+    @pytest.mark.parametrize("code", [7, 8, 9, 11, 12])
+    def test_deliberately_paused_sensors_are_not_alerting(self, code):
+        assert _normalize_one_sensor(name="p", status=code, status_raw=code) == "unknown"
+
+    def test_unrecognised_status_is_never_upgraded_to_an_alarm(self):
+        assert _normalize_one_sensor(name="x", status="nonsense", status_raw="??") == "unknown"
+        # A sensor row with no status at all must not look healthy.
+        assert _normalize_one_sensor(name="y") == "unknown"
+
+    @pytest.mark.parametrize(
+        "row,expected",
+        [
+            ({"status": "5", "status_raw": "Down"}, "down"),      # digit string
+            ({"status": 5, "status_raw": 5}, "down"),             # both numeric
+            ({"status": "Down", "status_raw": "Down"}, "down"),   # both text
+            ({"status": "Down (Acknowledged)", "status_raw": "Down"}, "down"),
+            ({"status": "Down Partial", "status_raw": "Down Partial"}, "down"),
+            ({"status": "Warning", "status_raw": "Warning"}, "warning"),
+            ({"status": "Unusual", "status_raw": "Unusual"}, "warning"),
+            ({"status": "Up", "status_raw": "Up"}, "up"),
+            ({"status": "Up", "status_raw": 3}, "up"),
+            ({"status": 5.0, "status_raw": None}, "down"),        # whole float
+            ({"status": None, "status_raw": None}, "unknown"),
+            ({"status": "", "status_raw": ""}, "unknown"),
+            ({}, "unknown"),
+        ],
+    )
+    def test_column_and_type_variants_all_resolve(self, row, expected):
+        """Which of `status`/`status_raw` holds the code, and whether it is
+        numeric or text, differs between PRTG API surfaces and versions - so
+        every documented spelling must resolve rather than silently collapsing
+        to "unknown"."""
+        assert _normalize_sensor_status(row) == expected
+
+    def test_device_status_shares_the_sensor_vocabulary(self):
+        assert _derive_device_status("Up") == "up"
+        assert _derive_device_status("Down (Acknowledged)") == "down"
+        assert _derive_device_status("Warning") == "warning"
+        # PRTG reports "Unusual" for devices too; the sensor path maps it to
+        # "warning", so the device path must not disagree.
+        assert _derive_device_status("Unusual") == "warning"
+        # An operator-paused device is not an alarm.
+        assert _derive_device_status("Paused") == "unknown"
+        assert _derive_device_status(None) == "unknown"
+
+    def test_message_filter_uses_prtg_log_status_scale(self):
+        """`filter_status` on the messages table takes PRTG's LOG status
+        values, not the sensor codes 1-14. The alarm codes on that scale are
+        608 (Down), 609 (Warning), 610 (Unusual), 619 (Down Acknowledged) and
+        620 (Down Partial)."""
+        codes = {int(code) for code in _ACTIVE_MESSAGE_STATUS_CODES.split(",")}
+        assert codes == {608, 609, 610, 619, 620}
+        # On the log scale the sensor ids would mean "Probe Denied (IP)",
+        # "Probe Denied (Key)", "Web Server" and "Data" - system noise, not
+        # active alarms - so they must not appear here.
+        assert not codes & set(PRTG_DOCUMENTED_SENSOR_STATUS)
