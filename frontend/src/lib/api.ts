@@ -2899,3 +2899,121 @@ export function workerExecuteTask(
   });
 }
 
+
+// ---------------------------------------------------------------------------
+// Command Center brief (PHASE 6A / SPRINT P1)
+// ---------------------------------------------------------------------------
+
+/** Command Center brief — one tenant-scoped read for the command center view. */
+export interface CommandCenterBrief {
+  generated_at: string;
+  window_hours: number;
+  attention: {
+    items: {
+      id: string;
+      severity: "critical" | "high";
+      type:
+        | "critical_incident"
+        | "high_incident"
+        | "critical_alert"
+        | "high_alert";
+      resource: string | null;
+      site: string | null;
+      reason: string;
+      first_seen: string | null;
+      last_seen: string | null;
+      impact: string | null;
+      recommended_next_step: string | null;
+      href: string | null;
+    }[];
+    counts_by_severity: Record<string, number>;
+    total: number;
+    truncated: boolean;
+    gaps: { type: string; reason: string }[];
+  };
+  infrastructure_health: {
+    devices: {
+      healthy: number;
+      warning: number;
+      critical: number;
+      down: number;
+      unknown: number;
+      total: number;
+    };
+    sensors: {
+      healthy: number;
+      warning: number;
+      critical: number;
+      down: number;
+      stale: number;
+      unknown: number;
+      total: number;
+    };
+    sources: {
+      healthy: number;
+      degraded: number;
+      failed: number;
+      unknown: number;
+      total: number;
+    };
+    collectors: {
+      healthy: number;
+      degraded: number;
+      failed: number;
+      stale: number;
+      unknown: number;
+      total: number;
+    };
+    sensor_stale_after_seconds: number;
+  };
+  collection_health: {
+    collection_failure_count: number;
+    infrastructure_failure_count: number;
+    distinction: string;
+    sources: {
+      source_id: string;
+      name: string;
+      provider: string;
+      collection_status: string;
+      last_collection: string | null;
+      success_rate_pct: number | null;
+      latency_ms: number | null;
+      error: string | null;
+      affected_resources: number | null;
+      is_active: boolean;
+    }[];
+  };
+  kpis: {
+    availability_pct: number | null;
+    mttr_minutes: number | null;
+    mttd_minutes: number | null;
+    incident_volume_24h: number;
+    open_incidents: number;
+    resolved_incidents_24h: number;
+    critical_open_incidents: number;
+  };
+  trends: {
+    alerts: TrendSeries;
+    incidents: TrendSeries;
+    collection_failures: TrendSeries;
+    devices_down: TrendSeries;
+    stale_telemetry: TrendSeries;
+  };
+}
+
+export interface TrendSeries {
+  available: boolean;
+  unit: string;
+  reason: string | null;
+  buckets: { ts: string; count: number }[];
+}
+
+/** One tenant-scoped read for the command center brief (GET /api/dashboard/command-center-brief). */
+export async function getDashboardCommandCenterBrief(): Promise<CommandCenterBrief> {
+  // The `/api` prefix is part of the path: NEXT_PUBLIC_API_URL is the bare
+  // origin (http://localhost:8000), so every caller spells the full API path —
+  // exactly like `/api/auth/me` and `/api/dashboard/operational-intelligence`.
+  // Omitting it requests a route that does not exist and the panel 404s.
+  return apiFetch<CommandCenterBrief>("/api/dashboard/command-center-brief");
+}
+

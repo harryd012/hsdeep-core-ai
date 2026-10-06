@@ -229,3 +229,57 @@ class SensorRepository:
         ).where(Sensor.tenant_id == tenant_id, Sensor.is_deleted.is_(False))
         never, fresh, total = (await self.db.execute(stmt)).one()
         return int(never), int(fresh), int(total) - int(never) - int(fresh)
+
+    async def counts_by_status_and_freshness(
+        self, tenant_id: uuid.UUID, cutoff: datetime
+    ) -> dict[tuple[str, str], int]:
+        """``{(status, freshness): count}`` in ONE GROUP BY (SPRINT P1).
+
+        ``freshness`` is ``"fresh" | "stale" | "never"`` using exactly the
+        ``last_value_at`` definition of ``counts_by_freshness`` above, so the
+        Command Center can build the spec's sensor buckets
+        (HEALTHY/WARNING/CRITICAL/DOWN/STALE/UNKNOWN) WITHOUT a second status
+        system and without a second query: status and freshness are cross-
+        tabulated once here.
+
+        The keys always sum to the tenant's live sensor count.
+        """
+        freshness_case = (
+            func.case(
+                (Sensor.last_value_at.is_(None), "never"),
+                (Sensor.last_value_at >= cutoff, "fresh"),
+                else_="stale",
+            )
+        )
+        stmt = (
+            select(Sensor.status, freshness_case, func.count())
+            .where(Sensor.tenant_id == tenant_id, Sensor.is_deleted.is_(False))
+            .group_by(Sensor.status, freshness_case)
+        )
+        return {
+            (status, freshness): count
+            for status, freshness, count in (await self.db.execute(stmt)).all()
+        }
+
+    async def hourly_stale_telemetry_counts(
+        self, tenant_id: uuid.UUID, *, since: datetime, freshness_cutoff: datetime
+    ) -> dict[datetime, int]:
+        """``{hour: sensors whose last value predates the freshness cutoff}``.
+
+        Buckets are truncations of ``last_value_at``. A sensor is stale when
+        ``last_value_at < freshness_cutoff`` (``now - FRESHNESS_WINDOW_SECONDS``),
+        and this series shows in which hours that stale reading last arrived.
+        """
+        hour = func.date_trunc("hour", Sensor.last_value_at)
+        stmt = (
+            select(hour, func.count())
+            .where(
+                Sensor.tenant_id == tenant_id,
+                Sensor.is_deleted.is_(False),
+                Sensor.last_value_at.is_not(None),
+                Sensor.last_value_at < freshness_cutoff,
+                Sensor.last_value_at >= since,
+            )
+            .group_by(hour)
+        )
+        return {bucket: count for bucket, count in (await self.db.execute(stmt)).all()}

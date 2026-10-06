@@ -209,6 +209,7 @@ class NormalizedEventRepository:
         event_type: str | None = None,
         telemetry_type: str | None = None,
         is_suppressed: bool | None = None,
+        since: datetime | None = None,
     ) -> int:
         stmt = select(func.count()).select_from(NormalizedEvent).where(
             NormalizedEvent.tenant_id == tenant_id, NormalizedEvent.is_deleted.is_(False)
@@ -229,6 +230,9 @@ class NormalizedEventRepository:
             stmt = stmt.where(NormalizedEvent.telemetry_type == telemetry_type)
         if is_suppressed is not None:
             stmt = stmt.where(NormalizedEvent.is_suppressed == is_suppressed)
+        # SPRINT P1 additive window filter: bounds the persisted event time.
+        if since is not None:
+            stmt = stmt.where(NormalizedEvent.event_timestamp >= since)
         result = await self.db.execute(stmt)
         return result.scalar_one()
 

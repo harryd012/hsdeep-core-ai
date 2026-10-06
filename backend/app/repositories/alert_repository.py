@@ -352,6 +352,47 @@ class AlertRepository:
         result = await self.db.execute(stmt)
         return result.scalar_one()
 
+    async def hourly_counts(
+        self, tenant_id: uuid.UUID, *, since: datetime
+    ) -> dict[datetime, int]:
+        """``{hour: alerts triggered}`` for the window, in ONE GROUP BY (P1).
+
+        The alert trend series — buckets are truncations of ``triggered_at``,
+        the persisted moment the alert fired (never ``acknowledged_at`` or
+        ``resolved_at``, which describe the response, not the trigger).
+        """
+        hour = func.date_trunc("hour", Alert.triggered_at)
+        stmt = (
+            select(hour, func.count())
+            .where(
+                Alert.tenant_id == tenant_id,
+                Alert.is_deleted.is_(False),
+                Alert.triggered_at >= since,
+            )
+            .group_by(hour)
+        )
+        return {bucket: count for bucket, count in (await self.db.execute(stmt)).all()}
+
+    async def mean_ack_minutes(
+        self, tenant_id: uuid.UUID, *, since: datetime
+    ) -> float | None:
+        """Mean ``acknowledged_at - triggered_at`` (minutes) for alerts
+        acknowledged in the window (SPRINT P1 MTTD — detect/ack latency).
+
+        Returns ``None`` when no sample exists: MTTD with no acknowledged
+        alerts is N/A, never 0.
+        """
+        stmt = select(
+            func.avg(func.extract("epoch", Alert.acknowledged_at - Alert.triggered_at) / 60.0)
+        ).where(
+            Alert.tenant_id == tenant_id,
+            Alert.is_deleted.is_(False),
+            Alert.acknowledged_at.is_not(None),
+            Alert.acknowledged_at >= since,
+        )
+        value = (await self.db.execute(stmt)).scalar()
+        return float(value) if value is not None else None
+
     async def occurrence_volume(self, tenant_id: uuid.UUID) -> tuple[int, int, int]:
         """Raw vs displayed vs suppressed alert volume from ONE scan.
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.collector_run import CollectorRun
@@ -162,6 +162,107 @@ class CollectorRunRepository:
             stmt = stmt.where(CollectorRun.started_at >= since)
         result = await self.db.execute(stmt)
         return {row[0] for row in result.all()}
+
+    async def stats_by_source(
+        self, tenant_id: uuid.UUID, *, since: datetime
+    ) -> dict[uuid.UUID, dict[str, float | None]]:
+        """Per-source run aggregates for the window, in ONE GROUP BY (P1).
+
+        Returns ``{source_id: {runs, succeeded, partial, failed, skipped,
+        running, avg_duration_ms}}`` so the Command Center's collection-health
+        rows can report success rate AND latency per source without a single
+        per-source query (the N+1 the P1 spec forbids).
+
+        ``avg_duration_ms`` is averaged only over runs that actually finished;
+        ``None`` means no run in the window finished, which the service turns
+        into a null rate — never a fabricated number.
+        """
+        finished = CollectorRun.finished_at.is_not(None)
+        stmt = (
+            select(
+                CollectorRun.monitoring_source_id,
+                func.count().label("runs"),
+                func.count().filter(CollectorRun.status == "success").label("succeeded"),
+                func.count().filter(CollectorRun.status == "partial").label("partial"),
+                func.count().filter(CollectorRun.status == "error").label("failed"),
+                func.count().filter(CollectorRun.status == "skipped").label("skipped"),
+                func.count().filter(CollectorRun.status == "running").label("running"),
+                func.avg(
+                    func.extract("epoch", CollectorRun.finished_at - CollectorRun.started_at)
+                    * 1000.0
+                ).filter(finished).label("avg_duration_ms"),
+            )
+            .where(CollectorRun.tenant_id == tenant_id, CollectorRun.started_at >= since)
+            .group_by(CollectorRun.monitoring_source_id)
+        )
+        out: dict[uuid.UUID, dict[str, float | None]] = {}
+        for row in (await self.db.execute(stmt)).all():
+            out[row[0]] = {
+                "runs": int(row[1]),
+                "succeeded": int(row[2]),
+                "partial": int(row[3]),
+                "failed": int(row[4]),
+                "skipped": int(row[5]),
+                "running": int(row[6]),
+                "avg_duration_ms": float(row[7]) if row[7] is not None else None,
+            }
+        return out
+
+    async def latest_by_source(
+        self, tenant_id: uuid.UUID
+    ) -> dict[uuid.UUID, CollectorRun]:
+        """Most recent run per source, in ONE grouped-join query (P1).
+
+        Powers "last_collection" + the latest error shown on each collection-
+        health row: a GROUP BY max per source joined back to its run, so the
+        cost stays one statement regardless of how many sources exist.
+        """
+        newest = (
+            select(
+                CollectorRun.monitoring_source_id.label("msid"),
+                func.max(CollectorRun.started_at).label("max_started"),
+            )
+            .where(CollectorRun.tenant_id == tenant_id)
+            .group_by(CollectorRun.monitoring_source_id)
+            .subquery()
+        )
+        stmt = (
+            select(CollectorRun)
+            .join(
+                newest,
+                and_(
+                    CollectorRun.monitoring_source_id == newest.c.msid,
+                    CollectorRun.started_at == newest.c.max_started,
+                ),
+            )
+            .where(CollectorRun.tenant_id == tenant_id)
+        )
+        result = await self.db.execute(stmt)
+        return {
+            run.monitoring_source_id: run
+            for run in result.scalars().all()
+            if run.monitoring_source_id is not None
+        }
+
+    async def hourly_failure_counts(
+        self, tenant_id: uuid.UUID, *, since: datetime
+    ) -> dict[datetime, int]:
+        """``{hour: failed run count}`` for the window, in ONE GROUP BY (P1).
+
+        The collection-failure trend series. Buckets are truncations of
+        ``started_at`` (when the run began), never inferred from completion.
+        """
+        hour = func.date_trunc("hour", CollectorRun.started_at)
+        stmt = (
+            select(hour, func.count())
+            .where(
+                CollectorRun.tenant_id == tenant_id,
+                CollectorRun.started_at >= since,
+                CollectorRun.status == "error",
+            )
+            .group_by(hour)
+        )
+        return {bucket: count for bucket, count in (await self.db.execute(stmt)).all()}
 
     async def list_stale_running(self, threshold: datetime) -> list[CollectorRun]:
         """Not tenant-scoped - this powers a global startup reconciliation

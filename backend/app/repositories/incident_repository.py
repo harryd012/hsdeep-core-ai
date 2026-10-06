@@ -351,6 +351,7 @@ class IncidentRepository:
         device_id: uuid.UUID | None = None,
         severity: str | None = None,
         status: str | None = None,
+        statuses: list[str] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[Incident]:
@@ -363,6 +364,8 @@ class IncidentRepository:
             stmt = stmt.where(Incident.severity == severity)
         if status is not None:
             stmt = stmt.where(Incident.status == status)
+        if statuses is not None:
+            stmt = stmt.where(Incident.status.in_(statuses))
         stmt = stmt.order_by(Incident.last_alert_at.desc()).limit(limit).offset(offset)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
@@ -375,7 +378,19 @@ class IncidentRepository:
         device_id: uuid.UUID | None = None,
         severity: str | None = None,
         status: str | None = None,
+        statuses: list[str] | None = None,
+        opened_since: datetime | None = None,
+        resolved_since: datetime | None = None,
     ) -> int:
+        """Count matching incidents.
+
+        SPRINT P1 additive filters (all optional, ``None`` = no filter):
+        ``statuses`` matches a set (the active set is open + acknowledged +
+        investigating), ``opened_since`` bounds ``opened_at`` (incident
+        volume), ``resolved_since`` bounds ``resolved_at`` (resolved work — a
+        row with ``resolved_at IS NULL`` never matches a range, which is
+        exactly right).
+        """
         stmt = select(func.count()).select_from(Incident).where(
             Incident.tenant_id == tenant_id, Incident.is_deleted.is_(False)
         )
@@ -387,5 +402,51 @@ class IncidentRepository:
             stmt = stmt.where(Incident.severity == severity)
         if status is not None:
             stmt = stmt.where(Incident.status == status)
+        if statuses is not None:
+            stmt = stmt.where(Incident.status.in_(statuses))
+        if opened_since is not None:
+            stmt = stmt.where(Incident.opened_at >= opened_since)
+        if resolved_since is not None:
+            stmt = stmt.where(Incident.resolved_at >= resolved_since)
         result = await self.db.execute(stmt)
         return result.scalar_one()
+
+    async def hourly_counts(
+        self, tenant_id: uuid.UUID, *, since: datetime
+    ) -> dict[datetime, int]:
+        """``{hour: incidents opened}`` for the window, in ONE GROUP BY (P1).
+
+        The incident trend series — buckets are truncations of ``opened_at``,
+        the persisted moment the incident first existed.
+        """
+        hour = func.date_trunc("hour", Incident.opened_at)
+        stmt = (
+            select(hour, func.count())
+            .where(
+                Incident.tenant_id == tenant_id,
+                Incident.is_deleted.is_(False),
+                Incident.opened_at >= since,
+            )
+            .group_by(hour)
+        )
+        return {bucket: count for bucket, count in (await self.db.execute(stmt)).all()}
+
+    async def mean_resolution_minutes(
+        self, tenant_id: uuid.UUID, *, since: datetime
+    ) -> float | None:
+        """Mean ``resolved_at - opened_at`` (minutes) for incidents RESOLVED in
+        the window (SPRINT P1 MTTR).
+
+        Returns ``None`` when no sample exists — MTTR with no resolved
+        incidents is N/A, never 0.
+        """
+        stmt = select(
+            func.avg(func.extract("epoch", Incident.resolved_at - Incident.opened_at) / 60.0)
+        ).where(
+            Incident.tenant_id == tenant_id,
+            Incident.is_deleted.is_(False),
+            Incident.resolved_at.is_not(None),
+            Incident.resolved_at >= since,
+        )
+        value = (await self.db.execute(stmt)).scalar()
+        return float(value) if value is not None else None

@@ -317,6 +317,23 @@ class DeviceRepository:
             grouped.setdefault(site_id, {})[device_type] = count
         return grouped
 
+    async def counts_by_monitoring_source(
+        self, tenant_id: uuid.UUID
+    ) -> dict[uuid.UUID | None, int]:
+        """Device count per ``monitoring_source_id``, in ONE GROUP BY (P1).
+
+        The Command Center's collection-health rows report
+        ``affected_resources`` — how many devices a failing source is
+        responsible for — and this is that attribution, measured once for the
+        whole tenant instead of one COUNT per source (no N+1).
+        """
+        stmt = (
+            select(Device.monitoring_source_id, func.count())
+            .where(Device.tenant_id == tenant_id, Device.is_deleted.is_(False))
+            .group_by(Device.monitoring_source_id)
+        )
+        return {row[0]: row[1] for row in (await self.db.execute(stmt)).all()}
+
     async def count(
         self,
         tenant_id: uuid.UUID,
@@ -429,3 +446,23 @@ class DeviceRepository:
         )
         result = await self.db.execute(stmt)
         return {status: count for status, count in result.all()}
+
+    async def hourly_down_counts(self, tenant_id: uuid.UUID, *, since: datetime) -> dict[datetime, int]:
+        """``{hour: devices whose status is 'down'}`` for the window (P1).
+
+        Buckets are truncations of ``last_seen_at`` — the only timestamp a
+        device row carries — so the trend series shows when the estate last
+        reported a down device.
+        """
+        hour = func.date_trunc("hour", Device.last_seen_at)
+        stmt = (
+            select(hour, func.count())
+            .where(
+                Device.tenant_id == tenant_id,
+                Device.is_deleted.is_(False),
+                Device.status == "down",
+                Device.last_seen_at >= since,
+            )
+            .group_by(hour)
+        )
+        return {bucket: count for bucket, count in (await self.db.execute(stmt)).all()}
