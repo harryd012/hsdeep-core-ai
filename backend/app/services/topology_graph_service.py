@@ -122,10 +122,30 @@ class TopologyGraphService:
         self.relationships = ResourceRelationshipRepository(db)
         self.collector_runs = CollectorRunRepository(db)
 
-    async def build(self, tenant_id: uuid.UUID) -> dict[str, Any]:
-        devices = await self.devices.list(tenant_id, limit=self._FETCH_LIMIT)
-        sites = await self.sites.list(tenant_id)
-        sources = await self.sources.list(tenant_id)
+    async def build(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        node_type: str | None = None,
+        site_id: uuid.UUID | None = None,
+    ) -> dict[str, Any]:
+        devices = await self.devices.list(
+            tenant_id,
+            limit=limit,
+            offset=offset,
+            site_id=site_id,
+        )
+        # Count total devices for the pagination envelope (respects site_id filter).
+        total_devices = await self.devices.count(tenant_id, site_id=site_id)
+
+        # When node_type == "device", skip fetching sites/sources to keep the
+        # response minimal. Otherwise fetch all node types.
+        device_only = node_type == "device"
+        sites = [] if device_only else await self.sites.list(tenant_id)
+        sources = [] if device_only else await self.sources.list(tenant_id)
+
         sensors = await self.sensors.list_for_tenant(tenant_id, limit=self._FETCH_LIMIT)
         relationships = await self.relationships.list(
             tenant_id, limit=self._FETCH_LIMIT
@@ -174,6 +194,11 @@ class TopologyGraphService:
                 "monitoring_sources_total": len(sources),
                 "interfaces_total": sum(interface_counts.values()),
                 "sensors_total": len(sensors),
+            },
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "total_devices": total_devices,
             },
             "limitations": limitations,
         }

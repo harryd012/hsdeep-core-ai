@@ -118,6 +118,51 @@ class CollectorRunRepository:
         result = await self.db.execute(stmt)
         return result.scalar_one()
 
+    async def counts_by_status(
+        self, tenant_id: uuid.UUID, *, since: datetime | None = None
+    ) -> dict[str, int]:
+        """Run count per persisted ``status``, in ONE query (PHASE 6A).
+
+        Mirrors ``DeviceRepository.counts_by_health``: a single GROUP BY instead
+        of one COUNT per status, so the dashboard's collection KPIs cost one
+        aggregate rather than five. Keys are exactly the statuses the model
+        defines (running | success | partial | error | skipped); a status that
+        has no rows in the window is simply absent from the mapping, which the
+        service reads as 0.
+        """
+        stmt = select(CollectorRun.status, func.count()).where(
+            CollectorRun.tenant_id == tenant_id
+        )
+        if since is not None:
+            stmt = stmt.where(CollectorRun.started_at >= since)
+        stmt = stmt.group_by(CollectorRun.status)
+        return {status: count for status, count in (await self.db.execute(stmt)).all()}
+
+    async def success_source_ids(
+        self, tenant_id: uuid.UUID, *, since: datetime | None = None
+    ) -> set[uuid.UUID]:
+        """Distinct source ids with at least one SUCCESS run in the window.
+
+        The coverage numerator (PHASE 6A): "which configured sources did this
+        platform actually manage to collect from". Returns ids only - never run
+        rows - so coverage does not depend on how many runs happened, and cannot
+        be inflated by a source that is collected far more often than its peers.
+
+        ``status`` vocabulary note: only ``"success"`` counts here. ``"partial"``
+        is treated as a success for the *rate* KPI (per the CollectorHealthService
+        contract) but deliberately does NOT count as coverage, because a partial
+        run did not deliver the source's full inventory.
+        """
+        stmt = (
+            select(CollectorRun.monitoring_source_id)
+            .where(CollectorRun.tenant_id == tenant_id, CollectorRun.status == "success")
+            .distinct()
+        )
+        if since is not None:
+            stmt = stmt.where(CollectorRun.started_at >= since)
+        result = await self.db.execute(stmt)
+        return {row[0] for row in result.all()}
+
     async def list_stale_running(self, threshold: datetime) -> list[CollectorRun]:
         """Not tenant-scoped - this powers a global startup reconciliation
         sweep across all tenants for runs that got stuck in 'running' (e.g.

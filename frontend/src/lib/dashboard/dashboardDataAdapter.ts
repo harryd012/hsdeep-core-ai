@@ -12,6 +12,7 @@
  *     backend already computed (plus honest `null` when data is absent).
  *   - NO fabricated values: everything traces to an input field.
  */
+import { stripHtml } from "@/lib/sanitize";
 import type {
   AIInsights,
   Alert,
@@ -21,12 +22,20 @@ import type {
   CollectorRun,
   Device,
   Event,
+  Incident,
+  AlertIntelligenceMetrics,
+  CollectorHealthList,
   NetworkStatus,
   SensorOut,
   CommandCenterOverview,
 } from "@/lib/api";
-import { computeDeduplicatedSummary, groupAlertsByFingerprint } from "@/lib/alert-dedup";
+import { computeDeduplicatedSummary, groupAlertsByFingerprint, timeAgo } from "@/lib/alert-dedup";
 import type {
+  AttentionDeviceRow,
+  AttentionEvidence,
+  AttentionIncidentRow,
+  AttentionMetric,
+  AttentionRequiredData,
   ActivityItem,
   AiOperationsData,
   AiRecommendation,
@@ -205,7 +214,7 @@ export function buildAiOperations(
   const recommendations: AiRecommendation[] = (insights?.insights ?? []).slice(0, 4).map((i, idx) => ({
     id: `${i.kind}-${idx}`,
     severity: i.severity,
-    message: i.message,
+    message: stripHtml(i.message),
     kind: i.kind,
     deviceScoped: i.device_id !== null,
   }));
@@ -357,7 +366,7 @@ export function buildRecentEvents(events: Event[] | undefined): RecentEvent[] {
     severity: e.severity,
     type: e.event_type,
     resource: e.device_id,
-    message: e.message,
+    message: stripHtml(e.message),
   }));
 }
 
@@ -461,7 +470,7 @@ export function buildActivity(
       type: e.event_type === "incident" ? "incident" : "alert",
       severity: e.severity,
       title: e.event_type,
-      description: e.message,
+      description: stripHtml(e.message),
       resource: e.device_id,
     });
   });
@@ -496,5 +505,174 @@ export function buildHeader(input: {
       ? { email: input.user.email, fullName: input.user.full_name, roles: input.user.roles }
       : null,
     apiHost: input.apiHost,
+  };
+}
+
+/* ---------------------------------------------------------------------------
+ * Attention — Level 1 "what needs my attention?", Level 2 "why?",
+ * Level 3 "what can I do next?" (the three questions the portal must answer).
+ *
+ * Every counter is a deterministic count over records the backend already
+ * returned, and every counter is null when its source could not be read. The
+ * distinction the whole portal depends on:
+ *   value === 0     -> measured: nothing needs attention
+ *   value === null  -> unknown: the API did not answer (never shown as 0)
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Device statuses that mean "this device is not healthy", per the collectors'
+ * vocabulary. Deliberately a fixed list: a status we do not recognise is NOT
+ * counted as degraded (that would invent an outage).
+ */
+const DEGRADED_DEVICE_STATUS = new Set([
+  "degraded", "warning", "down", "offline", "critical", "error", "unreachable",
+]);
+
+/** Statuses that carry no health opinion at all (backend default is "unknown"). */
+const UNCLASSIFIED_DEVICE_STATUS = new Set(["", "unknown"]);
+
+/** Incident statuses that no longer need an operator. */
+const CLOSED_INCIDENT_STATUS = new Set(["resolved", "closed", "archived", "recovered"]);
+
+export function buildAttentionRequired(input: {
+  alerts: Alert[] | undefined;
+  devices: Device[] | undefined;
+  incidents: Incident[] | undefined;
+  /** GET /api/incidents/intelligence — authoritative correlation aggregates. */
+  intelligence?: AlertIntelligenceMetrics | undefined;
+  /** GET /api/incidents/collector-health — authoritative pipeline health. */
+  collectors?: CollectorHealthList | undefined;
+  available: {
+    alerts: boolean;
+    devices: boolean;
+    incidents: boolean;
+    intelligence?: boolean;
+    collectors?: boolean;
+  };
+}): AttentionRequiredData {
+  const { alerts, devices, incidents, available } = input;
+
+  const openIncidents = (incidents ?? []).filter(
+    (i) => !CLOSED_INCIDENT_STATUS.has((i.status || "").toLowerCase()),
+  );
+  const severityOf = (i: Incident) => (i.severity || "").toLowerCase();
+  const criticalIncidents = openIncidents.filter((i) => severityOf(i) === "critical");
+  const highPriorityIncidents = openIncidents.filter((i) => severityOf(i) === "warning");
+
+  const statusOf = (d: Device) => (d.status || "").toLowerCase();
+  const degradedDevices = (devices ?? []).filter((d) => DEGRADED_DEVICE_STATUS.has(statusOf(d)));
+  const unclassifiedDevices = (devices ?? []).filter((d) => UNCLASSIFIED_DEVICE_STATUS.has(statusOf(d)));
+
+  // AlertStatus "open" means "raised and not acknowledged" in this API; the
+  // timestamp is checked as well so the count cannot drift from the field it
+  // claims to measure.
+  const unacknowledged = (alerts ?? []).filter(
+    (a) => (a.status || "").toLowerCase() === "open" && a.acknowledged_at === null,
+  );
+
+  const deviceName = (id: string | null | undefined) =>
+    id ? (devices ?? []).find((d) => d.id === id)?.name ?? null : null;
+
+  const why: AttentionIncidentRow[] = available.incidents
+    ? [...criticalIncidents, ...highPriorityIncidents]
+        .sort(
+          (a, b) =>
+            (severityOf(a) === "critical" ? 0 : 1) - (severityOf(b) === "critical" ? 0 : 1) ||
+            (b.last_alert_at || "").localeCompare(a.last_alert_at || ""),
+        )
+        .slice(0, 5)
+        .map((i) => ({
+          id: i.id,
+          title: i.title,
+          severity: severityOf(i),
+          status: (i.status || "").replace(/_/g, " "),
+          ageLabel: timeAgo(i.opened_at),
+          asset: deviceName(i.device_id),
+          // Evidence / impact / RCA — measured fields from the same payload.
+          memberAlerts: i.alert_count ?? 0,
+          occurrences: i.total_occurrences ?? 0,
+          correlated: (i.alert_count ?? 0) > 1,
+          rca: i.root_cause_summary ?? null,
+        }))
+    : [];
+
+  const degradedRows: AttentionDeviceRow[] = available.devices
+    ? degradedDevices.slice(0, 5).map((d) => ({
+        id: d.id,
+        name: d.name,
+        type: d.device_type,
+        status: statusOf(d),
+      }))
+    : [];
+
+  const metrics: AttentionMetric[] = [
+    {
+      key: "criticalIncidents",
+      label: "CRITICAL INCIDENTS",
+      value: available.incidents ? criticalIncidents.length : null,
+      context: available.incidents
+        ? `${openIncidents.length} incident(s) open in total`
+        : "incident API unavailable",
+      href: "/incidents",
+      tone: "critical",
+    },
+    {
+      key: "highPriorityIncidents",
+      label: "HIGH PRIORITY",
+      value: available.incidents ? highPriorityIncidents.length : null,
+      context: available.incidents
+        ? "open incidents reported at warning severity"
+        : "incident API unavailable",
+      href: "/incidents",
+      tone: "warning",
+    },
+    {
+      key: "degradedSystems",
+      label: "DEGRADED SYSTEMS",
+      value: available.devices ? degradedDevices.length : null,
+      context: available.devices
+        ? `${devices?.length ?? 0} device(s) monitored` +
+          (unclassifiedDevices.length > 0
+            ? ` · ${unclassifiedDevices.length} with no reported status`
+            : "")
+        : "device API unavailable",
+      href: "/infrastructure",
+      tone: degradedDevices.length > 0 ? "critical" : "neutral",
+    },
+    {
+      key: "unacknowledgedAlerts",
+      label: "UNACKNOWLEDGED ALERTS",
+      value: available.alerts ? unacknowledged.length : null,
+      context: available.alerts
+        ? "raised, not acknowledged yet"
+        : "alert API unavailable",
+      href: "/alerts",
+      tone: unacknowledged.length > 0 ? "warning" : "neutral",
+    },
+  ];
+
+  // Authoritative aggregates, taken verbatim from the backend. Nothing is
+  // recomputed here: the correlation counts come from
+  // GET /api/incidents/intelligence and the pipeline counts from
+  // GET /api/incidents/collector-health. Unreadable => null (rendered N/A).
+  const intel = available.intelligence === true ? input.intelligence : undefined;
+  const pipeline = available.collectors === true ? input.collectors : undefined;
+  const evidence: AttentionEvidence = {
+    activeIncidents: intel?.active_incidents ?? null,
+    correlatedIncidents: intel?.correlated_incidents ?? null,
+    suppressedAlerts: intel?.suppressed_alerts ?? null,
+    noiseReductionPct: intel?.noise_reduction_pct ?? null,
+    collectorsHealthy: pipeline?.healthy_count ?? null,
+    collectorsDegraded: pipeline?.degraded_count ?? null,
+    collectorsFailing: pipeline?.failing_count ?? null,
+    collectorsUnknown: pipeline?.unknown_count ?? null,
+  };
+
+  return {
+    metrics,
+    incidents: why,
+    degradedDevices: degradedRows,
+    evidence,
+    partial: !available.alerts || !available.devices || !available.incidents,
   };
 }

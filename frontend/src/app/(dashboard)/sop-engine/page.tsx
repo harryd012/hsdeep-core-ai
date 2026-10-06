@@ -23,6 +23,7 @@ function SopEngine() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState<string | null>(null);
   const [detailSteps, setDetailSteps] = useState<Record<string, string[]>>({});
+  const [detailStepCounts, setDetailStepCounts] = useState<Record<string, number>>({});
 
   async function load() {
     setLoading(true);
@@ -77,11 +78,22 @@ function SopEngine() {
     setDetailLoading(sop.id);
     try {
       const detail = await getSop(sop.id);
-      const v: SOPVersion | undefined = detail.versions?.[detail.versions.length - 1];
-      const steps = (v?.steps ?? []).map((st) => st.action ?? `Step ${st.order ?? ""}`).filter(Boolean);
+      // Current version first (backend's own current_version_id), falling back
+      // to the highest version_number — never insertion order alone.
+      const versions = detail.versions;
+      const v: SOPVersion | undefined =
+        (detail.current_version_id
+          ? versions?.find((ver) => ver.id === detail.current_version_id)
+          : undefined) ??
+        versions?.slice().sort((a, b) => b.version_number - a.version_number)[0];
+      const steps = (v?.steps ?? [])
+        .map((st) => (st as Record<string, string>).action ?? `Step ${(st as Record<string, unknown>).order ?? ""}`)
+        .filter(Boolean);
       setDetailSteps((prev) => ({ ...prev, [sop.id]: steps }));
+      setDetailStepCounts((prev) => ({ ...prev, [sop.id]: steps.length }));
     } catch {
       setDetailSteps((prev) => ({ ...prev, [sop.id]: [] }));
+      setDetailStepCounts((prev) => ({ ...prev, [sop.id]: 0 }));
     } finally {
       setDetailLoading(null);
     }
@@ -192,7 +204,9 @@ function SopEngine() {
                   <div className="mt-3 flex flex-wrap items-center gap-3 text-[11px] text-gray-500">
                     <span className="inline-flex items-center gap-1">
                       <FileText size={12} />
-                      {(sop.versions?.[0]?.steps.length ?? 0)} steps
+                      {detailStepCounts[sop.id] !== undefined
+                        ? `${detailStepCounts[sop.id]} steps`
+                        : "— steps"}
                     </span>
                     <span className="inline-flex items-center gap-1">
                       <Clock size={12} />
@@ -210,7 +224,9 @@ function SopEngine() {
                       {detailLoading === sop.id ? (
                         <p className="flex items-center gap-2 text-xs text-gray-500"><Loader2 size={12} className="animate-spin" /> Loading steps…</p>
                       ) : steps === undefined || steps.length === 0 ? (
-                        <p className="text-xs text-gray-400">Step details unavailable{(steps !== undefined) ? " for this SOP." : " right now."}</p>
+                        <p className="text-xs text-gray-400">
+                          {steps !== undefined ? "No procedure steps configured." : "Loading steps…"}
+                        </p>
                       ) : (
                         <ol className="list-decimal space-y-1 pl-4 text-xs text-gray-700">
                           {steps.map((s, i) => <li key={i}>{s}</li>)}

@@ -69,6 +69,16 @@ class TopologyGraphSummaryOut(BaseModel):
     sensors_total: int
 
 
+class TopologyPaginationOut(BaseModel):
+    """Pagination envelope added to the bounded graph response."""
+
+    limit: int
+    offset: int
+    #: Total device rows in the tenant (or within the site_id filter).
+    #: The UI divides this by `limit` to calculate page count.
+    total_devices: int
+
+
 class TopologyGraphOut(BaseModel):
     tenant_id: str
     generated_at: str
@@ -76,7 +86,33 @@ class TopologyGraphOut(BaseModel):
     nodes: list[TopologyNodeOut]
     edges: list[TopologyEdgeOut]
     summary: TopologyGraphSummaryOut
+    #: Pagination envelope: present when the endpoint was called with
+    #: explicit limit/offset params.  Always present post-P0-hardening.
+    pagination: TopologyPaginationOut | None = None
     #: Human-readable statements of what is missing and why. When the graph is
     #: empty this is never empty - the UI must not show a blank canvas or imply
     #: the network is healthy.
     limitations: list[str]
+
+
+class TopologyQuickSummary(BaseModel):
+    """Fast aggregate-only summary: six COUNT queries, no row materialisation.
+
+    Returned by GET /api/infrastructure/topology/summary — resolves in < 500ms
+    because it never loads device/relationship/sensor rows into memory.  The UI
+    should render this first, then load the full bounded graph separately.
+    """
+
+    tenant_id: str
+    generated_at: str
+    devices_total: int
+    sites_total: int
+    monitoring_sources_total: int
+    relationships_total: int
+    interfaces_total: int
+    sensors_total: int
+    #: Breakdown from DeviceRepository.counts_by_status, e.g.
+    #: {"up": 10, "down": 3, "unknown": 2, "warning": 1}
+    by_health: dict[str, int]
+    #: "ready" when devices_total > 0; "not_discovered" otherwise.
+    status: str

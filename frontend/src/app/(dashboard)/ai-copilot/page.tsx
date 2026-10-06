@@ -80,10 +80,12 @@ export default function AiCopilotPage() {
   }
 
   const o = overview!;
-  const m: CCMetrics = o.metrics;
+  // Defensive: metrics is always present today (backend defaults every field to
+  // 0), but a partial/malformed payload must not throw before render.
+  const m: CCMetrics = o.metrics ?? ({} as CCMetrics);
 
   return (
-    <div className="dashboard" style={{ paddingTop: "clamp(84px,8.5vh,104px)" }}>
+    <div className="dashboard" style={{ paddingTop: 12 }}>
       <div className="overview" style={{ gridTemplateColumns: "1fr", gap: 16 }}>
 
                 <CtoStatusBar m={m} systemOnline={o.system_online} health={o.health ?? null} generatedAt={o.generated_at} />
@@ -99,7 +101,7 @@ export default function AiCopilotPage() {
           {o.workload.length === 0 ? (
             <p style={{ color: "var(--muted)" }}>No active AI agents.</p>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 12 }}>
               {o.workload.map((w) => (
                 <DepartmentBlock key={w.department} w={w} agents={o.agents} />
               ))}
@@ -182,7 +184,7 @@ function ToolGatewayPanel() {
   return (
     <section className="hud-panel">
       <h2>TOOL GATEWAY <span style={{ fontSize: 10, color: "var(--muted)", fontWeight: 400 }}>(informational — no live execution tracking yet)</span></h2>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(160px,1fr))", gap: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 8 }}>
         {TOOL_GATEWAY_ADAPTERS.map((a) => (
           <div key={a.id} style={{ ...panelStyle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 12, color: "#a7bec7" }}>{a.name}</span>

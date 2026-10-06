@@ -184,3 +184,48 @@ class SensorRepository:
             stmt = stmt.where(Sensor.name.ilike(f"%{search}%"))
         result = await self.db.execute(stmt)
         return result.scalar_one()
+
+    async def counts_by_status(self, tenant_id: uuid.UUID) -> dict[str, int]:
+        """Sensor count per persisted ``status``, in ONE query (PHASE 6A).
+
+        Mirrors ``DeviceRepository.counts_by_health``: a single GROUP BY over the
+        tenant's non-deleted rows, so a dashboard KPI read never has to issue one
+        COUNT per status bucket. Values are whatever PHASE 5C persisted
+        (up | down | warning | unknown); an unexpected value is preserved as its
+        own key rather than being folded into a bucket, so the caller can see it
+        instead of having it silently mis-counted.
+        """
+        stmt = (
+            select(Sensor.status, func.count())
+            .where(Sensor.tenant_id == tenant_id, Sensor.is_deleted.is_(False))
+            .group_by(Sensor.status)
+        )
+        return {status: count for status, count in (await self.db.execute(stmt)).all()}
+
+    async def counts_by_freshness(
+        self, tenant_id: uuid.UUID, cutoff: datetime
+    ) -> tuple[int, int, int]:
+        """``(never_collected, fresh, stale)`` sensor counts, in ONE query (PHASE 6A).
+
+        Freshness is derived solely from ``last_value_at`` - the timestamp
+        ``upsert()`` writes on every persisted reading (see the model column and
+        ``upsert`` above) - so it answers "when did a real value last arrive for
+        this sensor", which is what the KPI claims.
+
+        * ``never_collected`` - ``last_value_at IS NULL``: the sensor row exists
+          but no reading has ever been persisted for it. This is NOT counted as
+          stale and NOT counted as fresh; conflating the two is exactly the
+          misleading-health failure the KPI must avoid.
+        * ``fresh``   - ``last_value_at >= cutoff``.
+        * ``stale``   - everything else.
+
+        The three values always sum to the tenant's live sensor count, so the
+        caller can reconcile them against ``counts_by_status``.
+        """
+        stmt = select(
+            func.count().filter(Sensor.last_value_at.is_(None)),
+            func.count().filter(Sensor.last_value_at >= cutoff),
+            func.count(),
+        ).where(Sensor.tenant_id == tenant_id, Sensor.is_deleted.is_(False))
+        never, fresh, total = (await self.db.execute(stmt)).one()
+        return int(never), int(fresh), int(total) - int(never) - int(fresh)

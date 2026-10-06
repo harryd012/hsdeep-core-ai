@@ -90,8 +90,46 @@ export interface TopologyGraph {
  * `status: "not_discovered"` rather than inventing edges from subnets,
  * hostnames or device types.
  */
-export function getTopologyGraph(tenantId: string = DEFAULT_TENANT_ID): Promise<TopologyGraph> {
-  return apiFetch<TopologyGraph>(`/api/infrastructure/topology/graph?${withTenant(tenantId).toString()}`);
+export function getTopologyGraph(
+  tenantId: string = DEFAULT_TENANT_ID,
+  timeoutMs?: number,
+): Promise<TopologyGraph> {
+  return apiFetch<TopologyGraph>(
+    `/api/infrastructure/topology/graph?${withTenant(tenantId).toString()}`,
+    undefined,
+    timeoutMs,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Topology quick summary (Task 3 — fast, count-only endpoint)
+// ---------------------------------------------------------------------------
+
+export interface TopologyQuickSummary {
+  tenant_id: string;
+  generated_at: string;
+  devices_total: number;
+  sites_total: number;
+  monitoring_sources_total: number;
+  relationships_total: number;
+  interfaces_total: number;
+  sensors_total: number;
+  by_health: Record<string, number>;
+  /** "ok" | "empty" */
+  status: string;
+}
+
+/**
+ * Fast aggregate topology summary — 6 COUNT queries on the backend,
+ * no row materialisation. Use this to show stat cards immediately while
+ * the full graph is still loading.
+ */
+export function getTopologySummary(
+  tenantId: string = DEFAULT_TENANT_ID,
+): Promise<TopologyQuickSummary> {
+  return apiFetch<TopologyQuickSummary>(
+    `/api/infrastructure/topology/summary?${withTenant(tenantId).toString()}`,
+  );
 }
 
 // ---------------------------------------------------------------------------

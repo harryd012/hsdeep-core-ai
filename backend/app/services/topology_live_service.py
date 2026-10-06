@@ -533,7 +533,9 @@ class TopologyLiveService:
 
         # Constant number of round trips: graph build, device list, one batched
         # interface list - independent of how many nodes the tenant has.
-        graph = await self.graph.build(tenant_id)
+        # Pass _FETCH_LIMIT to preserve the live service's existing unlimited
+        # behaviour — only the HTTP endpoint uses the bounded limit/offset params.
+        graph = await self.graph.build(tenant_id, limit=MAX_FETCH_LIMIT)
         devices = await self.devices.list(tenant_id, limit=MAX_FETCH_LIMIT)
         interfaces = await self.interfaces.list_for_devices(
             tenant_id, [device.id for device in devices]

@@ -12,20 +12,26 @@ from the current user/session instead.
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.core.auth import get_tenant_id
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import get_db
+from app.core.db import AsyncSessionLocal, get_db
 from app.repositories.device_repository import DeviceRepository
+from app.repositories.interface_repository import InterfaceRepository
+from app.repositories.monitoring_source_repository import MonitoringSourceRepository
+from app.repositories.resource_relationship_repository import ResourceRelationshipRepository
+from app.repositories.sensor_repository import SensorRepository
 from app.repositories.site_repository import SiteRepository
 from app.schemas.device import DeviceOut
 from app.schemas.infrastructure_overview import InfrastructureOverviewOut
 from app.schemas.pagination import Page
 from app.schemas.site import SiteOut, SiteSummary
-from app.schemas.topology_graph import TopologyGraphOut
+from app.schemas.topology_graph import TopologyGraphOut, TopologyQuickSummary
 from app.schemas.topology_live import TopologyLiveOut
 from app.services.infrastructure_overview_service import InfrastructureOverviewService
 from app.services.dependency_impact_service import (
@@ -82,9 +88,105 @@ def get_topology_live_service(
     return TopologyLiveService(db)
 
 
+def get_monitoring_source_repository(
+    db: AsyncSession = Depends(get_db),
+) -> MonitoringSourceRepository:
+    return MonitoringSourceRepository(db)
+
+
+def get_sensor_repository(
+    db: AsyncSession = Depends(get_db),
+) -> SensorRepository:
+    return SensorRepository(db)
+
+
+def get_interface_repository(
+    db: AsyncSession = Depends(get_db),
+) -> InterfaceRepository:
+    return InterfaceRepository(db)
+
+
+def get_resource_relationship_repository(
+    db: AsyncSession = Depends(get_db),
+) -> ResourceRelationshipRepository:
+    return ResourceRelationshipRepository(db)
+
+
+@router.get("/topology/summary", response_model=TopologyQuickSummary)
+async def get_topology_quick_summary(
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+):
+    """Fast aggregate topology summary — six COUNT queries, no row materialisation.
+
+    All counts are fired concurrently via asyncio.gather(), so the endpoint
+    resolves in well under 500ms even on large tenants.  Never calls
+    TopologyGraphService.build() — the full graph is only needed when the
+    caller explicitly requests the /topology/graph endpoint.
+
+    SESSION SAFETY: each count runs on its OWN short-lived session drawn from
+    the shared engine pool. FastAPI caches `get_db` once per request, so all
+    request-scoped repositories share a single AsyncSession — and gathering
+    concurrent operations on one AsyncSession is illegal in SQLAlchemy (it
+    raises IllegalStateChangeError: "_connection_for_bind() is already in
+    progress"). Separate pooled sessions keep the queries concurrent AND safe.
+
+    by_health maps the raw collector-reported status strings to the canonical
+    four-bucket vocabulary (healthy / warning / critical / unknown) using the
+    same device_health_bucket() function the Infrastructure Overview uses,
+    so the numbers here agree with the overview dashboard KPIs.
+    """
+    from app.services.infrastructure_overview_service import device_health_bucket
+
+    async def _count(run):
+        """One COUNT = one short-lived session (never the shared request one)."""
+        async with AsyncSessionLocal() as session:
+            return await run(session)
+
+    (
+        devices_total,
+        sites_total,
+        sources_total,
+        relationships_total,
+        interfaces_total,
+        sensors_total,
+        status_counts,
+    ) = await asyncio.gather(
+        _count(lambda s: DeviceRepository(s).count(tenant_id)),
+        _count(lambda s: SiteRepository(s).count(tenant_id)),
+        _count(lambda s: MonitoringSourceRepository(s).count(tenant_id)),
+        _count(lambda s: ResourceRelationshipRepository(s).count(tenant_id)),
+        _count(lambda s: InterfaceRepository(s).count_for_tenant(tenant_id)),
+        _count(lambda s: SensorRepository(s).count_for_tenant(tenant_id)),
+        _count(lambda s: DeviceRepository(s).counts_by_status(tenant_id)),
+    )
+
+    # Map raw status strings → canonical 4-bucket health vocabulary.
+    by_health: dict[str, int] = {}
+    for raw_status, count in status_counts.items():
+        bucket = device_health_bucket(raw_status)
+        by_health[bucket] = by_health.get(bucket, 0) + count
+
+    return TopologyQuickSummary(
+        tenant_id=str(tenant_id),
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        devices_total=devices_total,
+        sites_total=sites_total,
+        monitoring_sources_total=sources_total,
+        relationships_total=relationships_total,
+        interfaces_total=interfaces_total,
+        sensors_total=sensors_total,
+        by_health=by_health,
+        status="ok" if devices_total > 0 else "empty",
+    )
+
+
 @router.get("/topology/graph", response_model=TopologyGraphOut)
 async def get_topology_graph(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    node_type: str | None = Query(default=None),
+    site_id: uuid.UUID | None = Query(default=None),
     service: TopologyGraphService = Depends(get_topology_graph_service),
 ):
     """Node/edge topology graph built ONLY from real rows.
@@ -98,8 +200,18 @@ async def get_topology_graph(
     Every edge comes from a `ResourceRelationship` row. When none exist the
     response reports `status: "not_discovered"` with `limitations` explaining
     why - it never synthesises an edge from subnets, hostnames or device types.
+
+    Pagination via `limit`/`offset` bounds the device list; `node_type` and
+    `site_id` filter nodes before pagination is applied.  The response includes
+    a `pagination` envelope with `total_devices` so the UI can calculate pages.
     """
-    return await service.build(tenant_id)
+    return await service.build(
+        tenant_id,
+        limit=limit,
+        offset=offset,
+        node_type=node_type,
+        site_id=site_id,
+    )
 
 
 @router.get("/topology/graph/live", response_model=TopologyLiveOut)

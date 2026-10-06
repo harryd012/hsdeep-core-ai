@@ -282,6 +282,27 @@ class DeviceRepository:
         )
         return {health: count for health, count in (await self.db.execute(stmt)).all()}
 
+    async def counts_by_status(self, tenant_id: uuid.UUID) -> dict[str, int]:
+        """Device count per persisted ``status``, in ONE query (PHASE 6A).
+
+        Deliberately grouped on ``status`` (the collector-reported state) rather
+        than on ``health`` (the universal layer's later health-pass bucket, which
+        is NULL until such a pass has run and would therefore report most of an
+        estate as unclassifiable). ``status`` is the column the collectors
+        actually write and the one the dashboard's device health KPI is defined
+        against, so this is the same signal the UI already uses - just measured
+        once, server-side.
+
+        Any value the collector vocabulary does not define is preserved as its
+        own key and is bucketed as "unknown" by the service, never as a problem.
+        """
+        stmt = (
+            select(Device.status, func.count())
+            .where(Device.tenant_id == tenant_id, Device.is_deleted.is_(False))
+            .group_by(Device.status)
+        )
+        return {status: count for status, count in (await self.db.execute(stmt)).all()}
+
     async def counts_by_site_and_type(
         self, tenant_id: uuid.UUID
     ) -> dict[uuid.UUID | None, dict[str, int]]:

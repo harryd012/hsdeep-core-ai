@@ -525,18 +525,6 @@ export interface SensorOut {
   updated_at: string;
 }
 
-export interface PrtgSensorOut {
-  name: string;
-  status: string;
-  status_raw: string | null;
-  lastvalue: string | null;
-  message: string | null;
-  objid: string | null;
-  baselink: string | null;
-  probe_group_device: string | null;
-  source: string;
-}
-
 export function listMonitoringSources(tenantId: string = DEFAULT_TENANT_ID): Promise<MonitoringSourceOut[]> {
   return apiFetch<MonitoringSourceOut[]>(`/api/monitoring/sources?${withTenant(tenantId).toString()}`);
 }
@@ -545,8 +533,28 @@ export function listSensors(tenantId: string = DEFAULT_TENANT_ID): Promise<Senso
   return apiFetch<SensorOut[]>(`/api/monitoring/sensors?${withTenant(tenantId).toString()}`);
 }
 
-export function listPrtgRootSensors(): Promise<PrtgSensorOut[]> {
-  return apiFetch<PrtgSensorOut[]>('/api/monitoring/prtg/root-sensors');
+/**
+ * Sensors persisted for ONE tenant-owned monitoring source.
+ *
+ * This is the canonical read path for provider sensor data: the rows are the
+ * normalized `Sensor` records written by the Collector Framework
+ * (CollectionOrchestrator -> BundleSaver -> SensorRepository), so PRTG data is
+ * read exactly like every other vendor's - there is no provider-specific
+ * endpoint and no provider transport on the client.
+ *
+ * Tenant safety: `sourceId` is a path parameter and the SERVER resolves the
+ * tenant from the authenticated principal, returning 404 when the source does
+ * not belong to the caller. `tenantId` here is the same project-wide
+ * convenience used by every other call in this module; the route overrides it
+ * with the principal's tenant, so a client cannot select a tenant.
+ */
+export function listSourceSensors(
+  sourceId: string,
+  tenantId: string = DEFAULT_TENANT_ID,
+): Promise<SensorOut[]> {
+  return apiFetch<SensorOut[]>(
+    `/api/monitoring/sources/${sourceId}/sensors?${withTenant(tenantId).toString()}`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1383,6 +1391,111 @@ export function getAutomationStatus(tenantId: string = DEFAULT_TENANT_ID): Promi
 
 export function getAIInsights(tenantId: string = DEFAULT_TENANT_ID): Promise<AIInsights> {
   return apiFetch<AIInsights>(`/api/ai/insights?${withTenant(tenantId).toString()}`);
+}
+
+/* ---------------------------------------------------------------------------
+ * PHASE 6A — Operational Intelligence (backend-aggregated KPI payload).
+ *
+ * ONE tenant-scoped read (GET /api/dashboard/operational-intelligence) that
+ * returns the whole KPI snapshot for the caller's tenant. Same
+ * `withTenant(...)` convenience convention as every neighbour above; the
+ * server resolves the tenant from the authenticated principal
+ * (`Depends(get_tenant_id)` in `backend/app/api/routes/dashboard.py`, imported
+ * from `app.core.auth`) and ignores a `?tenant_id=` selector, so a caller
+ * cannot select a tenant.
+ *
+ * Field-for-field mirror of the backend schema in
+ * `backend/app/schemas/dashboard.py::OperationalIntelligence` and of the
+ * view-model SOURCE types in
+ * `lib/dashboard/operationalIntelligenceModel.ts` (that file stays the
+ * frontend's single source of truth for the truth rules — a RATE with no
+ * denominator is `null`, never 0% and never 100%).
+ * ------------------------------------------------------------------------- */
+export interface OperationalIntelligenceSources {
+  active: number;
+  total: number;
+}
+
+export interface OperationalIntelligenceCollection {
+  window_hours: number;
+  runs_24h: number;
+  succeeded_24h: number;
+  partial_24h: number;
+  failed_24h: number;
+  skipped_24h: number;
+  running: number;
+  /** null when there were no runs in the window (NO COLLECTION, not 0%). */
+  health_percent: number | null;
+  coverage_configured: number;
+  coverage_collected: number;
+  /** null when no enabled sources exist (NOT CONFIGURED, not 0%). */
+  coverage_percent: number | null;
+}
+
+export interface OperationalIntelligenceFreshness {
+  stale_after_seconds: number;
+  fresh: number;
+  stale: number;
+  never_collected: number;
+  total: number;
+  /** null when no sensor timestamps exist (NO DATA, not a percentage). */
+  fresh_percent: number | null;
+}
+
+export interface OperationalIntelligenceSensors {
+  healthy: number;
+  down: number;
+  warning: number;
+  unknown: number;
+  total: number;
+}
+
+export interface OperationalIntelligenceDevices {
+  online: number;
+  degraded: number;
+  offline: number;
+  unknown: number;
+  total: number;
+}
+
+export interface OperationalIntelligenceAlerts {
+  last_24h: number;
+  unacknowledged: number;
+  auto_resolved_24h: number;
+}
+
+/**
+ * KPI N (AI automation rate) is deliberately ABSENT: no authoritative
+ * definition of an "automatable eligible task" exists, so no fabricated
+ * ratio is carried.
+ */
+export interface OperationalIntelligenceAi {
+  queued: number;
+  running: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  total: number;
+}
+
+export interface OperationalIntelligence {
+  generated_at: string;
+  window_hours: number;
+  sources: OperationalIntelligenceSources;
+  collection: OperationalIntelligenceCollection;
+  freshness: OperationalIntelligenceFreshness;
+  sensors: OperationalIntelligenceSensors;
+  devices: OperationalIntelligenceDevices;
+  alerts: OperationalIntelligenceAlerts;
+  ai: OperationalIntelligenceAi;
+}
+
+export function getOperationalIntelligence(
+  tenantId: string = DEFAULT_TENANT_ID,
+): Promise<OperationalIntelligence> {
+  return apiFetch<OperationalIntelligence>(
+    `/api/dashboard/operational-intelligence?${withTenant(tenantId).toString()}`,
+  );
 }
 
 /**
@@ -2371,7 +2484,7 @@ export interface SOP {
   current_version_id: string | null;
   created_at: string;
   updated_at: string;
-  versions: SOPVersion[];
+  versions?: SOPVersion[];  // only present on SOPDetail, not on the list response
 }
 
 export interface SOPDetail extends SOP {

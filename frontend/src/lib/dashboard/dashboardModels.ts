@@ -7,6 +7,7 @@
  * fabricated by the UI; unavailable data is `null` and the UI renders an
  * honest empty state.
  */
+import type { CommandKpi } from "./commandKpis";
 
 /* ---------------------------------------------------------------------------
  * Shared primitives
@@ -200,8 +201,87 @@ export interface DashboardHeaderData {
 
 export type SectionState = "loading" | "success" | "empty" | "error";
 
+/* ---------------------------------------------------------------------------
+ * Attention (Level 1 "what needs me?" / Level 2 "why?" / Level 3 "next?")
+ * ------------------------------------------------------------------------- */
+
+/**
+ * One attention counter. `value === null` means the underlying source could not
+ * be read - the UI renders "N/A" and never substitutes a 0 (a measured 0 is a
+ * legitimate, different answer: "nothing needs attention").
+ */
+export interface AttentionMetric {
+  key: "criticalIncidents" | "highPriorityIncidents" | "degradedSystems" | "unacknowledgedAlerts";
+  label: string;
+  value: number | null;
+  /** One line explaining exactly what was counted, or why it is unavailable. */
+  context: string;
+  href: string;
+  tone: "critical" | "warning" | "neutral";
+}
+
+export interface AttentionIncidentRow {
+  id: string;
+  title: string;
+  severity: string;
+  status: string;
+  ageLabel: string;
+  /** Device name when the incident is device-scoped; null otherwise. */
+  asset: string | null;
+  /* --- EVIDENCE / IMPACT / RCA, all from the same listIncidents payload ---- */
+  /** Member alerts attached to the incident (measured impact scope). */
+  memberAlerts: number;
+  /** Total occurrences reported by the backend. */
+  occurrences: number;
+  /** Correlated incidents carry more than one member alert. */
+  correlated: boolean;
+  /** The recorded root-cause summary, or null when none has been recorded. */
+  rca: string | null;
+}
+
+export interface AttentionDeviceRow {
+  id: string;
+  name: string;
+  type: string;
+  status: string;
+}
+
+/**
+ * Authoritative aggregates the backend already computes:
+ *   GET /api/incidents/intelligence      (alert correlation + noise reduction)
+ *   GET /api/incidents/collector-health  (per-source collection pipeline health)
+ * Every field is null when its endpoint was not readable.
+ */
+export interface AttentionEvidence {
+  activeIncidents: number | null;
+  correlatedIncidents: number | null;
+  suppressedAlerts: number | null;
+  noiseReductionPct: number | null;
+  collectorsHealthy: number | null;
+  collectorsDegraded: number | null;
+  collectorsFailing: number | null;
+  collectorsUnknown: number | null;
+}
+
+export interface AttentionRequiredData {
+  metrics: AttentionMetric[];
+  /** The open critical/high-priority incidents behind the two incident counts. */
+  incidents: AttentionIncidentRow[];
+  /** The devices behind DEGRADED SYSTEMS. */
+  degradedDevices: AttentionDeviceRow[];
+  evidence: AttentionEvidence;
+  /** True when at least one source was unavailable (never a fabricated state). */
+  partial: boolean;
+}
+
 export interface DashboardData {
   header: DashboardHeaderData;
+  /** True when GET /health answers OK — drives the masthead status pill. */
+  apiHealthy: boolean | null;
+  /** Level 1-3: attention counters, the items behind them, and next actions. */
+  attention: AttentionRequiredData;
+  /** PHASE 1 KPI strip: normalized command-centre KPIs (one aggregation pass). */
+  commandKpis: CommandKpi[];
   operationalHealth: OperationalHealthData;
   alertSummary: AlertSummaryData;
   aiOperations: AiOperationsData;
@@ -210,6 +290,8 @@ export interface DashboardData {
   activity: ActivityItem[];
   /** Per-section lifecycle so the UI can render honest states. */
   states: {
+    attention: SectionState;
+    commandKpis: SectionState;
     operationalHealth: SectionState;
     alertSummary: SectionState;
     aiOperations: SectionState;

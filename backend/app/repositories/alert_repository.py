@@ -299,6 +299,9 @@ class AlertRepository:
         incident_id: uuid.UUID | None = None,
         category: str | None = None,
         is_suppressed: bool | None = None,
+        acknowledged: bool | None = None,
+        auto_resolved: bool | None = None,
+        resolved_since: datetime | None = None,
     ) -> int:
         stmt = select(func.count()).select_from(Alert).where(
             Alert.tenant_id == tenant_id, Alert.is_deleted.is_(False)
@@ -329,6 +332,23 @@ class AlertRepository:
             stmt = stmt.where(Alert.category == category)
         if is_suppressed is not None:
             stmt = stmt.where(Alert.is_suppressed == is_suppressed)
+        # -- PHASE 6A additive filters (each opt-in, so every existing caller is
+        # unaffected: None means "do not filter on this at all").
+        # `acknowledged=False` is the dashboard's "unacknowledged" definition -
+        # an operator has not touched it yet - and is expressed against the
+        # persisted timestamp rather than inferred from `status`.
+        if acknowledged is not None:
+            stmt = stmt.where(
+                Alert.acknowledged_at.is_not(None) if acknowledged
+                else Alert.acknowledged_at.is_(None)
+            )
+        if auto_resolved is not None:
+            stmt = stmt.where(Alert.auto_resolved == auto_resolved)
+        # Bounds `resolved_at` (not `triggered_at`). A row that has never been
+        # resolved has resolved_at IS NULL, which SQL never matches against a
+        # range - exactly right: it was not resolved in the window.
+        if resolved_since is not None:
+            stmt = stmt.where(Alert.resolved_at >= resolved_since)
         result = await self.db.execute(stmt)
         return result.scalar_one()
 

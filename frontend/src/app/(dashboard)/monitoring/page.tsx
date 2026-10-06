@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { AlertTriangle, Radio, Activity, CheckCircle2 } from "lucide-react";
-import { MonitoringSourceOut, PrtgSensorOut, SensorOut, listMonitoringSources, listPrtgRootSensors, listSensors } from "@/lib/api";
+import { MonitoringSourceOut, SensorOut, listMonitoringSources, listSourceSensors, listSensors } from "@/lib/api";
+import { ALERTING_STATES, classifySensorState } from "@/lib/sensorState";
+import FreshnessIndicator from "@/components/shared/FreshnessIndicator";
 
 interface StatCard {
   value: string;
@@ -17,10 +19,24 @@ const iconMap: Record<string, typeof Activity> = {
   Alerting: AlertTriangle,
 };
 
+/** A tenant-owned PRTG source paired with the canonical Sensor rows persisted
+ *  for it by the Collector Framework. */
+interface PrtgSensorGroup {
+  source: MonitoringSourceOut;
+  sensors: SensorOut[];
+}
+
+/** Render a canonical sensor reading, e.g. "12.4 ms", or an em dash when the
+ *  collector has not recorded a numeric value. */
+function formatSensorValue(sensor: SensorOut): string {
+  if (sensor.current_value === null) return "—";
+  return sensor.unit ? `${sensor.current_value} ${sensor.unit}` : String(sensor.current_value);
+}
+
 export default function MonitoringPage() {
   const [sensors, setSensors] = useState<SensorOut[]>([]);
   const [sources, setSources] = useState<MonitoringSourceOut[]>([]);
-  const [prtgSensors, setPrtgSensors] = useState<PrtgSensorOut[]>([]);
+  const [prtgSensorGroups, setPrtgSensorGroups] = useState<PrtgSensorGroup[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -28,15 +44,24 @@ export default function MonitoringPage() {
     let cancelled = false;
     async function load() {
       try {
-        const [srcList, senList, prtgList] = await Promise.all([
+        const [srcList, senList] = await Promise.all([
           listMonitoringSources(),
           listSensors(),
-          listPrtgRootSensors(),
         ]);
+        // Provider sensor rows come from the canonical, tenant-scoped
+        // per-source endpoint. Each source is its own request so a failure on
+        // one PRTG source cannot masquerade as a different tenant's data.
+        const prtgSources = srcList.filter((s) => s.source_type === "prtg");
+        const groups: PrtgSensorGroup[] = await Promise.all(
+          prtgSources.map(async (source) => ({
+            source,
+            sensors: await listSourceSensors(source.id),
+          })),
+        );
         if (!cancelled) {
           setSources(srcList);
           setSensors(senList);
-          setPrtgSensors(prtgList);
+          setPrtgSensorGroups(groups);
           setError(null);
         }
       } catch (err) {
@@ -50,8 +75,17 @@ export default function MonitoringPage() {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
 
-  const upCount = sensors.filter((s) => s.status === "up").length;
-  const downCount = sensors.filter((s) => s.status === "down" || s.status === "warning").length;
+  // Canonical states, not raw status strings: a `up` sensor whose last value is
+  // older than 2h classifies as STALE and must not be counted as healthy.
+  const upCount = sensors.filter(
+    (s) => classifySensorState(s.status, s.last_value_at).state === "HEALTHY",
+  ).length;
+  const downCount = sensors.filter((s) =>
+    ALERTING_STATES.includes(classifySensorState(s.status, s.last_value_at).state),
+  ).length;
+  const prtgSensorRows = prtgSensorGroups.flatMap((group) =>
+    group.sensors.map((sensor) => ({ source: group.source, sensor })),
+  );
 
   const stats: StatCard[] = [
     { value: String(sources.length), label: "Sources", color: "var(--cyan)" },
@@ -90,9 +124,14 @@ export default function MonitoringPage() {
           ))}
 
           <div style={{ marginTop: 24 }}>
-            <h2>PRTG ROOT SENSORS (LIVE)</h2>
-            {!loaded && <p style={{ color: "var(--muted)", fontSize: 12 }}>Loading live PRTG sensors…</p>}
-            {loaded && prtgSensors.length === 0 && <p style={{ color: "var(--muted)", fontSize: 12 }}>No live sensor rows returned from the PRTG probe.</p>}
+            <h2>PRTG SENSORS ({prtgSensorRows.length})</h2>
+            <p style={{ color: "var(--muted)", fontSize: 11 }}>
+              Collected sensor rows persisted for this tenant&apos;s PRTG sources, read through the
+              tenant-scoped per-source monitoring API. No direct probe access, no cross-tenant rows.
+            </p>
+            {!loaded && <p style={{ color: "var(--muted)", fontSize: 12 }}>Loading PRTG sensors…</p>}
+            {loaded && prtgSensorGroups.length === 0 && <p style={{ color: "var(--muted)", fontSize: 12 }}>No PRTG monitoring source is configured for this tenant.</p>}
+            {loaded && prtgSensorGroups.length > 0 && prtgSensorRows.length === 0 && <p style={{ color: "var(--muted)", fontSize: 12 }}>No sensor rows have been collected for this tenant&apos;s PRTG sources yet.</p>}
             <div style={{ maxHeight: 420, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
@@ -100,20 +139,32 @@ export default function MonitoringPage() {
                     <th style={{ textAlign: "left", padding: "10px 12px" }}>Sensor</th>
                     <th style={{ textAlign: "left", padding: "10px 12px" }}>Status</th>
                     <th style={{ textAlign: "left", padding: "10px 12px" }}>Value</th>
-                    <th style={{ textAlign: "left", padding: "10px 12px" }}>Message</th>
+                    <th style={{ textAlign: "left", padding: "10px 12px" }}>Metric</th>
+                    <th style={{ textAlign: "left", padding: "10px 12px" }}>Freshness</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {prtgSensors.map((sensor) => (
-                    <tr key={`${sensor.objid ?? sensor.name}-${sensor.name}`} style={{ borderBottom: "1px solid rgba(0,217,255,.08)" }}>
-                      <td style={{ padding: "10px 12px" }}>{sensor.name}</td>
-                      <td style={{ padding: "10px 12px", color: sensor.status === "up" ? "var(--green)" : sensor.status === "warning" ? "var(--amber)" : "var(--red)" }}>
-                        {sensor.status}
+                  {prtgSensorRows.map(({ source, sensor }) => {
+                    const si = classifySensorState(sensor.status, sensor.last_value_at);
+                    return (
+                    <tr key={sensor.id} style={{ borderBottom: "1px solid rgba(0,217,255,.08)" }}>
+                      <td style={{ padding: "10px 12px" }}>
+                        {sensor.name} <small style={{ color: "var(--muted)", fontSize: 10 }}>({source.name})</small>
                       </td>
-                      <td style={{ padding: "10px 12px", color: "var(--muted)" }}>{sensor.lastvalue ?? "—"}</td>
-                      <td style={{ padding: "10px 12px", color: "var(--muted)" }}>{sensor.message ?? "—"}</td>
+                      <td style={{ padding: "10px 12px", color: si.color }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                          <i style={{ width: 6, height: 6, borderRadius: "50%", background: si.dot, display: "inline-block" }} />
+                          {si.label}
+                        </span>
+                      </td>
+                      <td style={{ padding: "10px 12px", color: "var(--muted)" }}>{formatSensorValue(sensor)}</td>
+                      <td style={{ padding: "10px 12px", color: "var(--muted)" }}>{sensor.metric_type}</td>
+                      <td style={{ padding: "10px 12px" }}>
+                        <FreshnessIndicator lastCollectedAt={sensor.last_value_at} showAge />
+                      </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
