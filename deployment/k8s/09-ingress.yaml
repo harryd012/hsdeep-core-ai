@@ -1,0 +1,45 @@
+# Ingress (ingress-nginx). Routes the public origin to the frontend and the
+# backend. The browser talks to the backend directly (no Next rewrite proxy),
+# so /api and the health paths are proxied to the backend Service here, and
+# NEXT_PUBLIC_API_URL must equal this host.
+#   /        -> frontend:3000
+#   /api     -> backend:8000   (all business routers are mounted under /api)
+#   /health  -> backend:8000   (health router has NO /api prefix)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hsdeep
+  namespace: hsdeep
+  labels: { app.kubernetes.io/part-of: hsdeep-core-ai }
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [portal.example.com]
+      secretName: hsdeep-tls
+  rules:
+    - host: portal.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: hsdeep-backend
+                port:
+                  number: 8000
+          - path: /health
+            pathType: Prefix
+            backend:
+              service:
+                name: hsdeep-backend
+                port:
+                  number: 8000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hsdeep-frontend
+                port:
+                  number: 3000

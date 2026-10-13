@@ -1,0 +1,60 @@
+{{- if .Values.redis.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hsdeep.fullname" . }}-redis
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hsdeep.labels" . | nindent 4 }}
+    app.kubernetes.io/name: {{ include "hsdeep.fullname" . }}-redis
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "hsdeep.fullname" . }}-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hsdeep.fullname" . }}-redis
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hsdeep.labels" . | nindent 4 }}
+    app.kubernetes.io/name: {{ include "hsdeep.fullname" . }}-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hsdeep.fullname" . }}-redis
+  template:
+    metadata:
+      labels:
+        {{- include "hsdeep.labels" . | nindent 8 }}
+        app.kubernetes.io/name: {{ include "hsdeep.fullname" . }}-redis
+    spec:
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: redis
+          image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
+          args: ["redis-server", "--save", "", "--appendonly", "no"]
+          ports:
+            - containerPort: 6379
+              name: redis
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            allowPrivilegeEscalation: false
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+{{- end }}

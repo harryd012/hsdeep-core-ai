@@ -1,0 +1,165 @@
+# NetworkPolicy — default-deny, then explicit least-privilege flows.
+#
+# Ingress is tightly scoped. Egress: DNS for everyone; Postgres/Redis only need
+# DNS; the BACKEND additionally needs broad outbound because collectors make
+# outbound connections to PRTG / SNMP / devices (arbitrary customer IPs), so we
+# allow egress to the internet while still blocking the cloud metadata endpoint
+# (169.254.169.254). Adjust the collector egress to your monitored ranges.
+---
+# Default deny all ingress and egress in the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: hsdeep
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+# Allow every pod to resolve DNS (kube-dns in kube-system).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: hsdeep
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# Postgres: accept connections only from backend roles; egress DNS only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+  namespace: hsdeep
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: hsdeep-postgres }
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: hsdeep-backend }
+      ports:
+        - { protocol: TCP, port: 5432 }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# Redis: accept connections only from backend roles; egress DNS only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis
+  namespace: hsdeep
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: hsdeep-redis }
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: hsdeep-backend }
+      ports:
+        - { protocol: TCP, port: 6379 }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# Backend (api/worker/scheduler): ingress from the frontend and the ingress
+# controller. Egress to DNS, Postgres, Redis, and the internet (collectors),
+# while blocking the cloud instance-metadata endpoint.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend
+  namespace: hsdeep
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: hsdeep-backend }
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: hsdeep-frontend }
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - { protocol: TCP, port: 8000 }
+        - { protocol: TCP, port: 8001 }
+        - { protocol: TCP, port: 8002 }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: hsdeep-postgres }
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - to:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: hsdeep-redis }
+      ports:
+        - { protocol: TCP, port: 6379 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.0.0/16
+---
+# Frontend: ingress only from the ingress controller; egress to DNS and the
+# backend (server-side rendering / any server fetches). The browser itself talks
+# to the backend through the Ingress, not through the frontend pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend
+  namespace: hsdeep
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: hsdeep-frontend }
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - { protocol: TCP, port: 3000 }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: hsdeep-backend }
+      ports:
+        - { protocol: TCP, port: 8000 }

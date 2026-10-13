@@ -1,0 +1,27 @@
+HSDEEP CORE AI — {{ .Chart.AppVersion }} deployed as release "{{ .Release.Name }}".
+
+1. Secrets
+   The chart created a Secret with PLACEHOLDER credentials. Production startup
+   will REFUSE to boot with placeholders. Provide real values via
+   --set secrets.* or secrets.existingSecret (+ postgres.auth.existingSecret):
+
+     helm upgrade --install hsdeep . -n {{ .Values.namespace }} \
+       --set secrets.existingSecret=hsdeep-secrets \
+       --set postgres.auth.existingSecret=hsdeep-postgres-auth
+
+   Required keys: DATABASE_URL, REDIS_URL, SECRET_ENCRYPTION_KEY,
+   JWT_SECRET_KEY (must differ from SECRET_ENCRYPTION_KEY in production).
+
+2. Frontend API URL
+   NEXT_PUBLIC_API_URL is baked into the client bundle at BUILD time. The image
+   must be built with --build-arg NEXT_PUBLIC_API_URL={{ .Values.frontend.nextPublicApiUrl }}
+   so the browser's direct backend calls match the Ingress host.
+
+3. Health
+   Liveness  : /health/live  (dependency-free)
+   Readiness : /health/ready (503 when Postgres — or Redis, per
+               READINESS_REQUIRE_REDIS — is unavailable)
+
+4. Verify
+   kubectl -n {{ .Values.namespace }} get pods
+   curl -fsS https://{{ .Values.ingress.host }}/health/live

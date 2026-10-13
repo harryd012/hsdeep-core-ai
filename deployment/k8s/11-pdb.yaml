@@ -1,0 +1,35 @@
+# PodDisruptionBudgets keep voluntary disruptions (node drains, upgrades) from
+# taking the whole service down. The scheduler is intentionally excluded: it is
+# a single replica with a Recreate strategy, so a PDB would block all drains.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: hsdeep-backend-api
+  namespace: hsdeep
+  labels: { app.kubernetes.io/part-of: hsdeep-core-ai }
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: hsdeep-backend, app.kubernetes.io/component: api }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: hsdeep-backend-worker
+  namespace: hsdeep
+  labels: { app.kubernetes.io/part-of: hsdeep-core-ai }
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: hsdeep-backend, app.kubernetes.io/component: worker }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: hsdeep-frontend
+  namespace: hsdeep
+  labels: { app.kubernetes.io/part-of: hsdeep-core-ai }
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: hsdeep-frontend }

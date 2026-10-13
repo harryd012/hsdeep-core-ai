@@ -1,0 +1,22 @@
+# Assemble the baseline with:  kubectl apply -k deployment/k8s
+#
+# 02-secret.example.yaml and 03-postgres-secret.example.yaml are deliberately
+# NOT listed: create the real `hsdeep-secrets` Secret and the operator-provisioned
+# `hsdeep-postgres-auth` Secret (POSTGRES_DB/USER/PASSWORD) from your secret
+# manager before applying, or the Postgres StatefulSet will not start and
+# production startup will refuse to boot. See README "Deploy".
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: hsdeep
+resources:
+  - 00-namespace.yaml
+  - 01-configmap.yaml
+  - 03-postgres.yaml
+  - 04-redis.yaml
+  - 05-backend-api.yaml
+  - 06-backend-worker.yaml
+  - 07-backend-scheduler.yaml
+  - 08-frontend.yaml
+  - 09-ingress.yaml
+  - 10-networkpolicy.yaml
+  - 11-pdb.yaml

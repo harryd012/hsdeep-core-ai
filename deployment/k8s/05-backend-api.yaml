@@ -1,0 +1,76 @@
+# Backend API role — the ONLY backend role exposed to users. Serves /api/* and
+# the health endpoints (no prefix): /health/live (liveness), /health/ready
+# (readiness, 503 when Postgres — or Redis, per READINESS_REQUIRE_REDIS — is
+# down). One image, RUNTIME_MODE=api, PORT=8000.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hsdeep-backend-api
+  namespace: hsdeep
+  labels: { app.kubernetes.io/part-of: hsdeep-core-ai, app.kubernetes.io/name: hsdeep-backend, app.kubernetes.io/component: api }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: hsdeep-backend, app.kubernetes.io/component: api }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/part-of: hsdeep-core-ai, app.kubernetes.io/name: hsdeep-backend, app.kubernetes.io/component: api }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: api
+          image: hsdeep-core-ai-backend:9a
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: RUNTIME_MODE
+              value: "api"
+            - name: PORT
+              value: "8000"
+          envFrom:
+            - configMapRef: { name: hsdeep-config }
+            - secretRef: { name: hsdeep-secrets }
+          startupProbe:
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "768Mi" }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hsdeep-backend
+  namespace: hsdeep
+  labels: { app.kubernetes.io/part-of: hsdeep-core-ai, app.kubernetes.io/name: hsdeep-backend }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: hsdeep-backend, app.kubernetes.io/component: api }
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

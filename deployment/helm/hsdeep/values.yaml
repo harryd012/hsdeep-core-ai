@@ -1,0 +1,172 @@
+# HSDEEP CORE AI — Helm values (K1). Defaults mirror deployment/k8s/ so
+# `helm install` and `kubectl apply -k` produce equivalent stacks.
+
+nameOverride: ""
+fullnameOverride: ""
+
+namespace: hsdeep
+createNamespace: true
+
+# --- Images (tag matches CI; override per environment) ----------------------
+image:
+  backend:
+    repository: hsdeep-core-ai-backend
+    tag: "9a"
+    pullPolicy: IfNotPresent
+  frontend:
+    repository: hsdeep-core-ai-frontend
+    tag: "9a"
+    pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# --- Backend: ONE image, several roles selected by RUNTIME_MODE -------------
+# api    = HTTP only (Service + Ingress); worker = scheduler ticks + RCA
+# consumers; scheduler = scheduler ticks only (single replica). Ports follow
+# the deployment/README.md contract (8000/8001/8002).
+backend:
+  roles:
+    api:
+      enabled: true
+      replicas: 2
+      port: 8000
+      service:
+        enabled: true
+        port: 8000
+      resources:
+        requests: { cpu: 100m, memory: 256Mi }
+        limits: { cpu: "1", memory: 768Mi }
+    worker:
+      enabled: true
+      replicas: 2
+      port: 8001
+      resources:
+        requests: { cpu: 100m, memory: 256Mi }
+        limits: { cpu: "1", memory: 768Mi }
+    scheduler:
+      enabled: true
+      replicas: 1
+      port: 8002
+      resources:
+        requests: { cpu: 50m, memory: 128Mi }
+        limits: { cpu: 500m, memory: 512Mi }
+
+# --- Frontend ---------------------------------------------------------------
+frontend:
+  replicas: 2
+  port: 3000
+  # Baked into the client bundle at build time; must equal the public origin
+  # that the Ingress serves /api from (browser calls the backend directly).
+  nextPublicApiUrl: "https://portal.example.com"
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+# --- Datastores -------------------------------------------------------------
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16"
+  auth:
+    database: hsdeep
+    username: hsdeep
+    password: REPLACE_ME_PG_PASSWORD   # set existingSecret to use a managed secret
+    existingSecret: ""
+  persistence:
+    size: 10Gi
+    storageClassName: ""
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: "7"
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+
+# --- Non-secret application config (-> ConfigMap) ---------------------------
+# Keys are the backend Settings env-var names. RUNTIME_MODE/PORT are per-role
+# and set on each Deployment, not here.
+config:
+  APP_ENV: production
+  DEBUG: "false"
+  LOG_LEVEL: INFO
+  LOG_FORMAT: json
+  SHUTDOWN_DRAIN_SECONDS: "15"
+  READINESS_REQUIRE_REDIS: "true"
+  HOST: 0.0.0.0
+  FORCE_HTTPS: "true"
+  CORS_ORIGINS: "https://portal.example.com"
+  JWT_ALGORITHM: HS256
+  ACCESS_TOKEN_EXPIRE_MINUTES: "15"
+  REFRESH_TOKEN_EXPIRE_DAYS: "30"
+  AUTH_ENFORCED: "true"
+  MAX_CONCURRENT_COLLECTIONS: "10"
+  COLLECTOR_RUN_STALE_MINUTES: "10"
+  SOURCE_RATE_LIMIT_RPM: "0"
+  SOURCE_RATE_LIMIT_TTL_SECONDS: "120"
+  CORRELATION_INACTIVITY_MINUTES: "30"
+  INCIDENT_STALE_MINUTES: "1440"
+  INCIDENT_STALE_CLOSE_INTERVAL_SECONDS: "3600"
+  OLLAMA_HOST: "http://hsdeep-ollama:11434"
+  OLLAMA_MODEL: "qwen3.6:latest"
+  AUTONOMOUS_TASK_ASSIGNMENT: "false"
+
+# --- Secrets (-> Secret). Prefer existingSecret in real deployments. --------
+secrets:
+  existingSecret: ""
+  databaseUrl: "postgresql+asyncpg://hsdeep:REPLACE_ME_PG_PASSWORD@hsdeep-postgres:5432/hsdeep"
+  redisUrl: "redis://hsdeep-redis:6379/0"
+  secretEncryptionKey: "REPLACE_ME_FERNET_KEY"
+  jwtSecretKey: "REPLACE_ME_DISTINCT_JWT_SECRET"
+  stripeSecretKey: ""
+  stripeWebhookSecret: ""
+  prtgDevUsername: ""
+  prtgDevPasshash: ""
+  pnetlabPassword: ""
+
+# --- Ingress ----------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  host: portal.example.com
+  tls:
+    enabled: true
+    secretName: hsdeep-tls
+
+# --- NetworkPolicy ----------------------------------------------------------
+networkPolicy:
+  enabled: true
+  ingressNamespace: ingress-nginx
+
+# --- PodDisruptionBudget ----------------------------------------------------
+pdb:
+  enabled: true
+
+# --- HorizontalPodAutoscaler (backend api + frontend) -----------------------
+hpa:
+  enabled: false
+  backend:
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  frontend:
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+
+# --- Pod security (namespace + pod securityContext) -------------------------
+podSecurity:
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}

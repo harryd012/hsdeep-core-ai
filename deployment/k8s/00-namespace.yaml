@@ -1,0 +1,15 @@
+# HSDEEP CORE AI — K1 Kubernetes deployment foundation
+#
+# Namespace with Pod Security Admission set to `restricted`. The backend and
+# frontend images both run as a non-root uid 1001 (see their Dockerfiles), so
+# the whole namespace can enforce the restricted profile.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hsdeep
+  labels:
+    app.kubernetes.io/part-of: hsdeep-core-ai
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

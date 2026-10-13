@@ -1,0 +1,8 @@
+apiVersion: v2
+name: hsdeep
+description: HSDEEP CORE AI — Autonomous Infrastructure Intelligence (K1 deployment foundation)
+type: application
+# Chart version (packaging) and appVersion (matches the image tag used by CI).
+version: 0.1.0
+appVersion: "9a"
+kubeVersion: ">=1.27.0-0"

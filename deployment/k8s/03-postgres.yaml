@@ -1,0 +1,76 @@
+# PostgreSQL 16 — a StatefulSet with stable storage. For production you will
+# almost certainly swap this for a managed database (CloudNativePG, RDS, etc.).
+#
+# The database credentials are NOT created here. The StatefulSet consumes an
+# operator-provisioned Secret `hsdeep-postgres-auth` (keys: POSTGRES_DB,
+# POSTGRES_USER, POSTGRES_PASSWORD) — see 03-postgres-secret.example.yaml for a
+# template and the README for how to create it. This mirrors the Helm chart's
+# postgres.auth.existingSecret approach and the excluded hsdeep-secrets Secret,
+# so `kubectl apply -k` never ships a placeholder password. Postgres runs uid 999.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hsdeep-postgres
+  namespace: hsdeep
+  labels: { app.kubernetes.io/part-of: hsdeep-core-ai, app.kubernetes.io/name: hsdeep-postgres }
+spec:
+  clusterIP: None
+  selector: { app.kubernetes.io/name: hsdeep-postgres }
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hsdeep-postgres
+  namespace: hsdeep
+  labels: { app.kubernetes.io/part-of: hsdeep-core-ai, app.kubernetes.io/name: hsdeep-postgres }
+spec:
+  serviceName: hsdeep-postgres
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: hsdeep-postgres }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/part-of: hsdeep-core-ai, app.kubernetes.io/name: hsdeep-postgres }
+    spec:
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports:
+            - containerPort: 5432
+              name: postgres
+          envFrom:
+            - secretRef: { name: hsdeep-postgres-auth }
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            allowPrivilegeEscalation: false
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "hsdeep", "-d", "hsdeep"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec: { command: ["pg_isready", "-U", "hsdeep", "-d", "hsdeep"] }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "1Gi" }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

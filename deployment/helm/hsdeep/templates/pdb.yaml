@@ -1,0 +1,46 @@
+{{- if .Values.pdb.enabled -}}
+{{- if .Values.backend.roles.api.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "hsdeep.fullname" . }}-backend-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hsdeep.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hsdeep.fullname" . }}-backend
+      app.kubernetes.io/component: api
+{{- end }}
+{{- if .Values.backend.roles.worker.enabled -}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "hsdeep.fullname" . }}-backend-worker
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hsdeep.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hsdeep.fullname" . }}-backend
+      app.kubernetes.io/component: worker
+{{- end }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "hsdeep.fullname" . }}-frontend
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hsdeep.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hsdeep.fullname" . }}-frontend
+{{- end }}

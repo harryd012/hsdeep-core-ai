@@ -1,0 +1,102 @@
+{{- $root := . -}}
+{{- range $name, $role := .Values.backend.roles }}
+{{- if $role.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hsdeep.fullname" $root }}-backend-{{ $name }}
+  namespace: {{ $root.Values.namespace }}
+  labels:
+    {{- include "hsdeep.labels" $root | nindent 4 }}
+    app.kubernetes.io/name: {{ include "hsdeep.fullname" $root }}-backend
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  replicas: {{ $role.replicas }}
+  {{- if eq $name "scheduler" }}
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hsdeep.fullname" $root }}-backend
+      app.kubernetes.io/component: {{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- include "hsdeep.labels" $root | nindent 8 }}
+        app.kubernetes.io/name: {{ include "hsdeep.fullname" $root }}-backend
+        app.kubernetes.io/component: {{ $name }}
+    spec:
+      {{- if or $root.Values.serviceAccount.create $root.Values.serviceAccount.name }}
+      serviceAccountName: {{ $root.Values.serviceAccount.name | default (printf "%s-sa" (include "hsdeep.fullname" $root)) }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $root.Values.podSecurity.runAsUser }}
+        runAsGroup: {{ $root.Values.podSecurity.runAsGroup }}
+        fsGroup: {{ $root.Values.podSecurity.fsGroup }}
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: {{ $name }}
+          image: "{{ $root.Values.image.backend.repository }}:{{ $root.Values.image.backend.tag }}"
+          imagePullPolicy: {{ $root.Values.image.backend.pullPolicy }}
+          ports:
+            - containerPort: {{ $role.port }}
+              name: http
+          env:
+            - name: RUNTIME_MODE
+              value: {{ $name | quote }}
+            - name: PORT
+              value: {{ $role.port | quote }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "hsdeep.fullname" $root }}-config
+            - secretRef:
+                name: {{ include "hsdeep.secretName" $root }}
+          startupProbe:
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml $role.resources | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- if $role.service }}
+{{- if $role.service.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hsdeep.fullname" $root }}-backend
+  namespace: {{ $root.Values.namespace }}
+  labels:
+    {{- include "hsdeep.labels" $root | nindent 4 }}
+    app.kubernetes.io/name: {{ include "hsdeep.fullname" $root }}-backend
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ include "hsdeep.fullname" $root }}-backend
+    app.kubernetes.io/component: {{ $name }}
+  ports:
+    - name: http
+      port: {{ $role.service.port }}
+      targetPort: http
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

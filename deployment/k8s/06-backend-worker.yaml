@@ -1,0 +1,63 @@
+# Backend WORKER role — background: scheduler ticks + RCA/EventBus consumers.
+# Not user-facing, so no Service. HTTP still listens (PORT=8001) purely so the
+# same health endpoints can drive the readiness/liveness probes against the pod
+# IP. Scales horizontally; the scheduler's Postgres advisory lock guarantees a
+# single tick owner, so multiple worker replicas are safe.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hsdeep-backend-worker
+  namespace: hsdeep
+  labels: { app.kubernetes.io/part-of: hsdeep-core-ai, app.kubernetes.io/name: hsdeep-backend, app.kubernetes.io/component: worker }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: hsdeep-backend, app.kubernetes.io/component: worker }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/part-of: hsdeep-core-ai, app.kubernetes.io/name: hsdeep-backend, app.kubernetes.io/component: worker }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: worker
+          image: hsdeep-core-ai-backend:9a
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8001
+              name: http
+          env:
+            - name: RUNTIME_MODE
+              value: "worker"
+            - name: PORT
+              value: "8001"
+          envFrom:
+            - configMapRef: { name: hsdeep-config }
+            - secretRef: { name: hsdeep-secrets }
+          startupProbe:
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "768Mi" }
+      volumes:
+        - name: tmp
+          emptyDir: {}

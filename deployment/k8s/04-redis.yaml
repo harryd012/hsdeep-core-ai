@@ -1,0 +1,56 @@
+# Redis 7 — cache / rate-limit layer. The API is designed to serve without it
+# (scheduler and task routing are PostgreSQL-backed), so Redis is DEGRADED-not-
+# fatal: /health returns "degraded" when Redis is down. It IS counted toward
+# /health/ready because READINESS_REQUIRE_REDIS=true (production default).
+# Runs as uid 999 (redis official image).
+apiVersion: v1
+kind: Service
+metadata:
+  name: hsdeep-redis
+  namespace: hsdeep
+  labels: { app.kubernetes.io/part-of: hsdeep-core-ai, app.kubernetes.io/name: hsdeep-redis }
+spec:
+  selector: { app.kubernetes.io/name: hsdeep-redis }
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hsdeep-redis
+  namespace: hsdeep
+  labels: { app.kubernetes.io/part-of: hsdeep-core-ai, app.kubernetes.io/name: hsdeep-redis }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: hsdeep-redis }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/part-of: hsdeep-core-ai, app.kubernetes.io/name: hsdeep-redis }
+    spec:
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: redis
+          image: redis:7
+          args: ["redis-server", "--save", "", "--appendonly", "no"]
+          ports:
+            - containerPort: 6379
+              name: redis
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            allowPrivilegeEscalation: false
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }

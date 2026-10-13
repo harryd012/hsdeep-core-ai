@@ -1,0 +1,75 @@
+# Frontend — Next.js 16 standalone server (node server.js) on port 3000.
+# NOTE: NEXT_PUBLIC_API_URL is inlined into the client bundle at BUILD time (it
+# is a build ARG in frontend/Dockerfile). The image MUST be built with the
+# externally-reachable API origin. We also set it as a runtime env here for the
+# server-rendered path / documentation, but the authoritative value is baked in.
+# Set NEXT_PUBLIC_API_URL to the same public origin that the Ingress serves
+# /api from, so the browser's direct backend calls resolve to this Ingress.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hsdeep-frontend
+  namespace: hsdeep
+  labels: { app.kubernetes.io/part-of: hsdeep-core-ai, app.kubernetes.io/name: hsdeep-frontend }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: hsdeep-frontend }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/part-of: hsdeep-core-ai, app.kubernetes.io/name: hsdeep-frontend }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: frontend
+          image: hsdeep-core-ai-frontend:9a
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: NEXT_PUBLIC_API_URL
+              value: "https://portal.example.com"
+            - name: PORT
+              value: "3000"
+            - name: HOSTNAME
+              value: "0.0.0.0"
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests: { cpu: "50m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hsdeep-frontend
+  namespace: hsdeep
+  labels: { app.kubernetes.io/part-of: hsdeep-core-ai, app.kubernetes.io/name: hsdeep-frontend }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: hsdeep-frontend }
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

@@ -1,0 +1,38 @@
+# Non-secret configuration, sourced 1:1 from backend/app/core/config.py Settings.
+# RUNTIME_MODE and PORT are intentionally NOT here: they are per-role and are
+# set on each backend Deployment (api=8000, worker=8001, scheduler=8002).
+# Secrets (DATABASE_URL, REDIS_URL, keys, credentials) live in a Secret.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hsdeep-config
+  namespace: hsdeep
+  labels:
+    app.kubernetes.io/part-of: hsdeep-core-ai
+    app.kubernetes.io/name: hsdeep-config
+data:
+  APP_ENV: "production"
+  DEBUG: "false"
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+  SHUTDOWN_DRAIN_SECONDS: "15"
+  READINESS_REQUIRE_REDIS: "true"
+  HOST: "0.0.0.0"
+  FORCE_HTTPS: "true"
+  # Explicit allow-list only — a wildcard/unset value is refused at startup in
+  # production (see Settings.validate_for_production). Set to your real origins.
+  CORS_ORIGINS: "https://portal.example.com"
+  JWT_ALGORITHM: "HS256"
+  ACCESS_TOKEN_EXPIRE_MINUTES: "15"
+  REFRESH_TOKEN_EXPIRE_DAYS: "30"
+  AUTH_ENFORCED: "true"
+  MAX_CONCURRENT_COLLECTIONS: "10"
+  COLLECTOR_RUN_STALE_MINUTES: "10"
+  SOURCE_RATE_LIMIT_RPM: "0"
+  SOURCE_RATE_LIMIT_TTL_SECONDS: "120"
+  CORRELATION_INACTIVITY_MINUTES: "30"
+  INCIDENT_STALE_MINUTES: "1440"
+  INCIDENT_STALE_CLOSE_INTERVAL_SECONDS: "3600"
+  OLLAMA_HOST: "http://hsdeep-ollama:11434"
+  OLLAMA_MODEL: "qwen3.6:latest"
+  AUTONOMOUS_TASK_ASSIGNMENT: "false"
