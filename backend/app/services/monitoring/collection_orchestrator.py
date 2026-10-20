@@ -30,6 +30,7 @@ directly inside `run()` instead.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from app.collectors.base import CollectorConfigError, CollectorRegistry
 from app.core.security import decrypt_connection_info
@@ -40,6 +41,9 @@ from app.repositories.monitoring_source_repository import MonitoringSourceReposi
 from app.services.alert_service import AlertService
 from app.services.ingester.pipeline import count_collector_run, flush_usage_counters
 from app.services.monitoring.bundle_saver import BundleSaver
+
+if TYPE_CHECKING:
+    from app.services.monitoring.source_health_manager import SourceHealthManager
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +61,18 @@ class CollectionOutcome:
         self,
         run_record: CollectorRun,
         created_incidents: list | None = None,
+        recovery_events: list | None = None,
     ) -> None:
         self.run_record = run_record
         # Incidents CREATED during this run, as minimal (incident_id, tenant_id)
         # references. Populated by run(); the transaction owner triggers RCA for
         # these only AFTER a successful commit.
         self.created_incidents = list(created_incidents or [])
+        # Deferred source-health domain events (SOURCE_RECOVERED /
+        # SOURCE_HEALTH_DEGRADED) produced by SourceHealthManager. The
+        # transaction owner publishes them only AFTER a successful commit, so a
+        # rolled-back collection never emits a spurious recovery/degradation.
+        self.recovery_events = list(recovery_events or [])
 
     def __getattr__(self, name: str):
         return getattr(self.run_record, name)
@@ -80,11 +90,47 @@ class CollectionOrchestrator:
         saver: BundleSaver,
         alert_service: AlertService,
         source_repo: MonitoringSourceRepository,
+        health_manager: "SourceHealthManager | None" = None,
     ):
         self.run_repo = run_repo
         self.saver = saver
         self.alert_service = alert_service
         self.source_repo = source_repo
+        # Optional source-health state machine. Wired in by the DI providers and
+        # the scheduler; left None by minimal unit tests (which then fall back to
+        # the legacy status-only mark_sync_result path below).
+        self.health_manager = health_manager
+
+    async def _record_health(
+        self,
+        source: MonitoringSource,
+        *,
+        run_success: bool,
+        error: str | None,
+        run_id,
+    ) -> list:
+        """Update the source's health state machine for one run's outcome.
+
+        With a ``SourceHealthManager`` wired in, this drives
+        ``health_status`` / ``consecutive_failures`` / ``consecutive_successes``
+        / ``last_successful_run_at`` / ``last_failed_run_at`` / ``next_run_at``
+        and returns the deferred domain events (SOURCE_RECOVERED /
+        SOURCE_HEALTH_DEGRADED) for the transaction owner to publish AFTER a
+        successful commit. Without a manager (minimal unit tests) it falls back
+        to the legacy status-only ``mark_sync_result`` path so no test that
+        constructs the orchestrator without one regresses.
+        """
+        if self.health_manager is None:
+            await self.source_repo.mark_sync_result(
+                source,
+                status="connected" if run_success else "error",
+                error=error,
+            )
+            return []
+        result = await self.health_manager.evaluate_and_update(
+            source, run_success=run_success, error=error, run_id=run_id
+        )
+        return result.recovery_events
 
     async def run(self, source: MonitoringSource, trigger: str = "scheduler") -> CollectorRun:
         # Metering hook (usage metering sprint): every completed run - success,
@@ -131,9 +177,11 @@ class CollectionOrchestrator:
                 run_record = await self.run_repo.finish(
                     run_record, status="error", error=check.message
                 )
-                await self.source_repo.mark_sync_result(source, status="error", error=check.message)
+                events = await self._record_health(
+                    source, run_success=False, error=check.message, run_id=run_record.id
+                )
                 await _meter()
-                return CollectionOutcome(run_record)
+                return CollectionOutcome(run_record, recovery_events=events)
 
             raw = await collector.collect()
             bundle = collector.normalize(raw)
@@ -189,7 +237,9 @@ class CollectionOrchestrator:
                 events_recorded=save_result.events_recorded,
                 alerts_upserted=alerts_upserted,
             )
-            await self.source_repo.mark_sync_result(source, status="connected", error=None)
+            events = await self._record_health(
+                source, run_success=True, error=None, run_id=run_record.id
+            )
             await _meter()
             # Post-collection WAN Failover Intelligence (detect -> trace ->
             # verify). Deliberately AFTER the run's rows are written so the
@@ -198,21 +248,25 @@ class CollectionOrchestrator:
             # services/failover_intelligence/hook.py). A detection problem must
             # never turn a healthy collection run into a failed one.
             await self._run_failover_intelligence(source.tenant_id)
-            return CollectionOutcome(run_record, created_incidents)
+            return CollectionOutcome(run_record, created_incidents, events)
 
         except CollectorConfigError as exc:
             run_record = await self.run_repo.finish(run_record, status="error", error=str(exc))
-            await self.source_repo.mark_sync_result(source, status="error", error=str(exc))
+            events = await self._record_health(
+                source, run_success=False, error=str(exc), run_id=run_record.id
+            )
             await _meter()
             # Incidents created before this vendor-side failure still commit
             # (the run row is committed too), so they must be reported - and
             # drained here so they can never leak into a later run's result.
-            return CollectionOutcome(run_record, self.alert_service.drain_created_incidents())
+            return CollectionOutcome(run_record, self.alert_service.drain_created_incidents(), events)
         except Exception as exc:  # noqa: BLE001 - catch-all: never propagate vendor-side failures
             run_record = await self.run_repo.finish(run_record, status="error", error=str(exc))
-            await self.source_repo.mark_sync_result(source, status="error", error=str(exc))
+            events = await self._record_health(
+                source, run_success=False, error=str(exc), run_id=run_record.id
+            )
             await _meter()
-            return CollectionOutcome(run_record, self.alert_service.drain_created_incidents())
+            return CollectionOutcome(run_record, self.alert_service.drain_created_incidents(), events)
 
         finally:
             # Release whatever the collector owns (an SNMP engine's dispatcher and

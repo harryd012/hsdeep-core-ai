@@ -6,7 +6,7 @@ from alerts/webhooks/probe checks. SOC analysts are existing Agent rows
 (department='soc', role='soc_analyst') — no separate table needed.
 
 Revision ID: b8e4f8a2d5c7
-Revises: a9f2c7d4e1b6
+Revises: b4a7c2e8f1d9
 Create Date: 2026-09-10 00:00:00.000000
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "b8e4f8a2d5c7"
-down_revision: Union[str, Sequence[str], None] = "a9f2c7d4e1b6"
+down_revision: Union[str, Sequence[str], None] = "b4a7c2e8f1d9"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

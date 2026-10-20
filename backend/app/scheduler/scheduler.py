@@ -15,6 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.core.config import get_settings
 from app.core.db import AsyncSessionLocal
 from app.repositories.collector_run_repository import CollectorRunRepository
+from app.scheduler.incident_lifecycle import close_stale_incidents_job
 from app.scheduler.jobs import tick
 from app.scheduler.task_dispatch import dispatch_queued_tasks
 
@@ -85,6 +86,15 @@ def start_scheduler(app: "FastAPI") -> AsyncIOScheduler:
         "interval",
         seconds=_TASK_DISPATCH_INTERVAL_SECONDS,
         id="task_dispatch_tick",
+        max_instances=1,
+        coalesce=True,
+    )
+    # Auto-close incidents that have gone quiet (stale-close lifecycle rule).
+    scheduler.add_job(
+        close_stale_incidents_job,
+        "interval",
+        seconds=get_settings().incident_stale_close_interval_seconds,
+        id="incident_stale_close",
         max_instances=1,
         coalesce=True,
     )

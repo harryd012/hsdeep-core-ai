@@ -93,7 +93,9 @@ def upgrade() -> None:
     op.add_column("devices", sa.Column("building", sa.String(100), nullable=True))
     op.add_column("devices", sa.Column("datacenter_name", sa.String(100), nullable=True))
     op.add_column("devices", sa.Column("rack", sa.String(50), nullable=True))
-    op.add_column("devices", sa.Column("custom_metadata", postgresql.JSONB(), nullable=True))
+    # NOTE: devices.custom_metadata is already added by the earlier revision
+    # 1be605e3f990 (CMDB fields). Do NOT re-add it here: a fresh
+    # `alembic upgrade head` would otherwise fail with DuplicateColumnError.
     op.create_index("ix_devices_role", "devices", ["role"])
     op.create_index("ix_devices_role_class", "devices", ["role_class"])
     op.create_index("ix_devices_country", "devices", ["country"])
@@ -140,7 +142,6 @@ def downgrade() -> None:
     op.drop_index("ix_devices_country", table_name="devices")
     op.drop_index("ix_devices_role_class", table_name="devices")
     op.drop_index("ix_devices_role", table_name="devices")
-    op.drop_column("devices", "custom_metadata")
     op.drop_column("devices", "rack")
     op.drop_column("devices", "datacenter_name")
     op.drop_column("devices", "building")

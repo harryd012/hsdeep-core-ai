@@ -165,6 +165,12 @@ class DiscoveryResult:
     def status(self) -> str:
         if self.errors and not self.resources:
             return "FAILED"
+        if not self.resources:
+            # No errors but nothing was recognised: the probe ran cleanly and
+            # found nothing reachable/identifiable. This is a legitimate
+            # "zero-results" outcome and must not masquerade as SUCCESS (which
+            # would imply devices were discovered and created).
+            return "EMPTY"
         if self.errors:
             return "PARTIAL"
         return "SUCCESS"
@@ -209,11 +215,43 @@ class DiscoveryResult:
 class DiscoveryService:
     """Feeds collector evidence through recognition into the existing stack."""
 
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, billing=None):
         self.db = db
         self.devices = DeviceRepository(db)
         self.capabilities = DeviceCapabilityRepository(db)
         self.relationships = ResourceRelationshipRepository(db)
+        # Optional BillingService. When provided, NEW device creation is gated
+        # by the tenant's plan device limit (mirrors BundleSaver._plan_allowances
+        # so the materialization path honours the same quota the collector path
+        # already enforces). When None (existing callers/tests), no gating.
+        self.billing = billing
+
+    async def _device_allowance(self, tenant_id: uuid.UUID) -> int | None:
+        """How many NEW devices this tenant may create right now.
+
+        Mirrors ``BundleSaver._plan_allowances`` so the materialization path and
+        the collector path share the SAME plan-limit semantics. Returns ``None``
+        when unmanaged (no billing wired); ``0`` when creation must stop; else
+        the remaining headroom (``limit - used``).
+        """
+        if self.billing is None:
+            return None
+        from app.services.billing_service import SubscriptionNotFound
+
+        try:
+            entitlements = await self.billing.get_entitlements(tenant_id)
+        except SubscriptionNotFound:
+            return 0
+        if entitlements.get("over_limit_blocked"):
+            return 0
+        for limit in entitlements.get("limits", []):
+            if limit.get("resource") == "devices":
+                return (
+                    0
+                    if limit.get("over_limit")
+                    else max(limit.get("limit", 0) - limit.get("used", 0), 0)
+                )
+        return None
 
     async def discover(
         self,
@@ -234,6 +272,11 @@ class DiscoveryService:
         # even for a resource discovered in the same run.
         batch_index: dict[str, uuid.UUID] = {}
 
+        # Plan quota: one mutable budget shared across the whole batch so a
+        # batch cannot create more NEW devices than the tenant is entitled to.
+        allowance = await self._device_allowance(tenant_id)
+        budget: list[int | None] = [allowance]
+
         for ev in evidence:
             try:
                 outcome = await self._persist_one(
@@ -241,6 +284,7 @@ class DiscoveryService:
                     monitoring_source_id=monitoring_source_id,
                     ev=ev,
                     site_id=site_id,
+                    budget=budget,
                 )
             except Exception as exc:  # noqa: BLE001 - one bad target never aborts a batch
                 logger.warning(
@@ -305,6 +349,7 @@ class DiscoveryService:
         monitoring_source_id: uuid.UUID,
         ev: DiscoveryEvidence,
         site_id: uuid.UUID | None,
+        budget: list[int | None] | None = None,
     ) -> ResourceOutcome:
         recognized = enrich_identity(recognize(ev.recognition_input()).as_dict())
 
@@ -337,6 +382,24 @@ class DiscoveryService:
             address=ev.address,
             identity_keys=identity_keys,
         )
+
+        # -- plan quota gate (NEW devices only) --------------------------------
+        # Existing rows are always refreshed (updates never consume quota). A
+        # NEW device with no remaining headroom is reported honestly and skipped,
+        # never persisted - mirroring BundleSaver's collector-path behaviour.
+        if (
+            existing is None
+            and budget is not None
+            and budget[0] is not None
+            and budget[0] <= 0
+        ):
+            outcome.errors.append("device_quota_exceeded")
+            outcome.probe_evidence = _probe_evidence(ev)
+            outcome.recognition_status = D.RECOGNITION_UNKNOWN
+            outcome.identity_stage = D.STAGE_DISCOVERED
+            outcome.persisted = False
+            return outcome
+
         # Keep the already-established identity so re-discovery cannot move it.
         if existing is not None and existing.external_id:
             external_id = existing.external_id
@@ -369,6 +432,8 @@ class DiscoveryService:
         outcome.created = created
         outcome.updated = not created
         outcome.device_type = merged["device_type"]
+        if created and budget is not None and budget[0] is not None:
+            budget[0] -= 1
 
         # -- capabilities (existing DeviceCapability store) -----------------
         flags, provider_caps = _capability_flags(recognized, ev)

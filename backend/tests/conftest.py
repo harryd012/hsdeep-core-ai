@@ -33,6 +33,48 @@ from app.models.monitoring_source import MonitoringSource
 from app.models.tenant import Tenant
 
 
+# ---------------------------------------------------------------------------
+# pytest-asyncio version guard (TEST INFRASTRUCTURE ONLY - no product code)
+# ---------------------------------------------------------------------------
+# pyproject.toml sets `asyncio_default_test_loop_scope = "session"`, which is
+# only registered by pytest-asyncio >= 0.26. On an older install that option is
+# ignored (emitting "Unknown config option") and async TESTS fall back to
+# per-function loops, so the module-level `app.core.db.engine` asyncpg pool -
+# bound to the first loop that used it - is then accessed from a second loop
+# and every DB test fails with "attached to a different loop". Fail fast here
+# with an actionable message instead of that cryptic runtime error.
+_pytest_asyncio_version = tuple(
+    int(x) for x in getattr(pytest_asyncio, "__version__", "0.0").split(".")[:2]
+)
+if _pytest_asyncio_version < (0, 26):
+    raise RuntimeError(
+        "pytest-asyncio >= 0.26 is required: the session-scoped test loop "
+        "(asyncio_default_test_loop_scope) is unsupported in "
+        f"pytest-asyncio {getattr(pytest_asyncio, '__version__', '?')}. "
+        "Run the suite under the pinned virtualenv."
+    )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _refuse_dev_database_for_tests():
+    """Fail fast rather than let DB-writing tests mutate the dev database.
+
+    These fixtures COMMIT real rows (Tenant / MonitoringSource / CollectorRun /
+    Incident ...) and rely on teardown to delete them; a killed run leaves
+    orphans in the dev DB (observed: 2,420 tenants). Require an explicit
+    TEST_DATABASE_URL so tests bind to a dedicated throwaway database instead
+    (see app.core.db: the engine selects ``test_database_url`` when set).
+    """
+    from app.core.config import get_settings
+
+    if get_settings().test_database_url is None:
+        pytest.exit(
+            "Refusing to run tests against the dev database: TEST_DATABASE_URL "
+            "is unset. Set it to a dedicated test database (e.g. hsdeep_test).",
+            returncode=1,
+        )
+
+
 # Event-loop policy: pytest-asyncio >= 0.26 runs BOTH async fixtures and
 # async tests on a single session-scoped loop (configured in pyproject.toml
 # via `asyncio_default_fixture_loop_scope` / `asyncio_default_test_loop_scope`).
@@ -207,4 +249,24 @@ def _restore_session_event_loop() -> None:
         policy.get_event_loop()
     except RuntimeError:
         asyncio.set_event_loop(loop)
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _cleanup_module_level_async_engine() -> None:
+    """Test-infrastructure cleanup for the module-level AsyncEngine.
+
+    app.core.db.engine is created once at import time and shared by every DB
+    test. When pytest-asyncio tears the session event loop down at session
+    exit, finalizers of asyncpg pool objects still tied to that loop run
+    during interpreter GC and raise a Windows access violation
+    (asyncio/proactor_events.py __del__/__repr__).
+
+    Yielding here keeps the fixture alive for the whole session; the engine is
+    disposed afterwards, while the session event loop is still alive, so the
+    pooled connections are detached before loop/GC shutdown.
+    """
+    yield
+
+    from app.core.db import engine
+
+    await engine.dispose()
+
 

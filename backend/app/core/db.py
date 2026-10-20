@@ -7,7 +7,11 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-engine = create_async_engine(settings.database_url, pool_pre_ping=True, future=True)
+# Tests bind to a dedicated database when TEST_DATABASE_URL is set; otherwise
+# the app's `database_url` is used exactly as before.
+_database_url = settings.test_database_url or settings.database_url
+
+engine = create_async_engine(_database_url, pool_pre_ping=True, future=True)
 
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,

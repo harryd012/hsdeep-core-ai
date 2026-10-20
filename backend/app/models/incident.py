@@ -28,7 +28,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -44,6 +44,61 @@ if TYPE_CHECKING:
 
 class Incident(Base, UUIDPKMixin, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "incidents"
+    __table_args__ = (
+        # Command Center / incident-list read paths. Declared here so the model
+        # stays the honest source of truth instead of `alembic check` proposing
+        # to drop live indexes.
+        #
+        # Every predicate below is written `is_deleted IS false`, NOT
+        # `is_deleted = false`, and that spelling is load-bearing: repositories
+        # filter with `Incident.is_deleted.is_(False)`, which SQLAlchemy renders
+        # as `is_deleted IS false`. PostgreSQL cannot prove that `IS false`
+        # implies a partial-index predicate spelled `= false`, so an index
+        # written the other way is silently NEVER used and the query falls back
+        # to a full scan (measured 11,456ms vs 0.9ms on `list()`). `is_deleted`
+        # is NOT NULL, so the two spellings are logically identical - only the
+        # planner's predicate proof differs. See migration a4c7e2f91b36.
+        #
+        # `tenant_id` LEADS every index, so tenant isolation stays enforced in
+        # SQL as an index-range bound rather than being filtered in Python.
+        Index(
+            "ix_incidents_tenant_last_alert_active",
+            "tenant_id",
+            text("last_alert_at DESC"),
+            postgresql_where=text("is_deleted IS false"),
+        ),
+        Index(
+            "ix_incidents_tenant_opened_active",
+            "tenant_id",
+            "opened_at",
+            postgresql_where=text("is_deleted IS false"),
+        ),
+        Index(
+            "ix_incidents_tenant_resolved_active",
+            "tenant_id",
+            "resolved_at",
+            postgresql_where=text("is_deleted IS false"),
+        ),
+        Index(
+            "ix_incidents_tenant_status_severity_active",
+            "tenant_id",
+            "status",
+            "severity",
+            postgresql_where=text("is_deleted IS false"),
+        ),
+        Index(
+            "ix_incidents_tenant_open_correlated",
+            "tenant_id",
+            postgresql_where=text("status = 'open' AND alert_count > 1 AND is_deleted IS false"),
+        ),
+        Index(
+            "uq_incidents_open_signature",
+            "tenant_id",
+            "incident_signature",
+            unique=True,
+            postgresql_where=text("status = 'open' AND incident_signature IS NOT NULL AND is_deleted IS false"),
+        ),
+    )
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
@@ -83,6 +138,15 @@ class Incident(Base, UUIDPKMixin, TimestampMixin, SoftDeleteMixin):
     )
 
     alert_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+
+    #: Normalized correlation signature (see app.services.alerting.signature).
+    #: Nullable + no backfill: historical rows predate this column and are
+    #: deduplicated by the separate cleanup script, not by a backfill here.
+    incident_signature: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    #: Why the incident was auto-closed by the stale-close job (None unless
+    #: closed automatically), e.g. "no new alert for 24h".
+    closure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_alert_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

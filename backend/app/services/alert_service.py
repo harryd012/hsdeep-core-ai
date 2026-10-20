@@ -49,6 +49,7 @@ from app.repositories.maintenance_window_repository import MaintenanceWindowRepo
 from app.repositories.site_repository import SiteRepository
 from app.services.alerting import event_classifier
 from app.services.alerting.correlation_engine import CorrelationEngine
+from app.services.alerting.lifecycle import resolve_on_clear
 from app.services.alerting.severity_mapper import severity_for_sensor_status
 from app.services.priority.business_impact_engine import BusinessImpactEngine
 from app.services.priority.confidence_scorer import alert_confidence
@@ -142,12 +143,17 @@ class AlertService:
 
         if severity is None:
             # Sensor recovered (or was never bad this sync). Auto-resolve
-            # any incident still open/acknowledged for it.
+            # any alert still open for it.
             if active is not None:
                 resolved = await self.alert_repo.resolve(active, resolved_by=None, auto=True)
                 await self._record_history(
                     resolved, event_type="resolved", message="Auto-resolved: sensor recovered.",
                 )
+                # Resolution-on-clear: if this cleared the incident's last active
+                # alert, resolve the incident too (no member alert left standing).
+                if resolved.incident_id is not None:
+                    incident = await self.incident_repo.get(resolved.incident_id, resolved.tenant_id)
+                    await resolve_on_clear(self.alert_repo, self.incident_repo, incident)
                 return AlertEvaluation(alert=resolved, action="resolved")
             return AlertEvaluation(alert=None, action="noop")
 

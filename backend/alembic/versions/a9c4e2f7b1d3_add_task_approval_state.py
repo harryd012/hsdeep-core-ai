@@ -13,7 +13,7 @@ proven lifecycle machine and its validator are untouched, so this migration
 only adds the persisted state the Action-Plane gate reads.
 
 Revision ID: a9c4e2f7b1d3
-Revises: f7a4d5e6a8b1
+Revises: d2f6a9c4e8b1
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "a9c4e2f7b1d3"
-down_revision = "f7a4d5e6a8b1"
+down_revision = "d2f6a9c4e8b1"
 branch_labels = None
 depends_on = None
 

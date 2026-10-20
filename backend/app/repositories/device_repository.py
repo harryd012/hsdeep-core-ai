@@ -7,12 +7,21 @@ logic (e.g. for unit tests).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.device import Device
+
+
+#: Canonical device-state classification sets — mirror `UP_STATUSES` /
+#: `DOWN_STATUSES` in frontend/src/lib/dashboard/metrics.ts exactly, so the
+#: SQL aggregate and the frontend `classifyDevice()` can never disagree.
+CANONICAL_UP_STATUSES = ("up", "online")
+CANONICAL_DOWN_STATUSES = (
+    "down", "offline", "critical", "error", "unreachable", "degraded", "warning",
+)
 
 
 class DeviceRepository:
@@ -302,6 +311,72 @@ class DeviceRepository:
             .group_by(Device.status)
         )
         return {status: count for status, count in (await self.db.execute(stmt)).all()}
+
+    async def counts_by_status_and_state(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        now: datetime,
+        freshness_seconds: int,
+    ) -> tuple[dict[str, int], dict[str, int]]:
+        """Raw status distribution + canonical state classification, ONE query.
+
+        Returns ``(status_counts, state_counts)``. The canonical half mirrors
+        ``classifyDevice()`` in ``frontend/src/lib/dashboard/metrics.ts`` exactly,
+        so the backend aggregate and the frontend selector can never drift:
+
+          last_seen_at IS NULL                        -> unknown
+          last_seen_at < now - freshness_seconds      -> stale
+          lower(trim(status)) in ("up", "online")     -> up
+          lower(trim(status)) in ("down", "offline",
+              "critical", "error", "unreachable",
+              "degraded", "warning")                  -> down
+          else                                        -> unknown
+
+        Freshness wins: a device whose ``last_seen_at`` is too old is ``stale``
+        regardless of its status, and a NULL ``last_seen_at`` is ``unknown`` — so
+        a device is only ``down`` with recent confirming evidence, never merely
+        because telemetry has stopped. Both halves share ONE GROUP BY and the
+        same filter (tenant + not deleted), so
+        ``state_counts["total"] == sum(status_counts.values())``.
+        """
+        stale_cutoff = now - timedelta(seconds=freshness_seconds)
+        state_expr = case(
+            (Device.last_seen_at.is_(None), "unknown"),
+            (Device.last_seen_at < stale_cutoff, "stale"),
+            (func.lower(func.trim(Device.status)).in_(CANONICAL_UP_STATUSES), "up"),
+            (func.lower(func.trim(Device.status)).in_(CANONICAL_DOWN_STATUSES), "down"),
+            else_="unknown",
+        )
+        stmt = (
+            select(Device.status, state_expr.label("state"), func.count().label("n"))
+            .where(Device.tenant_id == tenant_id, Device.is_deleted.is_(False))
+            .group_by(Device.status, state_expr)
+        )
+        status_counts: dict[str, int] = {}
+        state_counts: dict[str, int] = {"up": 0, "down": 0, "stale": 0, "unknown": 0}
+        for status, state, n in (await self.db.execute(stmt)).all():
+            status_counts[status] = status_counts.get(status, 0) + n
+            state_counts[state] += n
+        state_counts["total"] = sum(state_counts.values())
+        return status_counts, state_counts
+
+    async def counts_by_state(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        now: datetime,
+        freshness_seconds: int,
+    ) -> dict[str, int]:
+        """Canonical state counts (up/down/stale/unknown/total).
+
+        Convenience wrapper over :meth:`counts_by_status_and_state` for callers
+        that only need the classification, not the raw status distribution.
+        """
+        _, state_counts = await self.counts_by_status_and_state(
+            tenant_id, now=now, freshness_seconds=freshness_seconds
+        )
+        return state_counts
 
     async def counts_by_site_and_type(
         self, tenant_id: uuid.UUID

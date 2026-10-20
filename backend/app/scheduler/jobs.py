@@ -44,6 +44,9 @@ from app.services.billing_service import BillingService
 from app.services.monitoring.bundle_saver import BundleSaver
 from app.services.monitoring.collection_orchestrator import CollectionOrchestrator
 from app.services.monitoring.rate_limiter import SourceRateLimiter, get_source_rate_limiter
+from app.services.monitoring.source_health_manager import SourceHealthManager
+from app.repositories.source_health_audit_repository import SourceHealthAuditRepository
+from app.services.events.event_bus import get_event_bus
 from app.services.rca_trigger import trigger_rca_for_incident
 
 logger = logging.getLogger(__name__)
@@ -235,6 +238,11 @@ async def _run_bounded(
                     ),
                     alert_service=AlertService(AlertRepository(db)),
                     source_repo=source_repo,
+                    health_manager=SourceHealthManager(
+                        source_repo,
+                        SourceHealthAuditRepository(db),
+                        get_event_bus(),
+                    ),
                 )
                 outcome = await orchestrator.run(source, trigger="scheduler")
                 await db.commit()
@@ -252,6 +260,16 @@ async def _run_bounded(
                         logger.exception(
                             "RCA trigger failed for committed incident %s",
                             reference.incident_id,
+                        )
+                # Source-health domain events, published AFTER commit so a
+                # rolled-back collection never emits a spurious signal.
+                for event in outcome.recovery_events:
+                    try:
+                        await get_event_bus().publish(event)
+                    except Exception:  # noqa: BLE001 - health row already committed
+                        logger.exception(
+                            "Source-health event publish failed for source %s",
+                            source_id,
                         )
         except Exception:  # noqa: BLE001 - never let one source's crash sink the tick
             logger.exception(

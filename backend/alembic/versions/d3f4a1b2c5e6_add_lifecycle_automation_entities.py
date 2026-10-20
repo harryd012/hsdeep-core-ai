@@ -1,4 +1,4 @@
-"""add lifecycle automation entities: SOPExecution model, ServiceNow sync fields on Ticket.
+"""add lifecycle automation entities: SOPExecution model.
 
 Revision ID: d3f4a1b2c5e6
 Revises: 1c644b59d560
@@ -7,9 +7,13 @@ Create Date: 2026-08-10 10:36:00.000000
 Adds:
 - ``sop_executions`` table for tracking live SOP step execution (auto/manual/gated)
   with pause-and-resume support for the AutomationRunner.
-- ``servicenow_sys_id`` + ``servicenow_sync_status`` on ``tickets`` so the
-  ServiceNow lifecycle-sync listener can store the external record identity
-  and sync status per ticket.
+
+NOTE: This migration previously also added ``servicenow_sys_id`` and
+``servicenow_sync_status`` to ``tickets``. Those columns were never read or
+written by application code, are absent from the ``Ticket`` model and from
+the canonical dev database, and were superseded by the provider-agnostic
+``TicketLink.external_id`` / ``external_number`` design. They have been
+removed so that a fresh upgrade matches the canonical (model + dev) schema.
 """
 from typing import Sequence, Union
 
@@ -21,7 +25,13 @@ from sqlalchemy.dialects import postgresql
 revision: str = 'd3f4a1b2c5e6'
 down_revision: Union[str, None] = '1c644b59d560'
 branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+# Cross-branch dependency: this migration creates ``sop_executions`` with an
+# FK into ``tickets.id``, but ``tickets`` itself is created by the *sibling*
+# branch b2c3d4e5f6a7 (both branch off 1c644b59d560). Without this
+# dependency, Alembic's branch walk can apply this migration before
+# ``tickets`` exists and fail with ``relation "tickets" does not exist`` on
+# a fresh upgrade.
+depends_on: Union[str, Sequence[str], None] = ("b2c3d4e5f6a7",)
 
 
 def upgrade() -> None:
@@ -68,24 +78,8 @@ def upgrade() -> None:
     op.create_index(op.f('ix_sop_executions_ticket_id'), 'sop_executions', ['ticket_id'], unique=False)
     op.create_index(op.f('ix_sop_executions_tenant_id'), 'sop_executions', ['tenant_id'], unique=False)
 
-    # --- servicenow sync fields on tickets --------------------------------
-    op.add_column('tickets',
-    sa.Column('servicenow_sys_id', sa.String(length=50), nullable=True),
-    )
-    op.create_index(op.f('ix_tickets_servicenow_sys_id'), 'tickets', ['servicenow_sys_id'], unique=False)
-    op.add_column('tickets',
-    sa.Column('servicenow_sync_status', sa.String(length=30),
-              server_default='pending', nullable=False),
-    )
-    op.create_index(op.f('ix_tickets_servicenow_sync_status'), 'tickets', ['servicenow_sync_status'], unique=False)
-
 
 def downgrade() -> None:
-    op.drop_index(op.f('ix_tickets_servicenow_sync_status'), table_name='tickets')
-    op.drop_column('tickets', 'servicenow_sync_status')
-    op.drop_index(op.f('ix_tickets_servicenow_sys_id'), table_name='tickets')
-    op.drop_column('tickets', 'servicenow_sys_id')
-
     op.drop_index(op.f('ix_sop_executions_tenant_id'), table_name='sop_executions')
     op.drop_index(op.f('ix_sop_executions_ticket_id'), table_name='sop_executions')
     op.drop_index(op.f('ix_sop_executions_sop_id'), table_name='sop_executions')

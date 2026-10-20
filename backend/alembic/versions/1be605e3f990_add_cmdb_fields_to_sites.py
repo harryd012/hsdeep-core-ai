@@ -83,11 +83,12 @@ def upgrade() -> None:
     op.drop_column('security_settings', 'is_deleted')
     op.drop_column('settings', 'deleted_at')
     op.drop_column('settings', 'is_deleted')
-    op.add_column('sites', sa.Column('building', sa.String(length=255), nullable=True))
+    # NOTE: building/rack/latitude/longitude are topology columns owned by the
+    # later revision f2a1b3c4d5e6 (location hierarchy). Do not add them here:
+    # a fresh `alembic upgrade head` would otherwise fail with
+    # DuplicateColumnError (and this file's String(255) for building was wrong
+    # anyway - the canonical width is String(100)).
     op.add_column('sites', sa.Column('floor', sa.String(length=50), nullable=True))
-    op.add_column('sites', sa.Column('rack', sa.String(length=50), nullable=True))
-    op.add_column('sites', sa.Column('latitude', sa.Float(), nullable=True))
-    op.add_column('sites', sa.Column('longitude', sa.Float(), nullable=True))
     op.add_column('sites', sa.Column('site_owner', sa.String(length=255), nullable=True))
     op.add_column('sites', sa.Column('support_contact', sa.String(length=255), nullable=True))
     op.add_column('sites', sa.Column('timezone', sa.String(length=50), nullable=True))
@@ -101,11 +102,7 @@ def downgrade() -> None:
     op.drop_column('sites', 'timezone')
     op.drop_column('sites', 'support_contact')
     op.drop_column('sites', 'site_owner')
-    op.drop_column('sites', 'longitude')
-    op.drop_column('sites', 'latitude')
-    op.drop_column('sites', 'rack')
     op.drop_column('sites', 'floor')
-    op.drop_column('sites', 'building')
     op.add_column('settings', sa.Column('is_deleted', sa.BOOLEAN(), server_default=sa.text('false'), autoincrement=False, nullable=False))
     op.add_column('settings', sa.Column('deleted_at', postgresql.TIMESTAMP(timezone=True), autoincrement=False, nullable=True))
     op.add_column('security_settings', sa.Column('is_deleted', sa.BOOLEAN(), server_default=sa.text('false'), autoincrement=False, nullable=False))

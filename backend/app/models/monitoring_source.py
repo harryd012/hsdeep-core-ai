@@ -26,6 +26,11 @@ if TYPE_CHECKING:
     from app.models.tenant import Tenant
 
 
+# Source health status values (driven by the SourceHealthManager state machine).
+HEALTH_STATUS_HEALTHY = "healthy"
+HEALTH_STATUS_DEGRADED = "degraded"
+
+
 class MonitoringSource(Base, UUIDPKMixin, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "monitoring_sources"
     __table_args__ = (

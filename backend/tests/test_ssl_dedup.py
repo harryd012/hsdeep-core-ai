@@ -61,46 +61,55 @@ class TestSSLCheckDeduplication:
         """10 consecutive failures for SSL check on host X, port 993 -> 1 incident with occurrence_count == 10."""
         tenant, device = await self._create_tenant_and_device()
 
+        # Create ONE source and ONE sensor (the same probe) so every alert
+        # carries the same sensor_id and therefore the same dedup signature.
+        # The previous fixture created a new sensor per iteration, which
+        # produced a different signature each time and correctly yielded 10
+        # incidents -- contradicting the test's stated intent.
+        from app.models.monitoring_source import MonitoringSource
+        async with AsyncSessionLocal() as db:
+            source = MonitoringSource(
+                tenant_id=tenant.id,
+                name="test-source",
+                source_type="test",
+                is_active=True,
+            )
+            db.add(source)
+            await db.flush()
+            await db.refresh(source)
+            sensor = Sensor(
+                tenant_id=tenant.id,
+                monitoring_source_id=source.id,
+                device_id=device.id,
+                external_id="ssl-check-993",
+                name="SSL Security Check - mail.example.com:993",
+                metric_type="ssl_security",
+                status="down",
+                critical_threshold=0,
+                warning_threshold=0,
+                current_value=0,
+            )
+            db.add(sensor)
+            await db.flush()
+            await db.refresh(sensor)
+            await db.commit()
+            source_id = source.id
+            sensor_id = sensor.id
+            sensor_name = sensor.name
+
         async with AsyncSessionLocal() as db:
             alert_repo = AlertRepository(db)
             incident_repo = IncidentRepository(db)
             engine = CorrelationEngine(alert_repo, incident_repo)
 
             for i in range(10):
-                sensor = Sensor(
-                    tenant_id=tenant.id,
-                    monitoring_source_id=uuid.uuid4(),
-                    device_id=device.id,
-                    external_id=f"ssl-check-993-{i}",
-                    name=f"SSL Security Check - {device.name}:993",
-                    metric_type="ssl_security",
-                    status="down",
-                    critical_threshold=0,
-                    warning_threshold=0,
-                    current_value=0,
-                )
-                # Need a real MonitoringSource for FK constraint
-                from app.models.monitoring_source import MonitoringSource
-                source = MonitoringSource(
-                    tenant_id=tenant.id,
-                    name=f"test-source-{i}",
-                    source_type="test",
-                    is_active=True,
-                )
-                db.add(source)
-                await db.flush()
-                await db.refresh(source)
-                sensor.monitoring_source_id = source.id
-                db.add(sensor)
-                await db.flush()
-                await db.refresh(sensor)
-
                 alert = Alert(
                     tenant_id=tenant.id,
                     site_id=device.site_id,
                     device_id=device.id,
-                    sensor_id=sensor.id,
-                    title=sensor.name,
+                    sensor_id=sensor_id,
+                    monitoring_source_id=source_id,
+                    title=sensor_name,
                     description=f"SSL check failed on {device.name}:993",
                     severity="critical",
                     status="open",
@@ -121,6 +130,12 @@ class TestSSLCheckDeduplication:
                 else:
                     assert result.is_new_incident is False
                     assert result.incident.id == alert.incident_id
+
+                # Resolve the alert so the next iteration can create a new
+                # active alert for the same sensor (uq_alerts_active_per_sensor
+                # permits only one non-resolved alert per sensor).
+                alert.status = "resolved"
+                await db.flush()
 
             open_incidents = await incident_repo.list(tenant.id, status="open")
             assert len(open_incidents) == 1

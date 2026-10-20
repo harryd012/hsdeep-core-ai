@@ -25,7 +25,7 @@ def _indexes(table, schema):
 
 def _constraints(table, schema):
     insp = sa.inspect(op.get_bind())
-    return {(c.get("name"), c["type"]) for c in insp.get_unique_constraints(table, schema=schema)}
+    return {(c.get("name"), "unique") for c in insp.get_unique_constraints(table, schema=schema)}
 
 
 def _guard():
@@ -124,7 +124,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind, schema = _guard()
     insp = sa.inspect(bind)
-    tl_uq = {(c.get("name"), c["type"]) for c in insp.get_unique_constraints("topology_links", schema=schema)}
+    tl_uq = {(c.get("name"), "unique") for c in insp.get_unique_constraints("topology_links", schema=schema)}
     if ("uq_topology_links_tenant_devices_name", "unique") in tl_uq:
         op.drop_constraint(
             "uq_topology_links_tenant_devices_name", "topology_links",

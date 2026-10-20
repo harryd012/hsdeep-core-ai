@@ -211,7 +211,7 @@ class HsignceContextBuilder:
                     })
         if self.incident_repo is not None:
             for device_id in component:
-                incident = await self.incident_repo.get_open_for_device(device_id)
+                incident = await self.incident_repo.get_open_for_device(device_id, tenant_id)
                 if incident is not None:
                     evidence.append({
                         "kind": "incident",

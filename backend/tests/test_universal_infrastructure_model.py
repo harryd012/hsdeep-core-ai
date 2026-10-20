@@ -225,6 +225,10 @@ class TestProviderRegistry:
         for source_type in PROV.wired_source_types():
             assert PROV.provider_from_source_type(source_type) is not None, source_type
 
+    def test_datadog_and_paloalto_map_to_canonical_providers(self):
+        assert PROV.provider_from_source_type("datadog") == V.PROVIDER_DATADOG
+        assert PROV.provider_from_source_type("paloalto") == V.PROVIDER_PALOALTO
+
 
 # ---------------------------------------------------------------------------
 # Canonical telemetry contract (spec sections 16, 33, 38)

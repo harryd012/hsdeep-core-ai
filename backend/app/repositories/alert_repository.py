@@ -216,6 +216,22 @@ class AlertRepository:
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def count_active_for_incident(self, incident_id: uuid.UUID) -> int:
+        """Number of non-resolved, non-deleted alerts still attached to the
+        incident. Used by the lifecycle service to decide whether an incident
+        is fully cleared and should be resolved."""
+        stmt = (
+            select(func.count())
+            .select_from(Alert)
+            .where(
+                Alert.incident_id == incident_id,
+                Alert.status != "resolved",
+                Alert.is_deleted.is_(False),
+            )
+        )
+        result = await self.db.execute(stmt)
+        return int(result.scalar_one())
+
     async def list(
         self,
         tenant_id: uuid.UUID,

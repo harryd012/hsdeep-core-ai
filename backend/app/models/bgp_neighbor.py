@@ -42,7 +42,7 @@ class BgpNeighbor(Base, UUIDPKMixin, TimestampMixin, SoftDeleteMixin):
             "resource_id", "vrf", "neighbor_ip", name="uq_bgp_neighbors_identity"
         ),
         Index("ix_bgp_neighbors_tenant_state", "tenant_id", "state"),
-        Index("ix_bgp_neighbors_resource", "resource_id"),
+        Index("ix_bgp_neighbors_resource_id", "resource_id"),
     )
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(

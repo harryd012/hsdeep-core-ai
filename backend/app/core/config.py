@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/hsdeep"
 
+    # Tests: when set, the DB engine and test fixtures bind to THIS database
+    # instead of `database_url`, so DB-writing tests never mutate the dev DB.
+    # The test suite refuses to run (see tests/conftest.py) when this is unset.
+    test_database_url: str | None = None
+
     # Redis
     redis_url: str = "redis://localhost:6379/0"
 
@@ -65,6 +70,29 @@ class Settings(BaseSettings):
     # Collectors / Scheduler
     max_concurrent_collections: int = 10
     collector_run_stale_minutes: int = 10
+
+    # Correlation: how long an open incident may be quiet before a new alert
+    # starts a fresh incident instead of reopening it. Replaces the hardcoded
+    # 30-minute CORRELATION_WINDOW in CorrelationEngine; kept configurable so
+    # operators can match their poll cadence.
+    correlation_inactivity_minutes: int = 30
+
+    # Incident lifecycle: an open/acknowledged incident that receives no new
+    # alert for this long is auto-closed by the stale-close job. Also how often
+    # that job runs.
+    incident_stale_minutes: int = 1440  # 24h
+    incident_stale_close_interval_seconds: int = 3600  # hourly
+
+    # Source health state machine (SourceHealthManager). These drive when a
+    # failing MonitoringSource transitions HEALTHY -> DEGRADED and when a
+    # recovering one transitions back, plus the exponential backoff used to
+    # schedule the next attempt after a failure.
+    health_degraded_threshold: int = 3
+    health_recovery_successes: int = 2
+    retry_max_attempts: int = 3
+    retry_backoff_base_seconds: float = 30.0
+    retry_max_delay_seconds: float = 300.0
+    retry_jitter: bool = True
 
     # --- Phase 9A deployment contract ------------------------------------
     # Runtime role for this process. One image, several roles:

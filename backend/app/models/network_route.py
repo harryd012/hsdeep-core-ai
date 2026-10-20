@@ -90,7 +90,7 @@ class NetworkRoute(Base, UUIDPKMixin, TimestampMixin, SoftDeleteMixin):
     priority: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: active | inactive | withdrawn | unknown
     state: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="unknown", server_default="unknown", index=True
+        String(20), nullable=False, default="unknown", server_default="unknown"
     )
     is_best: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"

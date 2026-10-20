@@ -17,6 +17,7 @@ from collections import defaultdict
 from collections import deque
 
 from app.api.routes import auth, alerts, dashboard, devices, health, incidents, infrastructure, monitoring, priorities, sops
+from app.api.routes import ingest
 from app.api.routes import agents, tasks
 from app.api.routes import command_center
 from app.api.routes import discovery_scopes
@@ -547,3 +548,4 @@ app.include_router(failover_intelligence.router, prefix="/api")
 app.include_router(discovery.router, prefix="/api")
 app.include_router(discovery_scopes.router, prefix="/api")
 app.include_router(admin_tenants.router, prefix="/api")
+app.include_router(ingest.router, prefix="/api/v1")

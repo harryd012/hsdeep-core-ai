@@ -66,7 +66,7 @@ class CollectorCredential(Base, UUIDPKMixin, TimestampMixin):
 
     #: Hash of the plaintext credential. NEVER the credential itself.
     credential_hash: Mapped[str] = mapped_column(
-        String(128), nullable=False, unique=True, index=True
+        String(128), nullable=False, index=True
     )
 
     last_used_at: Mapped[datetime | None] = mapped_column(

@@ -131,6 +131,8 @@ SOURCE_TYPE_TO_PROVIDER: dict[str, str] = {
     "gcp": V.PROVIDER_GCP,
     "vmware": V.PROVIDER_VMWARE,
     "kubernetes": V.PROVIDER_KUBERNETES,
+    "datadog": V.PROVIDER_DATADOG,
+    "paloalto": V.PROVIDER_PALOALTO,
 }
 
 PROVIDER_KINDS: dict[str, str] = {
@@ -150,6 +152,8 @@ PROVIDER_KINDS: dict[str, str] = {
     V.PROVIDER_GCP: KIND_CLOUD,
     V.PROVIDER_VMWARE: KIND_CONTROLLER,
     V.PROVIDER_KUBERNETES: KIND_CONTROLLER,
+    V.PROVIDER_DATADOG: KIND_PLATFORM,
+    V.PROVIDER_PALOALTO: KIND_NETWORK,
     V.PROVIDER_MANUAL: KIND_MANUAL,
 }
 
@@ -195,6 +199,8 @@ PROVIDER_RESOURCE_TYPES: dict[str, tuple[str, ...]] = {
         "hypervisor", "virtual_machine", "storage_volume", "container_host",
     ),
     V.PROVIDER_KUBERNETES: ("container_host", "service", "application"),
+    V.PROVIDER_DATADOG: ("server", "virtual_machine", "container_host", "network_device"),
+    V.PROVIDER_PALOALTO: ("firewall", "security_gateway"),
     V.PROVIDER_MANUAL: (),
 }
 
@@ -312,6 +318,8 @@ PROVIDER_EVIDENCE_CLASSIFICATION: dict[str, str] = {
     V.PROVIDER_SSH: V.EVIDENCE_ACTIVE,
     V.PROVIDER_WMI: V.EVIDENCE_ACTIVE,
     V.PROVIDER_WINRM: V.EVIDENCE_ACTIVE,
+    V.PROVIDER_DATADOG: V.EVIDENCE_API,
+    V.PROVIDER_PALOALTO: V.EVIDENCE_API,
 }
 
 

@@ -155,3 +155,48 @@ async def api_allowance(tenant_id: uuid.UUID) -> tuple[int | None, int, bool]:
 
     _allowance_cache[tenant_id] = (now + ALLOWANCE_TTL_SECONDS, limit, used, over)
     return limit, used, over
+
+
+# ---------------------------------------------------------------------------
+# Control-plane (session) endpoints
+# ---------------------------------------------------------------------------
+# These establish or maintain the authenticated session itself: login, token
+# refresh, logout, and the /me identity read the frontend performs immediately
+# after login. They must remain reachable even when the tenant has exhausted
+# its application API allowance, otherwise a locked-out tenant cannot log in
+# to reach /usage and resolve the lockout. Live evidence of the defect this
+# guard fixes: ``POST /api/auth/login`` -> 200 (token-in-body, IP-scoped, so
+# never tenant-metered) followed immediately by ``GET /api/auth/me`` -> 429
+# ``plan_limit_exceeded``: authentication succeeded and the session could
+# never be established.
+#
+# Exempting these paths from BOTH metering and enforcement is deliberate:
+#   * enforcement - a session-establishment request is not "application API
+#     usage"; blocking it bricks authentication for the entire tenant, and
+#   * metering - counting session traffic would let /me and refresh polling
+#     burn the sellable allowance and conflate session establishment with
+#     application API usage in the Usage UI.
+# Every other tenant API is metered and blocked exactly as before. The
+# per-minute burst limiter and the per-IP auth rate limiter (5 rpm on
+# login/refresh) still apply to these paths, so the exemption does not open
+# an unauthenticated flood gate.
+CONTROL_PLANE_PATHS: frozenset[str] = frozenset(
+    {
+        "/api/auth/login",
+        "/api/auth/refresh",
+        "/api/auth/logout",
+        "/api/auth/me",
+    }
+)
+
+
+def is_control_plane_path(path: str) -> bool:
+    """True for session/control-plane paths that must survive quota lockout.
+
+    Matches on the normalized path so ``/api/auth/me/`` (trailing slash)
+    behaves exactly like ``/api/auth/me``. Anything not in
+    ``CONTROL_PLANE_PATHS`` - i.e. every normal tenant API - is metered and
+    enforced unchanged.
+    """
+    normalized = path.rstrip("/") or "/"
+    return normalized in CONTROL_PLANE_PATHS
