@@ -25,9 +25,11 @@ export interface CommandCenterFilters {
  * defaults instead of reaching the API.
  */
 export function useCommandCenterFilters() {
-  const params = useSearchParams();
+  // Both can be null outside the App Router tree (e.g. while prerendering);
+  // treat that as "no filters" on the current page.
+  const params = useSearchParams() ?? new URLSearchParams();
   const router = useRouter();
-  const pathname = usePathname();
+  const pathname = usePathname() ?? "/dashboard";
 
   const filters = useMemo<CommandCenterFilters>(() => {
     const range = parseRange(params.get("range"));
