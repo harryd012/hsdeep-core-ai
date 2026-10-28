@@ -181,6 +181,25 @@ class SensorIntelligence(BaseModel):
     total: int
 
 
+class DeviceStateCounts(BaseModel):
+    """Canonical freshness-aware device-state classification (KPI H canonical).
+
+    Mirrors ``countDeviceStates()`` / ``classifyDevice()`` in
+    frontend/src/lib/dashboard/metrics.ts EXACTLY: up / down / stale / unknown
+    with a 24h freshness gate. This is the single source of truth for "devices
+    X" tiles. The legacy online/degraded/offline/unknown fields on
+    ``DeviceIntelligence`` are the raw status distribution and remain for
+    backward compatibility - they are NOT the same numbers (a stale "up" device
+    is ``up`` in the raw bucket but ``stale`` here).
+    """
+
+    up: int
+    down: int
+    stale: int
+    unknown: int
+    total: int
+
+
 class DeviceIntelligence(BaseModel):
     """Canonical `Device.status` distribution (KPI H).
 
@@ -207,6 +226,9 @@ class DeviceIntelligence(BaseModel):
     offline: int
     unknown: int
     total: int
+    #: Canonical freshness-aware classification (see DeviceStateCounts). Additive;
+    #: the legacy status buckets above are preserved for backward compatibility.
+    canonical: DeviceStateCounts
 
 
 class OperationalAlertIntelligence(BaseModel):
@@ -436,6 +458,30 @@ class ResponseKpis(BaseModel):
     open_incidents: int  # active = open + acknowledged + investigating
     resolved_incidents_24h: int
     critical_open_incidents: int
+    #: Mean ``acknowledged_at - opened_at`` (minutes) for incidents OPENED in
+    #: the window that have been acknowledged. None when none were (ECC-1).
+    mtta_minutes: float | None = None
+    #: The same window shifted back by ``window_hours`` (ECC-1 "vs previous").
+    #: None only for clients/tests that build ResponseKpis without it.
+    previous: "ResponseKpisPrevious | None" = None
+
+
+class ResponseKpisPrevious(BaseModel):
+    """Window-derived KPIs for ``[now - 2w, now - w)``.
+
+    Only metrics reconstructible from persisted timestamps are carried.
+    Point-in-time state (open incidents, device health, collector status) has
+    no history table, so it has no previous value here - the UI shows no
+    delta for it rather than an invented one.
+    """
+
+    incident_volume: int
+    resolved_incidents: int
+    mttr_minutes: float | None
+    mtta_minutes: float | None
+
+
+ResponseKpis.model_rebuild()
 
 
 class TrendBucket(BaseModel):
@@ -468,3 +514,35 @@ class CommandCenterBrief(BaseModel):
     collection_health: CollectionHealthBrief
     kpis: ResponseKpis
     trends: TrendsBrief
+
+class CloudOpsKPI(BaseModel):
+    """One cloud-operations KPI card.
+
+    ``value`` holds the measured result; when data is genuinely unavailable
+    (no collector / no integration), ``unavailable`` is True and
+    ``unavailable_reason`` explains why. ``value`` is never coerced from
+    missing-or-error to 0 — a zero means a real, measured zero.
+    """
+
+    value: int | str | dict | None = None
+    detail: dict | None = None
+    unavailable: bool = False
+    unavailable_reason: str | None = None
+    last_collected_at: datetime | None = None
+
+
+class CloudOperations(BaseModel):
+    """Tenant-scoped cloud-operations KPI snapshot.
+
+    Six cards: three measured from real telemetry, three explicitly marked
+    unavailable because the corresponding integrations do not exist in this
+    repository.
+    """
+
+    cloud_resources: CloudOpsKPI
+    resource_health: CloudOpsKPI
+    active_incidents: CloudOpsKPI
+    cloud_spend: CloudOpsKPI
+    policy_compliance: CloudOpsKPI
+    backup_readiness: CloudOpsKPI
+

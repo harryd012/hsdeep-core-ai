@@ -86,6 +86,18 @@ class Incident(Base, UUIDPKMixin, TimestampMixin, SoftDeleteMixin):
             "severity",
             postgresql_where=text("is_deleted IS false"),
         ),
+        # ECC-1: covering index for the active-set aggregates - incident aging
+        # and per-site active counts - so both are index-only scans
+        # (migration e8c1d4f7a2b9).
+        Index(
+            "ix_incidents_tenant_status_site_active",
+            "tenant_id",
+            "status",
+            "site_id",
+            "severity",
+            postgresql_include=["opened_at", "resolved_at"],
+            postgresql_where=text("is_deleted IS false"),
+        ),
         Index(
             "ix_incidents_tenant_open_correlated",
             "tenant_id",

@@ -1164,6 +1164,16 @@ export const DIAGNOSTIC_TIMEOUT_MS = 90_000;
  */
 export const OPERATOR_WRITE_TIMEOUT_MS = 45_000;
 
+/**
+ * Budget for HEAVY KPI READS that aggregate several tenant-wide measurements
+ * server-side. `GET /api/dashboard/cloud-operations` runs three incident /
+ * device aggregations over a multi-million-row estate; measured cold latency
+ * is ~8.4s (warm ~1.3s), which exceeds the 10s default under a concurrent
+ * dashboard page load (28 parallel requests) and aborted a perfectly healthy
+ * request - the panel then rendered "Request timed out" instead of its data.
+ */
+export const HEAVY_KPI_TIMEOUT_MS = 30_000;
+
 
 async function apiFetchWithRetry<T>(
   path: string,
@@ -1456,6 +1466,14 @@ export interface OperationalIntelligenceDevices {
   offline: number;
   unknown: number;
   total: number;
+  /** Canonical freshness-aware classification (backend counts_by_state). */
+  canonical: {
+    up: number;
+    down: number;
+    stale: number;
+    unknown: number;
+    total: number;
+  };
 }
 
 export interface OperationalIntelligenceAlerts {
@@ -1509,6 +1527,44 @@ export async function getBackendHealth(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Full system health contract returned by GET /health.  The single
+ * authoritative source for every status surface.  `status` is
+ * "ok" | "degraded" | "unavailable"; `system_online` means PostgreSQL is up
+ * (Redis is NOT required for the platform to be online).
+ */
+export interface SystemHealth {
+  status: "ok" | "degraded" | "unavailable";
+  ready: boolean;
+  ai_ready: boolean;
+  system_online: boolean;
+  timestamp: string;
+  dependencies: Record<string, string>;
+}
+
+/**
+ * Fetch GET /health and always resolve to a SystemHealth.  A network failure
+ * or non-200 response is reported as "unavailable" (the platform is offline)
+ * rather than throwing, so status surfaces never sit in a perpetual loading
+ * state.
+ */
+export async function getSystemHealth(): Promise<SystemHealth> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/health`, { cache: "no-store" });
+    if (res.ok) return (await res.json()) as SystemHealth;
+  } catch {
+    // fall through to unavailable
+  }
+  return {
+    status: "unavailable",
+    ready: false,
+    ai_ready: false,
+    system_online: false,
+    timestamp: new Date().toISOString(),
+    dependencies: {},
+  };
 }
 
 export interface AiCtoStatus {
@@ -2333,6 +2389,9 @@ export interface CollectorHealth {
   last_success_at: string | null;
   last_failure_at: string | null;
   last_error: string | null;
+  /** Coarse reason bucket for the last failure: credentials | unreachable |
+   *  no_collector_registered | other | null. */
+  failure_category: string | null;
   // PHASE 3.1: failure_rate_pct / successful_runs / failed_runs / retry_count /
   // last_failure_at ARE now returned by GET /api/incidents/collector-health —
   // the route delegates to CollectorHealthService (the authoritative
@@ -2354,12 +2413,14 @@ export function listIncidents(
     tenantId?: string;
     status?: IncidentStatus;
     severity?: IncidentSeverity;
+    siteId?: string;
     limit?: number;
     offset?: number;
   } = {},
 ): Promise<Incident[]> {
   const tenantId = params.tenantId ?? DEFAULT_TENANT_ID;
   const qs = new URLSearchParams({ tenant_id: tenantId });
+  if (params.siteId) qs.set("site_id", params.siteId);
   if (params.status) qs.set("status", params.status);
   if (params.severity) qs.set("severity", params.severity);
   if (params.limit) qs.set("limit", String(params.limit));
@@ -2375,8 +2436,15 @@ export function getAlertIntelligenceMetrics(tenantId: string = DEFAULT_TENANT_ID
   return apiFetch<AlertIntelligenceMetrics>(`/api/incidents/intelligence?${withTenant(tenantId).toString()}`);
 }
 
-export function getCollectorHealth(tenantId: string = DEFAULT_TENANT_ID, windowHours: number = 24): Promise<CollectorHealthList> {
-  const qs = withTenant(tenantId, { window_hours: String(windowHours) });
+export function getCollectorHealth(
+  tenantId: string = DEFAULT_TENANT_ID,
+  windowHours: number = 24,
+  excludeTestSources: boolean = true,
+): Promise<CollectorHealthList> {
+  const qs = withTenant(tenantId, {
+    window_hours: String(windowHours),
+    exclude_test_sources: String(excludeTestSources),
+  });
   return apiFetch<CollectorHealthList>(`/api/incidents/collector-health?${qs.toString()}`);
 }
 
@@ -2656,6 +2724,7 @@ export interface CCWorkload {
   department: string;
   agent_count: number;
   active_agents: number;
+  total_tasks: number;
   active_tasks: number;
   queued_tasks: number;
   verifying_tasks: number;
@@ -2991,6 +3060,16 @@ export interface CommandCenterBrief {
     open_incidents: number;
     resolved_incidents_24h: number;
     critical_open_incidents: number;
+    /** ECC-1: mean acknowledge time of incidents opened in the window; null = no sample. */
+    mtta_minutes?: number | null;
+    /** ECC-1: same metrics for the previous window. Point-in-time state has no
+     *  history, so it is deliberately absent (no delta rendered for it). */
+    previous?: {
+      incident_volume: number;
+      resolved_incidents: number;
+      mttr_minutes: number | null;
+      mtta_minutes: number | null;
+    } | null;
   };
   trends: {
     alerts: TrendSeries;
@@ -3014,6 +3093,212 @@ export async function getDashboardCommandCenterBrief(): Promise<CommandCenterBri
   // origin (http://localhost:8000), so every caller spells the full API path —
   // exactly like `/api/auth/me` and `/api/dashboard/operational-intelligence`.
   // Omitting it requests a route that does not exist and the panel 404s.
-  return apiFetch<CommandCenterBrief>("/api/dashboard/command-center-brief");
+  // HEAVY_KPI_TIMEOUT_MS: the brief's tenant-wide active-incident aggregate
+  // runs for several seconds cold on a multi-million-incident estate (measured
+  // 6-39s on the 2.7M-incident dev tenant), so the shared 10s cap aborted it
+  // and the whole KPI strip rendered "unavailable".
+  return apiFetch<CommandCenterBrief>(
+    "/api/dashboard/command-center-brief",
+    undefined,
+    HEAVY_KPI_TIMEOUT_MS,
+  );
+}
+
+
+/** Tenant-scoped Cloud Operations KPI snapshot (GET /api/dashboard/cloud-operations). */
+export interface CloudOperationsKPI {
+  value: number | string | Record<string, unknown> | null;
+  detail: Record<string, unknown> | null;
+  unavailable: boolean;
+  unavailable_reason: string | null;
+  last_collected_at: string | null;
+}
+
+export interface CloudOperations {
+  cloud_resources: CloudOperationsKPI;
+  resource_health: CloudOperationsKPI;
+  active_incidents: CloudOperationsKPI;
+  cloud_spend: CloudOperationsKPI;
+  policy_compliance: CloudOperationsKPI;
+  backup_readiness: CloudOperationsKPI;
+}
+
+/** Fetch the Cloud Operations KPI snapshot for the caller's tenant.
+ *
+ * Uses HEAVY_KPI_TIMEOUT_MS: the backend aggregates three tenant-wide counts
+ * (cold ~8.4s on a 2.7M-incident estate) and would otherwise be aborted by
+ * the shared 10s cap during a cold dashboard load. */
+export async function getCloudOperations(): Promise<CloudOperations> {
+  return apiFetch<CloudOperations>(
+    "/api/dashboard/cloud-operations",
+    undefined,
+    HEAVY_KPI_TIMEOUT_MS,
+  );
+}
+
+/** Incident analytics for the Executive Command Center charts
+ *  (GET /api/dashboard/incident-analytics). Mirrors
+ *  backend/app/schemas/incident_analytics.py field-for-field. */
+export interface IncidentAnalytics {
+  generated_at: string;
+  window_days: number;
+  heatmap_days: number;
+  trend: { day: string; opened: number; resolved: number }[];
+  severity: { severity: string; count: number }[];
+  total_opened: number;
+  aging: { key: string; label: string; total: number; by_severity: Record<string, number> }[];
+  /** 7 rows (Monday..Sunday, UTC) x 24 hourly columns of opened counts. */
+  heatmap: number[][];
+  duration: {
+    resolved_count: number;
+    /** null when no incident was resolved in the window (never 0). */
+    median_minutes: number | null;
+    p90_minutes: number | null;
+    p95_minutes: number | null;
+    buckets: { key: string; label: string; count: number }[];
+  };
+  top_sites: { site_id: string | null; name: string; count: number }[];
+  other_sites_count: number;
+}
+
+/** Fetch incident analytics for the caller's tenant (tenant comes from the JWT).
+ *
+ * Uses HEAVY_KPI_TIMEOUT_MS: the backend runs eight tenant-wide aggregates and
+ * a cold read on a very large incident estate must not be aborted by the
+ * shared 10s cap. */
+export async function getIncidentAnalytics(
+  days = 7,
+  filters: { siteId?: string | null; severity?: string | null } = {},
+): Promise<IncidentAnalytics> {
+  const qs = new URLSearchParams({ days: String(days) });
+  if (filters.siteId) qs.set("site_id", filters.siteId);
+  if (filters.severity) qs.set("severity", filters.severity);
+  return apiFetch<IncidentAnalytics>(
+    `/api/dashboard/incident-analytics?${qs.toString()}`,
+    undefined,
+    HEAVY_KPI_TIMEOUT_MS,
+  );
+}
+
+/** Per-site device health + active incidents (GET /api/dashboard/site-health).
+ *  Mirrors backend/app/schemas/site_health.py field-for-field. */
+export type SiteWorstHealth = "down" | "critical" | "warning" | "healthy" | "unknown";
+
+export interface SiteHealthItem {
+  site_id: string;
+  code: string;
+  name: string;
+  region: string | null;
+  criticality: string | null;
+  devices: CommandCenterBrief["infrastructure_health"]["devices"];
+  open_incidents: number;
+  critical_incidents: number;
+  worst_health: SiteWorstHealth;
+}
+
+export interface SiteHealth {
+  generated_at: string;
+  /** Worst first, then by open incidents. */
+  sites: SiteHealthItem[];
+  unassigned_devices: number;
+}
+
+export async function getSiteHealth(): Promise<SiteHealth> {
+  return apiFetch<SiteHealth>("/api/dashboard/site-health");
+}
+
+// ---------------------------------------------------------------------------
+// Hosts & Devices Explorer (GET /api/explorer/hosts)
+// Mirrors backend/app/schemas/explorer_hosts.py field-for-field.
+// ---------------------------------------------------------------------------
+
+/** Derived from the host's OPEN alerts - not a stored health bucket. */
+export type HostHealth = "critical" | "warning" | "no_alerts";
+
+export interface HostExplorerRow {
+  id: string;
+  name: string;
+  hostname: string | null;
+  ip_address: string | null;
+  device_type: string;
+  vendor: string | null;
+  provider: string | null;
+  status: string;
+  criticality: string | null;
+  environment: string | null;
+  lifecycle_state: string;
+  site_id: string | null;
+  site_name: string | null;
+  health: HostHealth;
+  alerts: { critical: number; warning: number; info: number };
+  last_seen_at: string | null;
+  last_telemetry_at: string | null;
+}
+
+export interface ExplorerFacetValue {
+  value: string;
+  count: number;
+}
+
+export type HostFacetDimension =
+  | "health"
+  | "status"
+  | "device_type"
+  | "vendor"
+  | "criticality"
+  | "environment";
+
+export interface HostsExplorer {
+  generated_at: string;
+  /** Hosts matching ALL active filters (drives pagination). */
+  total: number;
+  limit: number;
+  offset: number;
+  rows: HostExplorerRow[];
+  facets: Record<HostFacetDimension, ExplorerFacetValue[]>;
+}
+
+export interface HostsExplorerParams {
+  search?: string;
+  health?: HostHealth;
+  status?: string;
+  device_type?: string;
+  vendor?: string;
+  criticality?: string;
+  environment?: string;
+  site_id?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** One tenant-scoped read: a health-sorted host page plus facet counts. */
+export async function getExplorerHosts(params: HostsExplorerParams = {}): Promise<HostsExplorer> {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") qs.set(key, String(value));
+  }
+  const query = qs.toString();
+  return apiFetch<HostsExplorer>(`/api/explorer/hosts${query ? `?${query}` : ""}`);
+}
+
+// ---------------------------------------------------------------------------
+// Clouds overview (GET /api/cloud/status) - per-vendor resource count + status.
+// Mirrors backend/app/schemas/dashboard.py CloudStatus / CloudVendorStatus.
+// ---------------------------------------------------------------------------
+
+export interface CloudsOverviewVendor {
+  vendor: string;
+  resource_count: number;
+  /** Derived by the backend from that vendor's monitoring-source states. */
+  status: "operational" | "degraded" | "error";
+}
+
+export interface CloudsOverview {
+  vendors: CloudsOverviewVendor[];
+  total_resources: number;
+}
+
+export async function getCloudsOverview(): Promise<CloudsOverview> {
+  return apiFetch<CloudsOverview>("/api/cloud/status");
 }
 

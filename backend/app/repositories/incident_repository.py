@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.alert import Alert
@@ -538,3 +538,56 @@ class IncidentRepository:
         )
         value = (await self.db.execute(stmt)).scalar()
         return float(value) if value is not None else None
+
+    async def resolution_stats_between(
+        self, tenant_id: uuid.UUID, *, since: datetime, until: datetime
+    ) -> tuple[int, float | None]:
+        """``(resolved_count, mean_resolution_minutes)`` for incidents RESOLVED
+        in ``[since, until)`` - ONE statement (ECC-1 previous-window MTTR).
+
+        Range-bounded on ``resolved_at`` so it is served by
+        ``ix_incidents_tenant_resolved_active``. Mean is ``None`` with no sample.
+        """
+        stmt = select(
+            func.count(),
+            func.avg(extract("epoch", Incident.resolved_at - Incident.opened_at) / 60.0),
+        ).where(
+            Incident.tenant_id == tenant_id,
+            Incident.is_deleted.is_(False),
+            Incident.resolved_at >= since,
+            Incident.resolved_at < until,
+        )
+        count, mean = (await self.db.execute(stmt)).one()
+        return int(count), (float(mean) if mean is not None else None)
+
+    async def opened_window_stats(
+        self, tenant_id: uuid.UUID, *, previous_start: datetime, current_start: datetime
+    ) -> tuple[float | None, float | None, int]:
+        """``(current_mtta, previous_mtta, previous_opened)`` - ONE statement (ECC-1).
+
+        MTTA = mean ``acknowledged_at - opened_at`` (minutes) over incidents
+        OPENED in each window that have been acknowledged. ``previous_opened``
+        counts incidents opened in ``[previous_start, current_start)`` (the
+        previous-window incident volume). Anchored on ``opened_at`` so the
+        range is served by ``ix_incidents_tenant_opened_active``. A window
+        with no acknowledged incident yields ``None``, never 0.
+        """
+        # sqlalchemy.extract renders EXTRACT(epoch FROM x); func.extract would
+        # bind the field name as a parameter (see incident_analytics_repository).
+        ack = extract("epoch", Incident.acknowledged_at - Incident.opened_at) / 60.0
+        acked = Incident.acknowledged_at.is_not(None) & (Incident.acknowledged_at >= Incident.opened_at)
+        stmt = select(
+            func.avg(ack).filter(acked, Incident.opened_at >= current_start),
+            func.avg(ack).filter(acked, Incident.opened_at < current_start),
+            func.count().filter(Incident.opened_at < current_start),
+        ).where(
+            Incident.tenant_id == tenant_id,
+            Incident.is_deleted.is_(False),
+            Incident.opened_at >= previous_start,
+        )
+        current, previous, previous_opened = (await self.db.execute(stmt)).one()
+        return (
+            float(current) if current is not None else None,
+            float(previous) if previous is not None else None,
+            int(previous_opened),
+        )

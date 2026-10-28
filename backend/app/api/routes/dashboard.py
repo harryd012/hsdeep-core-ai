@@ -36,6 +36,7 @@ from app.repositories.task_repository import TaskRepository
 from app.schemas.dashboard import (
     AIInsights,
     AutomationStatus,
+    CloudOperations,
     CloudStatus,
     CommandCenterBrief,
     DashboardSummary,
@@ -44,7 +45,18 @@ from app.schemas.dashboard import (
 )
 from app.services.ai_insight_service import AIInsightService
 from app.services.automation_status_service import AutomationStatusService
+from app.repositories.incident_analytics_repository import IncidentAnalyticsRepository
+from app.schemas.incident import IncidentSeverity
+from app.schemas.incident_analytics import IncidentAnalytics
 from app.services.dashboard_service import DashboardService
+from app.services.incident_analytics_service import IncidentAnalyticsService
+from app.repositories.site_health_repository import SiteHealthRepository
+from app.schemas.site_health import SiteHealth
+from app.services.site_health_service import SiteHealthService
+from app.repositories.explorer_hosts_repository import ExplorerHostsRepository, HostFilters
+from app.schemas.explorer_hosts import HostHealth, HostsExplorer
+from app.services.explorer_hosts_service import ExplorerHostsService
+from app.services.cloud_operations_service import CloudOperationsService
 from app.services.operational_intelligence_service import (
     OperationalIntelligenceService,
 )
@@ -94,6 +106,33 @@ def get_operational_intelligence_service(
         task_repo=TaskRepository(db),
         incident_repo=IncidentRepository(db),
     )
+
+
+def get_cloud_operations_service(
+    db: AsyncSession = Depends(get_db),
+) -> CloudOperationsService:
+    return CloudOperationsService(
+        device_repo=DeviceRepository(db),
+        incident_repo=IncidentRepository(db),
+    )
+
+
+def get_incident_analytics_service(
+    db: AsyncSession = Depends(get_db),
+) -> IncidentAnalyticsService:
+    return IncidentAnalyticsService(repo=IncidentAnalyticsRepository(db))
+
+
+def get_site_health_service(
+    db: AsyncSession = Depends(get_db),
+) -> SiteHealthService:
+    return SiteHealthService(repo=SiteHealthRepository(db))
+
+
+def get_explorer_hosts_service(
+    db: AsyncSession = Depends(get_db),
+) -> ExplorerHostsService:
+    return ExplorerHostsService(repo=ExplorerHostsRepository(db))
 
 
 @router.get("/dashboard/summary", response_model=DashboardSummary)
@@ -177,3 +216,111 @@ async def command_center_brief(
     from the authenticated principal and cannot be overridden by the caller.
     """
     return await service.command_center_brief(tenant_id)
+
+
+@router.get(
+    "/dashboard/cloud-operations",
+    response_model=CloudOperations,
+    summary="Cloud Operations KPI snapshot (6 cards: 3 measured + 3 unavailable)",
+)
+async def dashboard_cloud_operations(
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    service: CloudOperationsService = Depends(get_cloud_operations_service),
+):
+    """Tenant-scoped cloud-operations KPI snapshot.
+
+    Returns 6 KPI cards:
+      * cloud_resources — measured count of persisted cloud_resource devices
+      * resource_health — measured device state/freshness buckets (online/offline/stale/unknown/total)
+      * active_incidents — measured active incident count (open+ack+investigating)
+      * cloud_spend — unavailable (no billing integration)
+      * policy_compliance — unavailable (no policy-assessment integration)
+      * backup_readiness — unavailable (no backup/recovery evidence)
+
+    Tenant is resolved server-side from the authenticated principal; callers
+    cannot override it. Unavailable cards carry an explicit reason string and
+    null value — never a fabricated zero.
+    """
+    return await service.get(tenant_id)
+
+
+@router.get(
+    "/dashboard/incident-analytics",
+    response_model=IncidentAnalytics,
+    summary="Incident analytics for the Executive Command Center charts",
+)
+async def dashboard_incident_analytics(
+    days: int = Query(7, ge=1, le=90, description="Trend/severity/duration window in UTC days"),
+    site_id: uuid.UUID | None = Query(None, description="Only incidents attributed to this site"),
+    severity: IncidentSeverity | None = Query(None, description="Only incidents of this severity"),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    service: IncidentAnalyticsService = Depends(get_incident_analytics_service),
+):
+    """Opened-vs-resolved trend, severity mix, open-incident aging, weekday x
+    hour heatmap, resolved-duration distribution (median/P90/P95) and top
+    affected sites - ONE read, eight SQL aggregates, no rows loaded into Python.
+
+    Tenant is resolved server-side from the authenticated principal and cannot
+    be overridden. A read, so deliberately NOT behind `_active_sub_guard`
+    (reads stay open for past-due tenants, like the other dashboard reads).
+    """
+    return await service.snapshot(tenant_id, days=days, site_id=site_id, severity=severity)
+
+
+@router.get(
+    "/dashboard/site-health",
+    response_model=SiteHealth,
+    summary="Per-site device health + active incidents (Sites honeycomb)",
+)
+async def dashboard_site_health(
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    service: SiteHealthService = Depends(get_site_health_service),
+):
+    """One row per site: device health in the brief's buckets (same rule), the
+    site's active / critical incident counts and its derived worst state,
+    worst first. At most three aggregate statements regardless of estate size.
+
+    Tenant is resolved server-side from the authenticated principal and cannot
+    be overridden. A read, so deliberately NOT behind `_active_sub_guard`.
+    """
+    return await service.snapshot(tenant_id)
+
+
+@router.get(
+    "/explorer/hosts",
+    response_model=HostsExplorer,
+    summary="Hosts & Devices Explorer: filtered table + facet counts",
+)
+async def explorer_hosts(
+    search: str | None = Query(None, max_length=100),
+    health: HostHealth | None = Query(None),
+    status: str | None = Query(None, max_length=50),
+    device_type: str | None = Query(None, max_length=100),
+    vendor: str | None = Query(None, max_length=100),
+    criticality: str | None = Query(None, max_length=20),
+    environment: str | None = Query(None, max_length=20),
+    site_id: uuid.UUID | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    service: ExplorerHostsService = Depends(get_explorer_hosts_service),
+):
+    """Dynatrace-Hosts-style explorer read: a health-sorted host page plus
+    facet counts for health / status / type / vendor / criticality /
+    environment. Health is derived from each host's open alerts (see
+    schemas/explorer_hosts.py). Tenant comes from the authenticated principal
+    and cannot be overridden. A read, so not behind `_active_sub_guard`.
+    (Lives on the dashboard router so it inherits the `/api` prefix without a
+    main.py change.)
+    """
+    filters = HostFilters(
+        search=search or None,
+        health=health,
+        status=status,
+        device_type=device_type,
+        vendor=vendor,
+        criticality=criticality,
+        environment=environment,
+        site_id=site_id,
+    )
+    return await service.snapshot(tenant_id, filters, limit=limit, offset=offset)
