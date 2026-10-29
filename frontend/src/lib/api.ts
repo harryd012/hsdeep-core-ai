@@ -1866,7 +1866,10 @@ export interface AssetHealthSummary {
 
 export interface TenantHealthSummary {
   tenant_id: string;
-  health_score: number;
+  /** null when no device in the tenant has a known status (not "healthy"). */
+  health_score: number | null;
+  status: "healthy" | "degraded" | "down" | "unknown";
+  devices_scored: number;
   sites_count: number;
   devices_count: number;
   sensors_count: number;

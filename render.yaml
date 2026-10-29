@@ -38,6 +38,10 @@ envVarGroups:
         generateValue: true
       - key: SECRET_ENCRYPTION_KEY
         generateValue: true
+      # Prometheus scrapers send `Authorization: Bearer <token>` to /metrics.
+      # Without it, /metrics answers 404 in production.
+      - key: METRICS_BEARER_TOKEN
+        generateValue: true
 
 services:
   - type: web

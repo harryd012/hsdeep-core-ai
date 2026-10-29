@@ -65,7 +65,7 @@ export default function OrganizationPage() {
       icon: Building2,
       meta: health ? `${health.sites_count} sites · ${health.devices_count} devices · ${health.sensors_count} sensors` : undefined,
       tone: healthTone(health?.health_score),
-      badge: health ? `Health ${health.health_score}%` : undefined,
+      badge: health ? (health.health_score === null ? "Health unknown" : `Health ${health.health_score}%`) : undefined,
       href: "/infrastructure",
       children: [
         {
@@ -127,7 +127,7 @@ export default function OrganizationPage() {
     <PageShell title="Organization" subtitle="The tenant, its people and the estate it owns.">
       {error && <Banner tone="warn">{error}</Banner>}
       <StatStrip>
-        <StatTile label="Health score" value={health ? `${health.health_score}%` : "—"} info="Tenant health score reported by the asset service." loading={loading} />
+        <StatTile label="Health score" value={health && health.health_score !== null ? `${health.health_score}%` : "—"} info={health && health.health_score === null ? "No device in this tenant has a known status yet, so there is no score." : `Tenant health score reported by the asset service${health ? `, from ${health.devices_scored} of ${health.devices_count} devices with a known status` : ""}.`} loading={loading} />
         <StatTile label="Sites" value={v(health?.sites_count)} info="Sites registered for this tenant." href="/infrastructure" loading={loading} />
         <StatTile label="Devices" value={v(health?.devices_count)} info="Devices registered for this tenant." href="/explorer" loading={loading} />
         <StatTile label="Sensors" value={v(health?.sensors_count)} info="Sensors collected for this tenant." href="/monitoring" loading={loading} />

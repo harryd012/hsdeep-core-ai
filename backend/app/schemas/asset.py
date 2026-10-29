@@ -111,14 +111,18 @@ class AssetSearchParams(BaseModel):
 class AssetHealthSummary(BaseModel):
     scope: str  # device | site | tenant | business_service
     scope_id: uuid.UUID | None
-    health_score: int
-    status: str
+    # None = no device in scope has a known status (never shown as healthy).
+    health_score: int | None
+    status: str  # healthy | degraded | down | unknown
     details: dict[str, Any] | None = None
 
 
 class TenantHealthSummary(BaseModel):
     tenant_id: uuid.UUID
-    health_score: int
+    # None = no device in the tenant has a known status (never shown as healthy).
+    health_score: int | None
+    status: str = "unknown"  # healthy | degraded | down | unknown
+    devices_scored: int = 0
     sites_count: int
     devices_count: int
     sensors_count: int

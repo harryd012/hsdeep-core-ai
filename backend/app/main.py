@@ -12,6 +12,7 @@ from app.core.request_logging import ForceHttpsMiddleware, RequestObservabilityM
 from fastapi.middleware.cors import CORSMiddleware
 
 import asyncio
+import hmac
 import time
 from collections import defaultdict
 from collections import deque
@@ -298,7 +299,20 @@ async def root():
 # ---------------------------------------------------
 
 @app.get("/metrics", tags=["Metrics"])
-async def metrics():
+async def metrics(request: Request):
+    cfg = get_settings()
+    expected = cfg.metrics_bearer_token
+    if expected:
+        supplied = request.headers.get("authorization", "")
+        if not hmac.compare_digest(supplied.encode(), f"Bearer {expected}".encode()):
+            return JSONResponse(
+                {"detail": "Invalid or missing metrics token"},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    elif cfg.app_env == "production":
+        # No token configured: do not publish platform internals publicly.
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 

@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # non-wildcard allow-list (enforced at startup in main.py).
     cors_origins: str = ""  # comma-separated allow-list; "" = dev localhost default
     force_https: bool = False
+    # Prometheus /metrics. When set, scrapers must send
+    # `Authorization: Bearer <token>`. When unset, /metrics is open outside
+    # production and answers 404 in production (not published by default).
+    metrics_bearer_token: str = ""
 
     # Server
     host: str = "0.0.0.0"
