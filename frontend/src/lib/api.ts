@@ -66,8 +66,10 @@ const REFRESH_TOKEN_KEY = "hsdeep_refresh_token";
  */
 export const AUTH_BOOTSTRAP = process.env.NEXT_PUBLIC_AUTH_DEV_BOOTSTRAP === "true";
 
-export const AUTH_EMAIL = process.env.NEXT_PUBLIC_AUTH_EMAIL ?? "admin@hsdeep.local";
-export const AUTH_PASSWORD = process.env.NEXT_PUBLIC_AUTH_PASSWORD ?? "ChooseAStrongPasswordHere123!";
+// No built-in defaults: NEXT_PUBLIC_* values are compiled into the public
+// bundle, so a fallback password here would ship to every browser.
+export const AUTH_EMAIL = process.env.NEXT_PUBLIC_AUTH_EMAIL ?? "";
+export const AUTH_PASSWORD = process.env.NEXT_PUBLIC_AUTH_PASSWORD ?? "";
 export const AUTH_TENANT_ID = process.env.NEXT_PUBLIC_AUTH_TENANT_ID ?? DEFAULT_TENANT_ID;
 
 // ---------------------------------------------------------------------------

@@ -5,7 +5,26 @@ from functools import lru_cache
 from typing import ClassVar
 import os
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+#: URL schemes managed Postgres providers hand out (Render, Heroku, Railway...).
+#: The app runs on SQLAlchemy's async engine, which needs the asyncpg driver
+#: named explicitly; a bare scheme would select psycopg2, which is not installed.
+_SYNC_POSTGRES_SCHEMES = ("postgres://", "postgresql://")
+
+
+def normalize_database_url(url: str | None) -> str | None:
+    """``postgres://`` / ``postgresql://`` -> ``postgresql+asyncpg://``.
+
+    URLs that already name a driver are returned unchanged.
+    """
+    if not url:
+        return url
+    for scheme in _SYNC_POSTGRES_SCHEMES:
+        if url.startswith(scheme):
+            return "postgresql+asyncpg://" + url[len(scheme):]
+    return url
 
 
 class Settings(BaseSettings):
@@ -39,6 +58,11 @@ class Settings(BaseSettings):
     # instead of `database_url`, so DB-writing tests never mutate the dev DB.
     # The test suite refuses to run (see tests/conftest.py) when this is unset.
     test_database_url: str | None = None
+
+    @field_validator("database_url", "test_database_url", mode="before")
+    @classmethod
+    def _asyncpg_driver(cls, value):
+        return normalize_database_url(value) if isinstance(value, str) else value
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"

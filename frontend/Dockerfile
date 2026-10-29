@@ -53,6 +53,8 @@ RUN addgroup --system --gid 1001 nodejs \
 
 # Copy standalone output (server.js is at root of standalone/)
 COPY --from=builder /app/.next/standalone ./
+# Static assets (branding, images, media) are not part of the standalone bundle.
+COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/static ./.next/static
 
 USER nextjs
