@@ -172,9 +172,9 @@ async def api_allowance(tenant_id: uuid.UUID) -> tuple[int | None, int, bool]:
 # used). Before this rule the middleware only recognised JWTs, so it metered
 # exactly the UI and never the API keys it was meant for.
 #
-# Known gap: a user can script against their own session JWT (login +
-# refresh) unmetered. The per-minute burst limiter still applies; a session
-# fair-use cap is a separate change.
+# Session traffic stays unmetered, but a user scripting against their own
+# session JWT (login + refresh) is bounded by the per-user fair-use cap in
+# app/main.py (``session_rpm_per_user``, 429 over the cap).
 
 
 async def api_key_tenant(raw_key: str) -> uuid.UUID | None:
