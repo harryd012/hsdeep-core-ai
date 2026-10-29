@@ -14,7 +14,7 @@ from httpx import ASGITransport, AsyncClient
 from app.core.auth import create_access_token
 from app.main import app
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("dev_tenant")]
 
 DEV_TENANT_ID = uuid.UUID("54dd0ca8-873f-4b8e-bb54-c4f45f64d0b3")
 
