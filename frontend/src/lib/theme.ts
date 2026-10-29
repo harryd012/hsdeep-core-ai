@@ -16,6 +16,8 @@
 export const APPEARANCE_STORAGE_KEY = "hsdeep-appearance";
 /** Written by the first theme switch; still read so existing choices survive. */
 export const LEGACY_THEME_KEY = "hsdeep-theme";
+/** "collapsed" | "expanded" — the sidebar rail; restored by the boot script too. */
+export const NAV_STORAGE_KEY = "hsdeep-nav";
 
 export type ThemeId = "system" | "light" | "dark" | "midnight" | "graphite" | "contrast";
 export type ResolvedTheme = Exclude<ThemeId, "system">;
@@ -84,4 +86,4 @@ export function resolveTheme(theme: ThemeId, prefersDark: boolean): ResolvedThem
  * already correct. Mirrors normalizeAppearance/resolveTheme; kept tiny and
  * dependency-free because it runs before any bundle loads.
  */
-export const THEME_BOOT_SCRIPT = `(function(){var d=document.documentElement,a={theme:"light",accent:null,density:"comfortable"};try{var s=localStorage.getItem("${APPEARANCE_STORAGE_KEY}");if(s){var p=JSON.parse(s)||{};if(["system","light","dark","midnight","graphite","contrast"].indexOf(p.theme)>-1)a.theme=p.theme;if(typeof p.accent==="string"&&/^#[0-9a-f]{6}$/i.test(p.accent))a.accent=p.accent;if(p.density==="compact")a.density="compact";}else{var l=localStorage.getItem("${LEGACY_THEME_KEY}");if(l==="dark")a.theme="dark";}}catch(e){}var t=a.theme==="system"?(window.matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"):a.theme;d.setAttribute("data-theme",t);d.setAttribute("data-density",a.density);if(a.accent){d.style.setProperty("--ecc-accent",a.accent);d.style.setProperty("--cyan",a.accent);}})();`;
+export const THEME_BOOT_SCRIPT = `(function(){var d=document.documentElement,a={theme:"light",accent:null,density:"comfortable"};try{var s=localStorage.getItem("${APPEARANCE_STORAGE_KEY}");if(s){var p=JSON.parse(s)||{};if(["system","light","dark","midnight","graphite","contrast"].indexOf(p.theme)>-1)a.theme=p.theme;if(typeof p.accent==="string"&&/^#[0-9a-f]{6}$/i.test(p.accent))a.accent=p.accent;if(p.density==="compact")a.density="compact";}else{var l=localStorage.getItem("${LEGACY_THEME_KEY}");if(l==="dark")a.theme="dark";}}catch(e){}var t=a.theme==="system"?(window.matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"):a.theme;d.setAttribute("data-theme",t);d.setAttribute("data-density",a.density);if(a.accent){d.style.setProperty("--ecc-accent",a.accent);d.style.setProperty("--cyan",a.accent);}try{if(localStorage.getItem("${NAV_STORAGE_KEY}")==="collapsed")d.setAttribute("data-nav","collapsed");}catch(e){}})();`;
