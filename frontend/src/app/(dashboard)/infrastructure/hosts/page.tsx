@@ -197,6 +197,7 @@ function HostsExplorerContent() {
             columns={view === "health" ? healthColumns : inventoryColumns}
             rows={data?.rows ?? []}
             rowKey={(h) => h.id}
+            rowHref={(h) => `/infrastructure/hosts/${h.id}`}
             emptyText={active.length || filters.search ? "No hosts match these filters." : "No hosts registered yet. Add a monitoring source or run discovery."}
             maxHeight="calc(100vh - 330px)"
           />

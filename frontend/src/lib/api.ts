@@ -1736,6 +1736,62 @@ export function getSensors(tenantId: string = DEFAULT_TENANT_ID): Promise<Sensor
 }
 
 // ---------------------------------------------------------------------------
+// Device detail (Host page) — device-nested reads; each 404s for another
+// tenant's device before exposing anything.
+// ---------------------------------------------------------------------------
+export interface DeviceInterface {
+  id: string;
+  device_id: string;
+  external_id: string;
+  name: string;
+  mac_address: string | null;
+  admin_status: string;
+  oper_status: string;
+  speed_mbps: number | null;
+  in_octets: number | null;
+  out_octets: number | null;
+  in_errors: number | null;
+  out_errors: number | null;
+  last_status_change_at: string | null;
+}
+
+export interface MetricPoint {
+  id: string;
+  sensor_id: string | null;
+  metric_type: string;
+  value: number;
+  unit: string | null;
+  recorded_at: string;
+}
+
+export function getDevice(deviceId: string): Promise<Device> {
+  return apiFetch<Device>(`/api/devices/${encodeURIComponent(deviceId)}`);
+}
+
+export function getDeviceSensors(deviceId: string): Promise<SensorOut[]> {
+  return apiFetch<SensorOut[]>(`/api/devices/${encodeURIComponent(deviceId)}/sensors`);
+}
+
+export function getDeviceInterfaces(deviceId: string): Promise<DeviceInterface[]> {
+  return apiFetch<DeviceInterface[]>(`/api/devices/${encodeURIComponent(deviceId)}/interfaces`);
+}
+
+export function getDeviceAlerts(deviceId: string, limit = 200): Promise<Alert[]> {
+  return apiFetch<Alert[]>(`/api/devices/${encodeURIComponent(deviceId)}/alerts?limit=${limit}`);
+}
+
+export function getDeviceEvents(deviceId: string, limit = 100): Promise<Event[]> {
+  return apiFetch<Event[]>(`/api/devices/${encodeURIComponent(deviceId)}/events?limit=${limit}`);
+}
+
+/** Newest first, as the API returns it. */
+export function getSensorMetrics(sensorId: string, params: { since?: string; limit?: number } = {}): Promise<MetricPoint[]> {
+  const search = new URLSearchParams({ limit: String(params.limit ?? 300) });
+  if (params.since) search.set("since", params.since);
+  return apiFetch<MetricPoint[]>(`/api/sensors/${encodeURIComponent(sensorId)}/metrics?${search.toString()}`);
+}
+
+// ---------------------------------------------------------------------------
 // CMDB / Asset Intelligence
 // ---------------------------------------------------------------------------
 
