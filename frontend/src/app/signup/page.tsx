@@ -58,6 +58,8 @@ export default function SignupPage() {
           setError("Can't reach the server. Check your connection and try again.");
         } else if (err.status === 409) {
           setError("An account with this email already exists. Try signing in instead.");
+        } else if (err.status === 403) {
+          setError("Sign-up is by invitation only. Ask your administrator for an account.");
         } else if (err.status === 429) {
           setError("Too many signups from this network. Please try again later.");
         } else if (err.status === 422) {

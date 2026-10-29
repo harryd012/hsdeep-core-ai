@@ -42,6 +42,16 @@ envVarGroups:
       # Without it, /metrics answers 404 in production.
       - key: METRICS_BEARER_TOKEN
         generateValue: true
+      # Invite-only pilot: tenants are created by an operator with
+      # scripts/seed_admin.py. Set to "true" for public self-serve sign-up.
+      - key: PUBLIC_SIGNUP_ENABLED
+        value: "false"
+      # Stripe (billing checkout + webhook). Leave empty to keep billing off:
+      # both routes then answer 501 instead of failing at runtime.
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
 
 services:
   - type: web

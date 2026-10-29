@@ -177,3 +177,36 @@ Next task, in order:
    decide whether Viewer-only scoping is enough or guard them too.
 4. Staleness in health scores: an "up" sensor with an old `last_value_at`
    still scores 100 (the recovery check already treats it as stale).
+
+## Batch 5: pilot safety
+
+Outcome: an invite-only pilot can run on Render without public sign-up or
+password guessing.
+
+- `PUBLIC_SIGNUP_ENABLED` (default true; `render.yaml` sets false):
+  `POST /api/billing/signup` answers 403 when off; the sign-up page explains
+  that access is by invitation.
+- Per-account lockout: `LOGIN_MAX_FAILED_ATTEMPTS` (5) consecutive wrong
+  passwords lock the account for `LOGIN_LOCKOUT_MINUTES` (15); stored on
+  `users.failed_login_count` / `users.locked_until` (migration
+  `e3a7c5b9d1f4`), so it holds across restarts and API instances. A locked
+  account gets the same generic 401 even with the right password; a success
+  resets the counter; an admin password reset unlocks. The login route now
+  commits on every 401 so the counter persists. Trade-off: anyone who knows an
+  email can lock that account for 15 minutes (the per-IP limit of 5/min slows
+  this).
+- `render.yaml`: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (`sync: false`;
+  empty keeps billing off with 501s).
+- `backend/tests/test_pilot_safety.py`: 6 tests.
+- Email foundation design: `docs/architecture/email-foundation.md`
+  (awaiting approval).
+
+## CI: second run failure (run 40964164635)
+
+The gates step passed type-check, lint, build and the focused suites, then
+the full backend suite failed (exit 1). Reproduced locally against a fresh
+database migrated the way CI does it: 12 failed + 5 errors, all in
+`test_agent_api.py`, `test_task_api.py` and `test_incident_lifecycle.py`.
+They address a fixed tenant (`54dd0ca8-...`) that existed only in long-lived
+local test databases. Fix: a `dev_tenant` fixture in `tests/conftest.py`
+creates it with an active subscription when missing; the three suites use it.

@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     # `Authorization: Bearer <token>`. When unset, /metrics is open outside
     # production and answers 404 in production (not published by default).
     metrics_bearer_token: str = ""
+    # POST /api/billing/signup. Off for an invite-only pilot: tenants are then
+    # created by an operator (scripts/seed_admin.py), never by the public.
+    public_signup_enabled: bool = True
+    # Per-account lockout: this many consecutive failed logins lock the
+    # account for login_lockout_minutes (0 attempts disables the lockout).
+    login_max_failed_attempts: int = 5
+    login_lockout_minutes: int = 15
 
     # Server
     host: str = "0.0.0.0"

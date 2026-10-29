@@ -140,7 +140,8 @@ async def login(
                 email=payload.email,
                 success=False,
             )
-            await db.commit()
+        # Persist the failed-attempt counter / lockout (AuthService.login).
+        await db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     await db.commit()
     return TokenResponse(access_token=access, refresh_token=refresh, expires_in=expires_in)

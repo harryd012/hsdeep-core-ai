@@ -449,6 +449,11 @@ async def signup(
 
     Rate-limited to 5 signups per IP per hour (sliding window via Redis).
     """
+    if not get_settings().public_signup_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Public sign-up is disabled. Ask your administrator for an account.",
+        )
     # ---- Rate limit: 5 signups per IP per hour ----
     client_ip = request.client.host if request.client else "unknown"
     await _check_signup_rate_limit(client_ip)

@@ -127,7 +127,21 @@ class AuthService:
         # Verify a password even when the user is missing to keep timing/shape
         # uniform, then reject with a single generic error either way.
         password_ok = auth.verify_password(password, user.password_hash if user else None)
-        if user is None or not user.is_active or not password_ok:
+        # A locked account is rejected even with the right password, with the
+        # same generic error, so the response never reveals which emails exist.
+        locked = (
+            user is not None
+            and user.locked_until is not None
+            and user.locked_until > datetime.now(timezone.utc)
+        )
+        if user is None or not user.is_active or locked or not password_ok:
+            if user is not None and not locked and not password_ok:
+                cfg = get_settings()
+                await self.users.record_failed_login(
+                    user,
+                    max_attempts=cfg.login_max_failed_attempts,
+                    lockout_minutes=cfg.login_lockout_minutes,
+                )
             raise InvalidCredentials("Invalid email or password")
         await self.users.touch_last_login(user)
         access, refresh, expires_in = await self._issue_tokens(user)
@@ -201,6 +215,8 @@ class AuthService:
         if user is None:
             raise NotFound("User not found")
         await self.users.set_password(user, password_hash=auth.hash_password(password))
+        # An admin reset is the unlock path for a locked-out user.
+        await self.users.clear_lockout(user)
         # Force re-auth everywhere: a password change should invalidate
         # outstanding refresh tokens.
         await self.refresh_tokens.revoke_all_for_user(user.id)
