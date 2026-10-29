@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     # account for login_lockout_minutes (0 attempts disables the lockout).
     login_max_failed_attempts: int = 5
     login_lockout_minutes: int = 15
+    # Automated remediation is only "resolved" after fresh telemetry confirms
+    # recovery (app/services/events/recovery_validator.py): this many
+    # consecutive recovered checks, re-checked every interval, at most
+    # `attempts` times before escalating.
+    recovery_validation_attempts: int = 10
+    recovery_validation_interval_seconds: float = 60.0
+    recovery_validation_consecutive_passes: int = 2
 
     # Server
     host: str = "0.0.0.0"
