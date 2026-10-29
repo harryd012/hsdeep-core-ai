@@ -18,6 +18,12 @@ A score of ``None`` means "no evidence", never "healthy": a device with no
 known sensor or device status, a site with no scored devices and an empty
 tenant all return ``None``. Missing data must not read as 100%.
 
+Only fresh evidence counts. A device's own status is used only when its
+``last_seen_at`` is within ``DEVICE_FRESHNESS_WINDOW_SECONDS`` (the window
+the canonical up/down/stale/unknown classification uses), and a sensor's
+status only when its ``last_value_at`` is. An "up" reading from last week is
+not evidence of health today.
+
 Aggregation:
   - Device: 60/40 blend of its known sensors' average and its own status;
     whichever side is known when only one is.
@@ -33,6 +39,7 @@ from __future__ import annotations
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +48,7 @@ from app.models.business_service import BusinessService
 from app.models.device import Device
 from app.models.sensor import Sensor
 from app.models.site import Site
+from app.services.operational_intelligence_service import DEVICE_FRESHNESS_WINDOW_SECONDS
 
 _STATUS_SCORES: dict[str, int] = {"up": 100, "warning": 60, "warn": 60, "down": 0}
 _SENSOR_WEIGHT = 0.6
@@ -82,7 +90,16 @@ def _status_score(status: str | None) -> int | None:
     return _STATUS_SCORES.get((status or "").strip().lower())
 
 
+def _fresh(observed_at: datetime | None, now: datetime) -> bool:
+    if observed_at is None:
+        return False
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    return now - observed_at <= timedelta(seconds=DEVICE_FRESHNESS_WINDOW_SECONDS)
+
+
 def _device_score(device_status: str | None, sensor_statuses: list[str]) -> int | None:
+    """Score from statuses that are already known to be fresh."""
     sensor_scores = [s for s in (_status_score(v) for v in sensor_statuses) if s is not None]
     own = _status_score(device_status)
     if sensor_scores:
@@ -98,30 +115,38 @@ async def _sensor_statuses(
 ) -> dict[uuid.UUID, list[str]]:
     if not device_ids:
         return {}
+    now = datetime.now(timezone.utc)
     rows = await db.execute(
-        select(Sensor.device_id, Sensor.status).where(
+        select(Sensor.device_id, Sensor.status, Sensor.last_value_at).where(
             Sensor.tenant_id == tenant_id,
             Sensor.device_id.in_(device_ids),
             Sensor.is_deleted.is_(False),
         )
     )
     statuses: dict[uuid.UUID, list[str]] = defaultdict(list)
-    for device_id, status in rows.all():
-        statuses[device_id].append(status)
+    for device_id, status, last_value_at in rows.all():
+        if _fresh(last_value_at, now):
+            statuses[device_id].append(status)
     return statuses
 
 
 async def _rollup(db: AsyncSession, tenant_id: uuid.UUID, *conditions) -> HealthRollup:
     devices = (
         await db.execute(
-            select(Device.id, Device.status).where(
+            select(Device.id, Device.status, Device.last_seen_at).where(
                 Device.tenant_id == tenant_id, Device.is_deleted.is_(False), *conditions
             )
         )
     ).all()
     sensors = await _sensor_statuses(db, tenant_id, [d.id for d in devices])
+    now = datetime.now(timezone.utc)
     scores = [
-        s for s in (_device_score(d.status, sensors.get(d.id, [])) for d in devices) if s is not None
+        s
+        for s in (
+            _device_score(d.status if _fresh(d.last_seen_at, now) else None, sensors.get(d.id, []))
+            for d in devices
+        )
+        if s is not None
     ]
     score = round(sum(scores) / len(scores)) if scores else None
     return HealthRollup(score=score, scored=len(scores), total=len(devices))

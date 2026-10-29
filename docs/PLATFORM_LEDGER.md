@@ -210,3 +210,58 @@ database migrated the way CI does it: 12 failed + 5 errors, all in
 They address a fixed tenant (`54dd0ca8-...`) that existed only in long-lived
 local test databases. Fix: a `dev_tenant` fixture in `tests/conftest.py`
 creates it with an active subscription when missing; the three suites use it.
+
+CI result: run 40967439726 on `chore/deploy-readiness` (`ebad688d0`)
+passed every gate, including both Docker image builds.
+
+## Batch 6: acknowledgements attributed to the signed-in user
+
+Found: `POST /api/alerts/{id}/acknowledge` required a client-supplied
+`acknowledged_by`; the Incidents page acknowledged incidents with the nil
+UUID, which violates the `users` foreign key on `incidents.acknowledged_by`.
+
+Fix: `get_actor_user_id` (`app/core/auth.py`) gives the signed-in user, or
+None for an API key (no user identity, never an invented id). Alert and
+incident acknowledge use it; the body field is accepted and ignored. The
+frontend `acknowledgeAlert` / `acknowledgeIncident` send no actor; the
+Investigation workspace note is corrected. Tests:
+`backend/tests/test_actor_attribution.py` (3).
+
+## Batch 8: only fresh evidence counts in health scores
+
+A device's own status counts only when `last_seen_at` is within
+`DEVICE_FRESHNESS_WINDOW_SECONDS` (24 h, the canonical classification
+window shared with the frontend), and a sensor's only when `last_value_at`
+is. Stale or never-seen "up" no longer scores 100. Test added in
+`backend/tests/test_health_score.py`.
+
+## Batch 7: automated remediation is validated from fresh telemetry
+
+`app/services/events/recovery_validator.py` consumes `VALIDATION_STARTED`
+(previously consumed by nothing) and runs `check_incident_recovery` with
+`since` = the moment validation started, so only post-remediation telemetry
+counts. `VALIDATION_PASSED` needs `RECOVERY_VALIDATION_CONSECUTIVE_PASSES`
+(2) recovered checks in a row, re-checked every
+`RECOVERY_VALIDATION_INTERVAL_SECONDS` (60) up to
+`RECOVERY_VALIDATION_ATTEMPTS` (10); a failing check or running out of
+attempts publishes `VALIDATION_FAILED` with the checks as evidence, which
+escalates to an engineer and never resolves the incident. Each validation runs
+in its own task (the bus awaits every handler of an event). The
+`AutonomousLifecycleOrchestrator` registers it; a failed SOP
+(`SOP_COMPLETED.success == false`) now goes straight to `VALIDATION_FAILED`
+instead of starting validation. Limitation: in-flight validations live in
+the process, so a restart leaves the incident open (never wrongly resolved).
+The orchestrator itself is still not started in any runtime mode.
+Tests: `backend/tests/test_recovery_validator.py` (5).
+
+Test fixture note: `dev_tenant` now also creates a real dev user
+(`DEV_USER_ID`), because acknowledgements are attributed to the token's user
+and `*_by` columns reference `users.id`.
+
+## Next
+
+1. Email foundation, once `docs/architecture/email-foundation.md` is approved.
+2. Edge agent: commit and ship the uncommitted `backend/agent/hsdeep_edge_agent`
+   (owner of the main checkout), required for customer-site collection.
+3. Decide whether to start the autonomous orchestrator in the worker runtime
+   now that validation exists (material decision; off by default).

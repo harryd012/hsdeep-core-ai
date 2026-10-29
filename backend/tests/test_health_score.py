@@ -14,7 +14,7 @@ Regression cover for:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -43,7 +43,7 @@ def _client_for(tenant_id: uuid.UUID) -> httpx.AsyncClient:
     return httpx.AsyncClient(app=app, base_url="http://test", headers={"Authorization": f"Bearer {token}"})
 
 
-async def _device(db, tenant, source, *, status: str, site_id=None, external_id=None):
+async def _device(db, tenant, source, *, status: str, site_id=None, external_id=None, seen=True):
     device, _ = await DeviceRepository(db).upsert(
         tenant_id=tenant.id,
         monitoring_source_id=source.id,
@@ -53,10 +53,11 @@ async def _device(db, tenant, source, *, status: str, site_id=None, external_id=
         status=status,
         site_id=site_id,
     )
+    device.last_seen_at = datetime.now(timezone.utc) if seen else None
     return device
 
 
-def _sensor(tenant, source, device, status: str) -> Sensor:
+def _sensor(tenant, source, device, status: str, *, read_at=None) -> Sensor:
     return Sensor(
         tenant_id=tenant.id,
         monitoring_source_id=source.id,
@@ -65,6 +66,7 @@ def _sensor(tenant, source, device, status: str) -> Sensor:
         name="ping",
         metric_type="ping",
         status=status,
+        last_value_at=read_at or datetime.now(timezone.utc),
     )
 
 
@@ -125,6 +127,21 @@ async def test_sensor_statuses_are_scored_on_postgres(tenant, db, monitoring_sou
     assert await health_score.device_health(db, up.id, tenant.id) == 100
     rollup = await health_score.tenant_health_rollup(db, tenant.id)
     assert (rollup.score, rollup.scored, rollup.total) == (50, 2, 2)
+
+
+async def test_stale_or_unseen_evidence_does_not_count(tenant, db, monitoring_source_factory):
+    """An 'up' status with no recent observation is not evidence of health."""
+    source = await monitoring_source_factory()
+    unseen = await _device(db, tenant, source, status="up", seen=False)
+    stale_sensor_device = await _device(db, tenant, source, status="unknown")
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    db.add(_sensor(tenant, source, stale_sensor_device, "up", read_at=week_ago))
+    await db.commit()
+
+    assert await health_score.device_health(db, unseen.id, tenant.id) is None
+    assert await health_score.device_health(db, stale_sensor_device.id, tenant.id) is None
+    rollup = await health_score.tenant_health_rollup(db, tenant.id)
+    assert (rollup.score, rollup.scored, rollup.total) == (None, 0, 2)
 
 
 async def test_site_without_devices_is_unknown_and_foreign_site_not_found(tenant, db):
