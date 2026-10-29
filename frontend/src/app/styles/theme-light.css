@@ -56,9 +56,9 @@
 }
 :root[data-theme="light"] .hs-sidebar__group > button { color: #334155; }
 :root[data-theme="light"] .hs-sidebar__group > button:hover { color: #0f172a; background: #f1f5f9; }
-:root[data-theme="light"] .hs-sidebar__group > button.active { color: #1d4ed8; background: #e8effd; }
+:root[data-theme="light"] .hs-sidebar__group > button.active { color: color-mix(in srgb, var(--ecc-accent) 85%, #000000); background: color-mix(in srgb, var(--ecc-accent) 10%, #ffffff); }
 :root[data-theme="light"] .hs-sidebar__child:hover { color: #0f172a; background: #f1f5f9; }
-:root[data-theme="light"] .hs-sidebar__child[aria-current=page] { color: #1d4ed8; }
+:root[data-theme="light"] .hs-sidebar__child[aria-current=page] { color: color-mix(in srgb, var(--ecc-accent) 85%, #000000); }
 :root[data-theme="light"] .hs-sidebar__ctx-value.switchable:hover,
 :root[data-theme="light"] .hs-sidebar__tenant-item:hover { background: #f1f5f9; }
 
@@ -69,7 +69,9 @@
 }
 :root[data-theme="light"] .command-center__chat input { background: #f8fafc; color: var(--text); }
 :root[data-theme="light"] .command-center__chat button:not([type=button]) {
-  color: #1d4ed8; background: #e8effd; border-color: #bfd3fb;
+  color: color-mix(in srgb, var(--ecc-accent) 85%, #000000);
+  background: color-mix(in srgb, var(--ecc-accent) 10%, #ffffff);
+  border-color: color-mix(in srgb, var(--ecc-accent) 30%, #ffffff);
 }
 
 /* -- cards, tiles, tables -------------------------------------------------- */
@@ -79,7 +81,7 @@
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.04);
 }
 :root[data-theme="light"] a.ecc-kpi:hover {
-  box-shadow: 0 6px 16px -8px rgba(37, 99, 235, 0.35);
+  box-shadow: 0 6px 16px -8px color-mix(in srgb, var(--ecc-accent) 40%, transparent);
 }
 :root[data-theme="light"] .pk-table thead th { background: #f8fafc; color: #475569; }
 :root[data-theme="light"] .pk-table tbody tr:hover,
@@ -96,7 +98,9 @@
 
 :root[data-theme="light"] .pk-title__icon,
 :root[data-theme="light"] .ecc-header__icon {
-  background: #e8effd; border-color: #c7d7fb; color: #1d4ed8;
+  background: color-mix(in srgb, var(--ecc-accent) 10%, #ffffff);
+  border-color: color-mix(in srgb, var(--ecc-accent) 30%, #ffffff);
+  color: color-mix(in srgb, var(--ecc-accent) 85%, #000000);
 }
 :root[data-theme="light"] .pk-button--primary { color: #ffffff; }
 

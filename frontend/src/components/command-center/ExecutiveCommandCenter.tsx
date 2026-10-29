@@ -34,6 +34,7 @@ import {
 } from "@/lib/commandCenter/format";
 import { CardShell, DonutRing, KpiTile, Legend, type CardState } from "./primitives";
 import SiteHoneycomb from "./SiteHoneycomb";
+import AppearanceMenu from "@/components/AppearanceMenu";
 
 /**
  * ExecutiveCommandCenter — the one-screen /dashboard (ECC-1).
@@ -164,6 +165,7 @@ function Header({
               </option>
             ))}
           </select>
+          <AppearanceMenu variant="header" />
           <button type="button" className="ecc-button" onClick={onRefresh} disabled={refreshing} aria-label="Refresh all data">
             <span aria-hidden="true">⟳</span> {refreshing ? "Refreshing" : "Refresh"}
           </button>

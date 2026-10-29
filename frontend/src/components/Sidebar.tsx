@@ -14,7 +14,7 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { useAiCtoStatus } from "@/hooks/useAiCtoStatus";
 import { dependencyStatusLine } from "@/lib/health";
-import ThemeToggle from "@/components/ThemeToggle";
+import AppearanceMenu from "@/components/AppearanceMenu";
 
 // The per-dependency system status line is derived in lib/health.ts
 // (dependencyStatusLine) so the sidebar and the status tests share one source.
@@ -288,7 +288,7 @@ export default function Sidebar() {
           );
         })}
       </nav>
-      <ThemeToggle />
+      <AppearanceMenu variant="sidebar" />
       <div className="system-status">
         <b>HSDEEP CORE AI<br />SYSTEM STATUS</b>
         <div className="pulse-icon"><Activity /></div>
