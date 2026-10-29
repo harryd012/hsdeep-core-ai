@@ -1275,6 +1275,27 @@ export function getNotificationSettings(tenantId: string = DEFAULT_TENANT_ID): P
   return apiFetch<NotificationSettings>(`/api/settings/notifications?${withTenant(tenantId).toString()}`);
 }
 
+export interface NotificationDelivery {
+  incident_id: string;
+  channel: "email" | "slack" | "pagerduty";
+  event: "opened" | "resolved";
+  status: "sent" | "failed";
+  attempts: number;
+  last_error: string | null;
+  sent_at: string | null;
+  created_at: string;
+}
+
+/** Recent incident notification deliveries, failures included (newest first). */
+export function listNotificationDeliveries(limit = 50): Promise<NotificationDelivery[]> {
+  return apiFetch<NotificationDelivery[]>(`/api/settings/notifications/deliveries?limit=${limit}`);
+}
+
+/** Sends a labelled test message to each enabled channel; per-channel result text. */
+export function sendTestNotification(): Promise<{ results: Record<string, string> }> {
+  return apiFetch<{ results: Record<string, string> }>(`/api/settings/notifications/test`, { method: "POST", body: "{}" });
+}
+
 export function updateNotificationSettings(tenantId: string = DEFAULT_TENANT_ID, payload: NotificationSettingsUpdate): Promise<NotificationSettings> {
   return apiFetch<NotificationSettings>(`/api/settings/notifications?${withTenant(tenantId).toString()}`, {
     method: "PUT",

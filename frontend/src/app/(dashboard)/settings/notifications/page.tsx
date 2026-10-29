@@ -2,14 +2,30 @@
 
 import { useEffect, useState } from "react";
 import { SaveBar } from "@/components/settings/SettingsSection";
-import { Banner, PageShell, Panel, Pill, titleCaseWords } from "@/components/ui/PageKit";
+import { Banner, DataTable, PageShell, Panel, Pill, ago, titleCaseWords, type Column } from "@/components/ui/PageKit";
 import SettingsBackButton from "@/components/settings/SettingsBackButton";
 import { useAuth } from "@/lib/auth-context";
 import {
   getNotificationSettings,
+  listNotificationDeliveries,
+  sendTestNotification,
   updateNotificationSettings,
+  NotificationDelivery,
   NotificationSettings,
 } from "@/lib/api";
+
+const DELIVERY_COLUMNS: Column<NotificationDelivery>[] = [
+  { key: "when", header: "When", render: (d) => ago(d.sent_at ?? d.created_at), sortValue: (d) => d.sent_at ?? d.created_at },
+  { key: "channel", header: "Channel", render: (d) => titleCaseWords(d.channel) },
+  { key: "event", header: "Event", render: (d) => (d.event === "opened" ? "Incident opened" : "Incident resolved") },
+  {
+    key: "status",
+    header: "Result",
+    render: (d) => (d.status === "sent" ? <Pill tone="good">Sent</Pill> : <Pill tone="bad">Failed · {d.attempts} tries</Pill>),
+  },
+  { key: "error", header: "Error", render: (d) => d.last_error ?? "—" },
+  { key: "incident", header: "Incident", render: (d) => <a href={`/incidents/${d.incident_id}`}>Open</a> },
+];
 
 export default function NotificationsSettingsPage() {
   const { tenantId } = useAuth();
@@ -26,6 +42,26 @@ export default function NotificationsSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [deliveries, setDeliveries] = useState<NotificationDelivery[] | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    listNotificationDeliveries().then(setDeliveries).catch(() => setDeliveries(null));
+  }, []);
+
+  async function onTest() {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const { results } = await sendTestNotification();
+      setTestResult(Object.entries(results).map(([ch, r]) => `${titleCaseWords(ch)}: ${r}`).join(" · "));
+    } catch (err) {
+      setTestResult(err instanceof Error ? err.message : "Test failed");
+    } finally {
+      setTesting(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -170,7 +206,8 @@ export default function NotificationsSettingsPage() {
                 </label>
                 <div className="pk-field">
                   <label htmlFor="slack-webhook">Webhook URL</label>
-                  <input id="slack-webhook" className="pk-input" type="url" value={slackWebhook ?? ""} placeholder="https://hooks.slack.com/services/…" onChange={(e) => setSlackWebhook(e.target.value)} />
+                  <input id="slack-webhook" className="pk-input" type="password" autoComplete="off" value={slackWebhook ?? ""} placeholder="https://hooks.slack.com/services/…" onChange={(e) => setSlackWebhook(e.target.value)} />
+                  <small>Must be a Slack incoming webhook (hooks.slack.com). Stored for this tenant; shown masked.</small>
                 </div>
                 <div className="pk-field">
                   <label htmlFor="slack-channel">Channel</label>
@@ -205,6 +242,24 @@ export default function NotificationsSettingsPage() {
               </div>
             </Panel>
           </div>
+
+          <Panel
+            title="Recent deliveries"
+            info="Incidents at warning or above notify email and Slack; PagerDuty uses its minimum severity. Each incident is sent once per channel when it opens and again when it resolves."
+            aside={
+              <button type="button" className="pk-button" onClick={onTest} disabled={testing || hasChanges}>
+                {testing ? "Sending…" : "Send test notification"}
+              </button>
+            }
+            state={deliveries === null ? "error" : "ready"}
+            errorText="Couldn't load the delivery log."
+          >
+            {testResult && <Banner tone="info">{testResult}</Banner>}
+            {deliveries && (
+              <DataTable columns={DELIVERY_COLUMNS} rows={deliveries} rowKey={(d) => `${d.incident_id}-${d.channel}-${d.event}`}
+                emptyText="No incident notifications sent yet." maxHeight={360} caption="Recent incident notification deliveries" />
+            )}
+          </Panel>
         </>
       )}
 

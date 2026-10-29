@@ -284,12 +284,43 @@ differences listed there).
   password?" on `/login`, server message shown for 403 on sign-in.
 - Tests: `backend/tests/test_email_foundation.py` (9).
 
+## Batch 10: incident notifications (email, Slack, PagerDuty)
+
+The per-tenant notification settings were stored but nothing ever sent.
+
+- `app/services/notifications/dispatcher.py`, run by the worker job
+  `incident_notifications` every 30 s (not the in-process event bus, so
+  incidents created by any process are covered). Incidents opened at or above
+  the channel's minimum severity (warning for email/Slack, PagerDuty's
+  `pagerduty_severity`, default warning) notify once; "resolved" goes only to
+  channels that were told about the opening. PagerDuty uses Events API v2
+  with `dedup_key` = incident id, so the resolve closes the page it opened.
+  Email goes through the outbox (batch 9).
+- `incident_notifications` (migration `a1d4f7b2c9e3`, round trip verified):
+  unique per (incident, channel, event) for idempotency; failures keep their
+  error and retry up to 3 times. Enabling a channel never floods history:
+  only incidents since the settings row was created and within 24 h.
+- Security fixes found on the way: `GET /api/settings/notifications`
+  returned the Slack webhook URL and PagerDuty key in full to any tenant
+  user; both are now masked (`••••` + last 4) and an unchanged masked value
+  keeps the stored secret on save. The Slack URL accepted any http(s)
+  address, which with delivery would let a tenant make the platform call
+  internal hosts (SSRF); it must now be `https://hooks.slack.com/...`, and
+  the dispatcher re-checks stored values before sending.
+- `GET /api/settings/notifications/deliveries` (tenant-scoped log) and
+  `POST /api/settings/notifications/test` (admin; PagerDuty test triggers and
+  immediately resolves). The settings page shows the log and a test button.
+- Tests: `backend/tests/test_incident_notifications.py` (7).
+
+Not verified against the real services: Slack, PagerDuty and SMTP calls are
+exercised with fakes; a live check needs real webhook/integration keys.
+
 ## Next
 
-1. Alert/incident notifications through the outbox (the stored
-   email/Slack/PagerDuty notification settings still deliver nothing).
-2. Edge agent: commit and ship the uncommitted `backend/agent/hsdeep_edge_agent`
+1. Edge agent: commit and ship the uncommitted `backend/agent/hsdeep_edge_agent`
    (owner of the main checkout), required for customer-site collection.
-3. Decide whether to start the autonomous orchestrator in the worker runtime
+2. Decide whether to start the autonomous orchestrator in the worker runtime
    now that validation exists (material decision; off by default).
-4. Before public sign-up: CAPTCHA or equivalent abuse protection.
+3. Before public sign-up: CAPTCHA or equivalent abuse protection.
+4. Encrypt notification secrets at rest (Slack URL, PagerDuty key) with the
+   existing SECRET_ENCRYPTION_KEY, like collector credentials.
