@@ -25,10 +25,11 @@ export const LAYOUTS: readonly { kind: LayoutKind; label: string; hint: string }
  * `tree.ts`, which lists unconnected devices instead of placing them) plus the
  * general layouts above.
  */
-export type ViewKind = "tree" | LayoutKind;
+export type ViewKind = "tree" | "l3" | LayoutKind;
 
 export const VIEWS: readonly { kind: ViewKind; label: string; hint: string }[] = [
   { kind: "tree", label: "Tree (L2)", hint: "Upstream on the left, one column per hop; unconnected devices listed aside." },
+  { kind: "l3", label: "Tree (L3)", hint: "Devices joined by shared subnets and routes, rooted at the default-route exit." },
   ...LAYOUTS,
 ];
 

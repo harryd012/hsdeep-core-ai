@@ -19,11 +19,14 @@ Commands executed:
     free -b                     -> memory in bytes
     df -B1 -x tmpfs -x devtmpfs -> disk usage per mount
     cat /proc/net/dev           -> network interface counters
+    ip -j addr show             -> interface addresses (L3 topology)
+    ip -j route show            -> main routing table (L3 topology)
 
 Dependency: asyncssh==2.14.2 (pinned in requirements.txt)
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -35,7 +38,15 @@ from app.collectors.base import (
     NormalizedBundle,
     NormalizedDevice,
     NormalizedInterface,
+    NormalizedInterfaceAddress,
+    NormalizedRoute,
     NormalizedSensorReading,
+)
+from app.core.ip_addressing import (
+    normalise_vrf,
+    parse_interface_address,
+    parse_next_hop,
+    parse_route_destination,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,6 +129,11 @@ class LinuxSSHCollector(BaseCollector):
                 raw["meminfo"] = await self._run(conn, "free -b")
                 raw["df"] = await self._run(conn, "df -B1 -x tmpfs -x devtmpfs --output=target,size,used,avail,pcent 2>/dev/null")
                 raw["netdev"] = await self._run(conn, "cat /proc/net/dev")
+                # iproute2 JSON output (-j) needs iproute2 >= 4.13; an older
+                # host prints an error instead, which normalize() reports as
+                # "unavailable" rather than "no addresses".
+                raw["ip_addr"] = await self._run(conn, "ip -j addr show 2>/dev/null")
+                raw["ip_route"] = await self._run(conn, "ip -j route show 2>/dev/null")
         except CollectorConfigError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -202,7 +218,32 @@ class LinuxSSHCollector(BaseCollector):
                 out_errors=counters.get("out_errors"),
             ))
 
-        return NormalizedBundle(devices=[device], sensors=sensors, interfaces=interfaces)
+        l3_status: dict[str, str] = {}
+        addresses: list[NormalizedInterfaceAddress] = []
+        routes: list[NormalizedRoute] = []
+        if "ip_addr" in raw:
+            parsed = _parse_ip_addr_json(raw["ip_addr"], hostname)
+            if parsed is None:
+                l3_status["addresses"] = "unavailable"
+            else:
+                addresses = parsed
+                l3_status["addresses"] = "collected" if addresses else "empty"
+        if "ip_route" in raw:
+            parsed_routes = _parse_ip_route_json(raw["ip_route"], hostname)
+            if parsed_routes is None:
+                l3_status["routes"] = "unavailable"
+            else:
+                routes = parsed_routes
+                l3_status["routes"] = "collected" if routes else "empty"
+
+        return NormalizedBundle(
+            devices=[device],
+            sensors=sensors,
+            interfaces=interfaces,
+            addresses=addresses,
+            routes=routes,
+            l3_status=l3_status,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -278,3 +319,99 @@ def _safe_float(value: Any) -> float | None:
         return float(value) if value is not None else None
     except (ValueError, TypeError):
         return None
+
+
+#: Container / hypervisor bridges. Every Docker host has 172.17.0.1/16 on
+#: docker0, so treating these as real subnets would join unrelated servers.
+_VIRTUAL_IFACE_PREFIXES = (
+    "docker", "br-", "veth", "virbr", "cni", "flannel", "cali", "lxc", "lxd",
+    "podman", "kube-", "vxlan", "tun", "tap", "wg",
+)
+
+
+def _is_virtual_iface(name: str) -> bool:
+    return name == "lo" or name.startswith(_VIRTUAL_IFACE_PREFIXES)
+
+
+def _load_json_list(text: str) -> list | None:
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, list) else None
+
+
+def _parse_ip_addr_json(text: str, hostname: str) -> list[NormalizedInterfaceAddress] | None:
+    """``ip -j addr show``. ``None`` when the output is not iproute2 JSON."""
+    data = _load_json_list(text)
+    if data is None:
+        return None
+    out: list[NormalizedInterfaceAddress] = []
+    for link in data:
+        if not isinstance(link, dict):
+            continue
+        name = link.get("ifname")
+        if not name or _is_virtual_iface(name):
+            continue
+        for info in link.get("addr_info") or []:
+            if not isinstance(info, dict) or info.get("family") not in ("inet", "inet6"):
+                continue
+            parsed = parse_interface_address(info.get("local"), info.get("prefixlen"))
+            if parsed is None:
+                continue
+            out.append(NormalizedInterfaceAddress(
+                device_external_id=hostname,
+                interface_external_id=name,
+                interface_name=name,
+                address=parsed.address,
+                prefix_length=parsed.prefix_length,
+                is_primary=not info.get("secondary", False),
+            ))
+    return out
+
+
+_IPROUTE_PROTOCOLS = {
+    "boot": "static",
+    "static": "static",
+    "dhcp": "static",
+    "ra": "static",
+    "bgp": "bgp",
+    "ospf": "ospf",
+}
+
+
+def _parse_ip_route_json(text: str, hostname: str) -> list[NormalizedRoute] | None:
+    """``ip -j route show`` (main table). ``proto kernel scope link`` is a
+    connected route; boot/static/dhcp routes are treated as static."""
+    data = _load_json_list(text)
+    if data is None:
+        return None
+    out: list[NormalizedRoute] = []
+    for route in data:
+        if not isinstance(route, dict):
+            continue
+        dev = route.get("dev")
+        if dev and _is_virtual_iface(dev):
+            continue
+        destination = parse_route_destination(route.get("dst"))
+        if destination is None:
+            continue
+        proto = str(route.get("protocol", "")).lower()
+        if proto == "kernel" and route.get("scope") == "link":
+            protocol = "connected"
+        else:
+            protocol = _IPROUTE_PROTOCOLS.get(proto, "other")
+        metric = route.get("metric")
+        out.append(NormalizedRoute(
+            device_external_id=hostname,
+            destination=destination[0],
+            prefix_length=destination[1],
+            protocol=protocol,
+            next_hop=parse_next_hop(route.get("gateway")),
+            outgoing_interface=dev or None,
+            metric=metric if isinstance(metric, int) else None,
+            vrf=normalise_vrf(route.get("table")),
+        ))
+    return out

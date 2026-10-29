@@ -32,6 +32,14 @@ from app.collectors.base import (
     NormalizedBundle,
     NormalizedDevice,
     NormalizedInterface,
+    NormalizedInterfaceAddress,
+    NormalizedRoute,
+)
+from app.core.ip_addressing import (
+    normalise_vrf,
+    parse_interface_address,
+    parse_next_hop,
+    parse_route_destination,
 )
 
 logger = logging.getLogger(__name__)
@@ -152,17 +160,20 @@ class PaloAltoCollector(BaseCollector):
             "system": "<show><system><info/></system></show>",
             "interface": "<show><interface><all/></interface></show>",
             "highavailability": "<show><high-availability><state/></high-availability></high-availability>",
+            "routing": "<show><routing><route/></routing></show>",
         }
         for key, cmd in jobs.items():
             try:
                 resp = await self._op(cmd)
                 result[key] = resp.text if resp.status_code == 200 else ""
+                result[f"{key}_status"] = "collected" if resp.status_code == 200 else "unavailable"
             except (httpx.TransportError, httpx.TimeoutException) as exc:
                 logger.warning(
                     "Palo Alto collect %s failed: source_id=%s type=%s",
                     key, self.source.id, type(exc).__name__,
                 )
                 result[key] = ""
+                result[f"{key}_status"] = "failed"
         return result
 
     def normalize(self, raw: dict[str, Any]) -> NormalizedBundle:
@@ -198,7 +209,24 @@ class PaloAltoCollector(BaseCollector):
         for iface in _parse_interfaces(raw.get("interface", ""), device.external_id):
             interfaces.append(iface)
 
-        return NormalizedBundle(devices=devices, interfaces=interfaces, metrics=[])
+        addresses = _parse_addresses(raw.get("interface", ""), device.external_id)
+        routes = _parse_routes(raw.get("routing", ""), device.external_id)
+        l3_status: dict[str, str] = {}
+        for table, key, rows in (("addresses", "interface", addresses), ("routes", "routing", routes)):
+            status = raw.get(f"{key}_status")
+            if status == "collected":
+                l3_status[table] = "collected" if rows else "empty"
+            elif status is not None:
+                l3_status[table] = status
+
+        return NormalizedBundle(
+            devices=devices,
+            interfaces=interfaces,
+            metrics=[],
+            addresses=addresses,
+            routes=routes,
+            l3_status=l3_status,
+        )
 
 
 def _parse_xml(text: str) -> dict[str, str]:
@@ -243,4 +271,93 @@ def _parse_interfaces(text: str, device_external_id: str) -> list[NormalizedInte
                 oper_status=(node.findtext("link-status") or "unknown").strip() or "unknown",
             )
         )
+    return out
+
+
+def _xml_root(text: str):
+    if not text or not text.strip():
+        return None
+    try:
+        return ET.fromstring(text)
+    except ET.ParseError:
+        return None
+
+
+def _parse_addresses(text: str, device_external_id: str) -> list[NormalizedInterfaceAddress]:
+    """``ifnet`` entries of ``show interface all``: ``<ip>10.0.0.1/24</ip>``
+    (or ``N/A``), secondaries as ``<addr><member>``, virtual router in
+    ``<fwd>vr:NAME</fwd>``."""
+    root = _xml_root(text)
+    if root is None:
+        return []
+    out: list[NormalizedInterfaceAddress] = []
+    for ifnet in root.iter("ifnet"):
+        for entry in ifnet.iter("entry"):
+            name = (entry.findtext("name") or "").strip()
+            if not name:
+                continue
+            fwd = (entry.findtext("fwd") or "").strip()
+            vrf = normalise_vrf(fwd[3:] if fwd.startswith("vr:") else None)
+            values = [((entry.findtext("ip") or "").strip(), True)]
+            addr = entry.find("addr")
+            if addr is not None:
+                values += [((m.text or "").strip(), False) for m in addr.iter("member")]
+            seen: set[str] = set()
+            for value, primary in values:
+                parsed = parse_interface_address(value)
+                if parsed is None or parsed.address in seen:
+                    continue
+                seen.add(parsed.address)
+                out.append(NormalizedInterfaceAddress(
+                    device_external_id=device_external_id,
+                    interface_external_id=name,
+                    interface_name=name,
+                    address=parsed.address,
+                    prefix_length=parsed.prefix_length,
+                    vrf=vrf,
+                    is_primary=primary and len(seen) == 1,
+                ))
+    return out
+
+
+def _route_protocol(flags: str) -> str | None:
+    """PAN-OS route flags: A active, C connect, S static, B bgp, O ospf,
+    H host. Inactive and host entries are not topology."""
+    letters = set(flags.replace(" ", "").upper())
+    if "A" not in letters or "H" in letters:
+        return None
+    if "C" in letters:
+        return "connected"
+    if "S" in letters:
+        return "static"
+    if "B" in letters:
+        return "bgp"
+    if "O" in letters or any(f.startswith("O") for f in flags.split()):
+        return "ospf"
+    return "other"
+
+
+def _parse_routes(text: str, device_external_id: str) -> list[NormalizedRoute]:
+    root = _xml_root(text)
+    if root is None:
+        return []
+    out: list[NormalizedRoute] = []
+    for entry in root.iter("entry"):
+        destination = parse_route_destination((entry.findtext("destination") or "").strip())
+        if destination is None:
+            continue
+        protocol = _route_protocol(entry.findtext("flags") or "")
+        if protocol is None:
+            continue
+        metric = (entry.findtext("metric") or "").strip()
+        out.append(NormalizedRoute(
+            device_external_id=device_external_id,
+            destination=destination[0],
+            prefix_length=destination[1],
+            protocol=protocol,
+            next_hop=parse_next_hop((entry.findtext("nexthop") or "").strip()),
+            outgoing_interface=(entry.findtext("interface") or "").strip() or None,
+            metric=int(metric) if metric.isdigit() else None,
+            vrf=normalise_vrf(entry.findtext("virtual-router")),
+        ))
     return out

@@ -13,6 +13,7 @@ from app.models.site import Site
 from app.models.monitoring_source import MonitoringSource
 from app.models.device import Device
 from app.models.interface import Interface
+from app.models.interface_address import InterfaceAddress
 from app.models.sensor import Sensor
 from app.models.event import Event
 from app.models.metric import Metric
@@ -118,6 +119,7 @@ ___all__ = [
     "NocEvent",
     "ResourceCapability",
     "NetworkRoute",
+    "InterfaceAddress",
     "BgpNeighbor",
     "OperationalSLAPolicy",
     "FailoverEvent",

@@ -29,7 +29,8 @@ import {
   RefreshCw,
 } from "lucide-react";
 
-import { getLiveTopology, type TopologyLive } from "../../lib/topologyApi";
+import { getL3Topology, getLiveTopology, type TopologyLive } from "../../lib/topologyApi";
+import { l3CoverageText } from "../../lib/topology/l3";
 import { buildEmptyState, isGraphEmpty } from "../../lib/topology/emptyState";
 import {
   fitViewport,
@@ -60,6 +61,7 @@ import {
   type TreeLayout,
 } from "../../lib/topology/tree";
 import { isUnknownResource, resolveVendorVisual } from "../../lib/topology/vendors";
+import { buildL3RenderGraph } from "./l3RenderModel";
 import TopologyCanvas from "./TopologyCanvas";
 import TopologyDetailDrawer from "./TopologyDetailDrawer";
 import TopologyEmptyStatePanel from "./TopologyEmptyState";
@@ -452,6 +454,16 @@ export default function OperationalTopologyPanel() {
     refetchOnWindowFocus: false,
   });
   const payload = query.data ?? null;
+  const isTree = layout === "tree" || layout === "l3";
+  // The L3 structure is fetched only while the L3 view is open.
+  const l3Query = useQuery({
+    queryKey: ["topology-l3", siteFilter || null],
+    queryFn: () => getL3Topology({ siteId: siteFilter || null }),
+    enabled: layout === "l3",
+    refetchInterval: refreshSeconds > 0 ? refreshSeconds * 1000 : false,
+    refetchOnWindowFocus: false,
+  });
+  const l3Payload = layout === "l3" ? l3Query.data ?? null : null;
   const error =
     query.error instanceof Error
       ? query.error.message
@@ -488,23 +500,30 @@ export default function OperationalTopologyPanel() {
    * The tree is built from the FILTERED graph but not the search: searching
    * highlights matches in place instead of re-rooting the tree around them.
    */
-  const treeGraph = useMemo(
-    () =>
-      model && layout === "tree" ? filterModel(model, filters, "") : { nodes: [], edges: [] },
-    [model, filters, layout]
+  const l3Graph = useMemo(
+    () => (model && l3Payload ? buildL3RenderGraph(l3Payload, filterModel(model, filters, "").nodes) : null),
+    [model, l3Payload, filters]
   );
+  const treeGraph = useMemo(() => {
+    if (l3Graph) return { nodes: l3Graph.nodes, edges: l3Graph.edges };
+    return model && layout === "tree" ? filterModel(model, filters, "") : { nodes: [], edges: [] };
+  }, [model, filters, layout, l3Graph]);
   const treeInput = useMemo(
     () => ({
       nodes: treeGraph.nodes
         .filter((node) => node.kind !== "site")
-        .map((node) => ({ id: node.id, iconKey: node.visual.iconKey })),
+        .map((node) => ({ id: node.id, iconKey: node.l3Kind ? null : node.visual.iconKey })),
       edges: treeGraph.edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target })),
+      rootOrder: l3Graph?.rootOrder,
     }),
-    [treeGraph]
+    [treeGraph, l3Graph]
   );
   const fullTree = useMemo<TreeLayout | null>(
-    () => (layout === "tree" ? buildTreeLayout(treeInput.nodes, treeInput.edges) : null),
-    [layout, treeInput]
+    () =>
+      isTree && (layout === "tree" || l3Graph)
+        ? buildTreeLayout(treeInput.nodes, treeInput.edges, { rootOrder: treeInput.rootOrder })
+        : null,
+    [isTree, layout, l3Graph, treeInput]
   );
   const collapsed = useMemo<ReadonlySet<string>>(() => {
     if (!fullTree || queryText.trim()) return NO_COLLAPSE;
@@ -515,7 +534,7 @@ export default function OperationalTopologyPanel() {
   const tree = useMemo<TreeLayout | null>(() => {
     if (!fullTree) return null;
     if (!collapsed.size) return fullTree;
-    return buildTreeLayout(treeInput.nodes, treeInput.edges, { collapsed });
+    return buildTreeLayout(treeInput.nodes, treeInput.edges, { collapsed, rootOrder: treeInput.rootOrder });
   }, [fullTree, collapsed, treeInput]);
   const treeNodeMap = useMemo(
     () => new Map(treeGraph.nodes.map((node) => [node.id, node])),
@@ -548,18 +567,18 @@ export default function OperationalTopologyPanel() {
     const placed = layoutNodes(
       visible.nodes.map((node) => ({ id: node.id, siteId: node.siteId, type: node.kind, group: node.state })),
       visible.edges.map((edge) => ({ source: edge.source, target: edge.target })),
-      layout === "tree" ? "connected-first" : layout,
+      isTree ? "connected-first" : layout,
       {},
       // Worst first, so the devices that need attention sit right under the map.
       ["OFFLINE", "WARNING", "STALE", "UNKNOWN", "MAINTENANCE", "ONLINE"]
     );
     return new Map(placed.map((entry) => [entry.id, { x: entry.x, y: entry.y }]));
-  }, [tree, visible, layout]);
+  }, [tree, visible, layout, isTree]);
 
   const fitPoints = useCallback(
     (points: { x: number; y: number }[]) =>
-      layout === "tree" ? fitTree(points, size) : fitViewport(points, size),
-    [layout, size]
+      isTree ? fitTree(points, size) : fitViewport(points, size),
+    [isTree, size]
   );
 
   /**
@@ -597,7 +616,7 @@ export default function OperationalTopologyPanel() {
     if (selectedNodeId) {
       const nodes = new Set<string>([selectedNodeId]);
       const edges = new Set<string>();
-      for (const edge of visible.edges) {
+      for (const edge of layout === "l3" ? treeGraph.edges : visible.edges) {
         if (edge.source === selectedNodeId || edge.target === selectedNodeId) {
           edges.add(edge.id);
           nodes.add(edge.source);
@@ -606,7 +625,7 @@ export default function OperationalTopologyPanel() {
       }
       return { nodes, edges };
     }
-    if (queryText.trim() && layout === "tree") {
+    if (queryText.trim() && isTree) {
       // Tree search highlights matches (and their uplinks) without re-rooting.
       const nodes = new Set(visible.nodes.map((node) => node.id));
       const edges = new Set<string>();
@@ -622,7 +641,7 @@ export default function OperationalTopologyPanel() {
       };
     }
     return null;
-  }, [selectedNodeId, queryText, visible, layout, tree]);
+  }, [selectedNodeId, queryText, visible, layout, isTree, tree, treeGraph.edges]);
 
   const fit = useCallback(() => {
     const fitted = fitPoints([...positions.values()]);
@@ -957,7 +976,7 @@ export default function OperationalTopologyPanel() {
           layout={layout}
           showStateChips={false}
           viewControls={
-            layout === "tree" ? (
+            isTree ? (
               <>
                 <button
                   type="button"
@@ -1012,6 +1031,20 @@ export default function OperationalTopologyPanel() {
         />
       ) : null}
 
+      {model && layout === "l3" ? (
+        <p
+          role="status"
+          data-testid="topology-l3-coverage"
+          style={{ margin: "0 0 8px", fontSize: 12, color: "var(--ecc-text-muted, var(--muted))" }}
+        >
+          {l3Query.isError
+            ? `L3 topology unavailable: ${l3Query.error instanceof Error ? l3Query.error.message : "request failed"}`
+            : l3Payload
+              ? `${l3CoverageText(l3Payload.coverage)} Devices on the same subnet are joined; routes to unmonitored next hops end at a diamond.`
+              : "Loading L3 topology…"}
+        </p>
+      ) : null}
+
       {model && layout === "connected-first" && unlinkedCount > 0 ? (
         <p
           role="status"
@@ -1034,7 +1067,7 @@ export default function OperationalTopologyPanel() {
           borderRadius: 10,
           overflow: "hidden",
           // The tree follows the theme; the card layouts keep their dark stage.
-          background: layout === "tree" ? "var(--ecc-surface, #0b1220)" : "rgba(2,6,23,0.55)",
+          background: isTree ? "var(--ecc-surface, #0b1220)" : "rgba(2,6,23,0.55)",
         }}
       >
         <div ref={containerRef} style={{ position: "relative", flex: 1, minWidth: 0 }}>
@@ -1044,6 +1077,16 @@ export default function OperationalTopologyPanel() {
             </p>
           ) : nodeCount === 0 ? (
             <TopologyEmptyStatePanel state={emptyState} variant="full" />
+          ) : layout === "l3" && (!tree || tree.positions.size === 0) ? (
+            <div data-testid="topology-l3-empty" style={{ padding: 24, fontSize: 12, color: "var(--muted)" }}>
+              {l3Payload
+                ? l3Payload.coverage.devices_with_addresses
+                  ? "No two devices in this view share a subnet or a route yet."
+                  : l3CoverageText(l3Payload.coverage)
+                : l3Query.isError
+                  ? "L3 topology unavailable."
+                  : "Loading L3 topology…"}
+            </div>
           ) : tree ? (
             tree.positions.size === 0 ? (
               model.summary.links > 0 ? (
@@ -1093,6 +1136,7 @@ export default function OperationalTopologyPanel() {
                 onToggleCollapse={toggleCollapse}
                 labelAll={labelAll}
                 highlight={highlight}
+                hoverRows={l3Graph?.hoverRows}
               />
             )
           ) : (
@@ -1145,7 +1189,7 @@ export default function OperationalTopologyPanel() {
                 onReset={() => setViewportOverride(IDENTITY_VIEWPORT)}
                 fullscreenTarget={shellRef}
               />
-              {tree ? <TopologyTreeLegend /> : <TopologyLegend />}
+              {tree ? <TopologyTreeLegend l3={layout === "l3"} /> : <TopologyLegend />}
             </>
           ) : null}
 
@@ -1168,6 +1212,7 @@ export default function OperationalTopologyPanel() {
               setSelectedNodeId(id);
             }}
             onClose={() => setShowUnconnected(false)}
+            l3={layout === "l3"}
           />
         ) : null}
       </div>

@@ -40,6 +40,12 @@ export interface TreeOptions {
   yGap?: number;
   /** Extra rows between two components. */
   componentGap?: number;
+  /**
+   * Preferred roots, best first (the L3 view passes its default-route exits).
+   * A component containing one of these is rooted there; others fall back to
+   * the role ranking.
+   */
+  rootOrder?: readonly string[];
 }
 
 export interface TreeLayout {
@@ -86,6 +92,7 @@ export function buildTreeLayout(
   const yGap = options.yGap ?? DEFAULTS.yGap;
   const componentGap = options.componentGap ?? DEFAULTS.componentGap;
   const collapsed = options.collapsed ?? new Set<string>();
+  const preferred = new Map((options.rootOrder ?? []).map((id, index) => [id, index]));
 
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const neighbours = new Map<string, { id: string; edge: string }[]>();
@@ -122,6 +129,8 @@ export function buildTreeLayout(
   }
   const pickRoot = (members: string[]) =>
     [...members].sort((a, b) => {
+      const byPreference = (preferred.get(a) ?? Infinity) - (preferred.get(b) ?? Infinity);
+      if (byPreference) return byPreference;
       const byRank = rank(byId.get(a)) - rank(byId.get(b));
       if (byRank) return byRank;
       const byDegree = neighbours.get(b)!.length - neighbours.get(a)!.length;

@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     # Collectors / Scheduler
     max_concurrent_collections: int = 10
     collector_run_stale_minutes: int = 10
+    # L3 topology: dynamic (BGP/OSPF/other) routes kept per device per poll.
+    # Connected and static routes are always kept; a full BGP table is not.
+    l3_max_dynamic_routes_per_device: int = 500
 
     # Correlation: how long an open incident may be quiet before a new alert
     # starts a fresh incident instead of reopening it. Replaces the hardcoded

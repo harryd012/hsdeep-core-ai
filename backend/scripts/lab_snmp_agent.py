@@ -127,6 +127,27 @@ class LabCdpNeighbour:
     remote_address: str
 
 
+@dataclass(frozen=True)
+class LabAddress:
+    """One ipAddrTable row (IP-MIB): an IPv4 address on an interface."""
+
+    if_index: int
+    address: str
+    netmask: str
+
+
+@dataclass(frozen=True)
+class LabRoute:
+    """One ipCidrRouteTable row (IP-FORWARD-MIB)."""
+
+    destination: str
+    netmask: str
+    next_hop: str
+    if_index: int
+    #: IANAipRouteProtocol: 2 local (connected), 3 netmgmt (static), 14 bgp.
+    proto: int = 3
+
+
 @dataclass
 class LabDeviceProfile:
     sys_name: str
@@ -135,6 +156,18 @@ class LabDeviceProfile:
     lldp_neighbours: list[LabLldpNeighbour] = field(default_factory=list)
     cdp_neighbours: list[LabCdpNeighbour] = field(default_factory=list)
     expose_lldp_local_chassis: bool = True
+    addresses: list[LabAddress] = field(default_factory=list)
+    routes: list[LabRoute] = field(default_factory=list)
+
+
+OID_IP_ADDR_IFINDEX = (1, 3, 6, 1, 2, 1, 4, 20, 1, 2)
+OID_IP_ADDR_NETMASK = (1, 3, 6, 1, 2, 1, 4, 20, 1, 3)
+OID_IP_CIDR_ROUTE_IFINDEX = (1, 3, 6, 1, 2, 1, 4, 24, 4, 1, 5)
+OID_IP_CIDR_ROUTE_PROTO = (1, 3, 6, 1, 2, 1, 4, 24, 4, 1, 7)
+
+
+def _octets(dotted: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in dotted.split("."))
 
 
 def _lldp_row_oids(base: tuple[int, ...], local_port: int, value: str,
@@ -197,6 +230,19 @@ def build_mib(profile: LabDeviceProfile) -> dict[tuple[int, ...], object]:
         mib[OID_CDP_DEVICE_ID + index] = v2c.OctetString(neighbour.remote_device_id)
         mib[OID_CDP_DEVICE_PORT + index] = v2c.OctetString(neighbour.remote_port_id)
         mib[OID_CDP_PLATFORM + index] = v2c.OctetString(neighbour.remote_platform)
+
+    # IP-MIB ipAddrTable: indexed by the address, netmask as a real IpAddress
+    # value, so the collector sees the same encoding a production agent sends.
+    for entry in profile.addresses:
+        index = _octets(entry.address)
+        mib[OID_IP_ADDR_IFINDEX + index] = v2c.Integer(entry.if_index)
+        mib[OID_IP_ADDR_NETMASK + index] = v2c.IpAddress(entry.netmask)
+
+    # IP-FORWARD-MIB ipCidrRouteTable: index dest.mask.tos.nextHop.
+    for route in profile.routes:
+        index = _octets(route.destination) + _octets(route.netmask) + (0,) + _octets(route.next_hop)
+        mib[OID_IP_CIDR_ROUTE_IFINDEX + index] = v2c.Integer(route.if_index)
+        mib[OID_IP_CIDR_ROUTE_PROTO + index] = v2c.Integer(route.proto)
 
     return mib
 

@@ -43,7 +43,21 @@ export interface TopologyTreeCanvasProps {
   onToggleCollapse: (id: string) => void;
   labelAll: boolean;
   highlight: { nodes: Set<string>; edges: Set<string> } | null;
+  /** Extra hover-card rows (the L3 view: subnets, interface IPs, routes). */
+  hoverRows?: (id: string) => [string, string][] | null;
 }
+
+/** Device role glyphs plus the L3 map's subnet pipe and next-hop diamond. */
+export type TreeGlyphKey = VisualIconKey | "subnet" | "next-hop";
+
+export function glyphKeyOf(node: RenderNode): TreeGlyphKey {
+  if (node.l3Kind === "subnet") return "subnet";
+  if (node.l3Kind === "next_hop") return "next-hop";
+  return node.visual.iconKey;
+}
+
+/** Edges whose tooltip is their recorded label (L3 subnet / route links). */
+const isL3Edge = (edge: RenderEdge | undefined) => Boolean(edge?.relationshipType.startsWith("l3_"));
 
 /** Device glyph by role. Centred on (0,0); `color` is the state colour. */
 export function TreeGlyph({
@@ -51,13 +65,19 @@ export function TreeGlyph({
   color,
   hollow = false,
 }: {
-  iconKey: VisualIconKey;
+  iconKey: TreeGlyphKey;
   color: string;
   hollow?: boolean;
 }) {
   const fill = hollow ? "transparent" : color;
   const common = { fill, stroke: color, strokeWidth: 1.6 } as const;
   switch (iconKey) {
+    case "subnet":
+      // Meraki's L3 "pipe": a subnet several devices sit on.
+      return <rect x={-14} y={-3.5} width={28} height={7} rx={3.5} fill="var(--ecc-surface, #0f172a)" stroke={color} strokeWidth={1.6} />;
+    case "next-hop":
+      // A next hop that is not a monitored device.
+      return <polygon points="0,-7 7,0 0,7 -7,0" fill="transparent" stroke={color} strokeWidth={1.6} />;
     case "switch":
       // Stacked bars, Meraki's switch mark.
       return (
@@ -114,6 +134,14 @@ function portOn(edge: RenderEdge | undefined, deviceId: string): string | null {
   return null;
 }
 
+/** Every node below `id` in the full tree. */
+function* descendantIds(tree: TreeLayout, id: string): Generator<string> {
+  for (const child of tree.children.get(id) ?? []) {
+    yield child;
+    yield* descendantIds(tree, child);
+  }
+}
+
 export function displayName(node: RenderNode): string {
   return node.unidentified ? node.ip ?? node.hostname ?? "Unknown resource" : node.name;
 }
@@ -133,6 +161,7 @@ export default function TopologyTreeCanvas({
   onToggleCollapse,
   labelAll,
   highlight,
+  hoverRows,
 }: TopologyTreeCanvasProps) {
   const panZoom = usePanZoom(viewport, onViewportChange);
   const [hoverId, setHoverId] = useState<string | null>(null);
@@ -156,15 +185,17 @@ export default function TopologyTreeCanvas({
     const uplinkEdge = uplink ? edges.get(uplink.id) : undefined;
     const parent = uplink ? nodes.get(uplink.parent) : undefined;
     const state = DEVICE_STATE_VISUALS[hovered.state];
+    const synthetic = Boolean(hovered.l3Kind);
+    const extra = hoverRows?.(hovered.id) ?? [];
     const rows: [string, string][] = [];
-    if (hovered.ip) rows.push(["IP", hovered.ip]);
+    if (hovered.ip && !synthetic) rows.push(["IP", hovered.ip]);
     // An unrecognised vendor with no model says nothing; leave the row out.
     const make = [hovered.visual.vendorKey ? hovered.vendorLabel : null, hovered.model]
       .filter(Boolean)
       .join(" · ");
-    if (make) rows.push(["Model", make]);
-    if (hovered.deviceType) rows.push(["Type", hovered.deviceType]);
-    if (parent) {
+    if (make && !synthetic) rows.push(["Model", make]);
+    if (hovered.deviceType && !synthetic) rows.push(["Type", hovered.deviceType]);
+    if (parent && !synthetic) {
       const local = portOn(uplinkEdge, hovered.id);
       const remote = portOn(uplinkEdge, parent.id);
       rows.push([
@@ -172,15 +203,16 @@ export default function TopologyTreeCanvas({
         `${local ?? "port not recorded"} → ${displayName(parent)}${remote ? ` ${remote}` : ""}`,
       ]);
     }
-    const downstream = tree.descendants.get(hovered.id) ?? 0;
+    const downstream = [...descendantIds(tree, hovered.id)].filter((id) => !nodes.get(id)?.l3Kind).length;
     if (downstream) rows.push(["Downstream", `${downstream} device${downstream === 1 ? "" : "s"}`]);
-    if (hovered.interfaces) {
+    if (hovered.interfaces && !synthetic) {
       rows.push([
         "Interfaces",
         `${hovered.interfaces.up} up · ${hovered.interfaces.down} down of ${hovered.interfaces.total}`,
       ]);
     }
-    rows.push(["Last data", formatAge(hovered.ageSeconds)]);
+    rows.push(...extra);
+    if (!synthetic) rows.push(["Last data", formatAge(hovered.ageSeconds)]);
     return (
       <div
         role="tooltip"
@@ -204,14 +236,14 @@ export default function TopologyTreeCanvas({
         }}
       >
         <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 2 }}>{displayName(hovered)}</div>
-        <div style={{ color: state.color, fontSize: 10, letterSpacing: "0.4px", marginBottom: 6 }}>
-          {state.label.toUpperCase()}
+        <div style={{ color: synthetic ? "var(--muted)" : state.color, fontSize: 10, letterSpacing: "0.4px", marginBottom: 6 }}>
+          {hovered.l3Kind === "subnet" ? "SUBNET" : hovered.l3Kind === "next_hop" ? "NEXT HOP" : state.label.toUpperCase()}
         </div>
         <dl style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "2px 10px", margin: 0 }}>
-          {rows.map(([label, value]) => (
-            <div key={label} style={{ display: "contents" }}>
+          {rows.map(([label, value], index) => (
+            <div key={`${label}-${index}`} style={{ display: "contents" }}>
               <dt style={{ color: "var(--muted)" }}>{label}</dt>
-              <dd style={{ margin: 0, overflowWrap: "anywhere" }}>{value}</dd>
+              <dd style={{ margin: 0, overflowWrap: "anywhere", whiteSpace: "pre-line" }}>{value}</dd>
             </div>
           ))}
         </dl>
@@ -313,7 +345,9 @@ export default function TopologyTreeCanvas({
                   }}
                 >
                   <title>
-                    {`${parentPort ?? "?"} ↔ ${childPort ?? "?"}${edge ? ` · ${LINK_STATE_VISUALS[edge.state].label}` : ""}`}
+                    {isL3Edge(edge) && edge?.label
+                      ? edge.label
+                      : `${parentPort ?? "?"} ↔ ${childPort ?? "?"}${edge ? ` · ${LINK_STATE_VISUALS[edge.state].label}` : ""}`}
                   </title>
                 </path>
               </g>
@@ -360,7 +394,7 @@ export default function TopologyTreeCanvas({
                   {/* Generous invisible hit area around a small glyph. */}
                   <circle r={12} fill="transparent" />
                   <TreeGlyph
-                    iconKey={node.visual.iconKey}
+                    iconKey={glyphKeyOf(node)}
                     color={state.color}
                     hollow={node.state === "UNKNOWN" || node.state === "STALE"}
                   />

@@ -10,9 +10,8 @@ import { ChevronDown, ChevronRight, X } from "lucide-react";
 
 import { DEVICE_STATE_VISUALS, type DeviceState } from "../../lib/topology/status";
 import { groupBy } from "../../lib/topology/tree";
-import type { VisualIconKey } from "../../lib/topology/vendors";
 import type { RenderNode, RenderSummary } from "./topologyRenderTypes";
-import { TreeGlyph, displayName } from "./TopologyTreeCanvas";
+import { TreeGlyph, displayName, type TreeGlyphKey } from "./TopologyTreeCanvas";
 
 const STATUS_ORDER: { state: DeviceState; count: (summary: RenderSummary) => number }[] = [
   { state: "ONLINE", count: (s) => s.online },
@@ -78,7 +77,7 @@ export function TopologyStatusLine({
   );
 }
 
-const LEGEND_SHAPES: { iconKey: VisualIconKey; label: string }[] = [
+const LEGEND_SHAPES: { iconKey: TreeGlyphKey; label: string }[] = [
   { iconKey: "firewall", label: "Security appliance" },
   { iconKey: "router", label: "Router" },
   { iconKey: "switch", label: "Switch" },
@@ -88,8 +87,13 @@ const LEGEND_SHAPES: { iconKey: VisualIconKey; label: string }[] = [
   { iconKey: "unknown", label: "Unclassified" },
 ];
 
+const L3_SHAPES: { iconKey: TreeGlyphKey; label: string }[] = [
+  { iconKey: "subnet", label: "Subnet (3+ devices)" },
+  { iconKey: "next-hop", label: "Next hop (not a monitored device)" },
+];
+
 /** Collapsible device legend (bottom-left of the tree, like Meraki's). */
-export function TopologyTreeLegend() {
+export function TopologyTreeLegend({ l3 = false }: { l3?: boolean }) {
   const [open, setOpen] = useState(true);
   return (
     <div
@@ -129,7 +133,7 @@ export function TopologyTreeLegend() {
       </button>
       {open ? (
         <ul style={{ listStyle: "none", margin: "6px 0 0", padding: 0, display: "grid", gap: 4 }}>
-          {LEGEND_SHAPES.map((entry) => (
+          {(l3 ? [...LEGEND_SHAPES, ...L3_SHAPES] : LEGEND_SHAPES).map((entry) => (
             <li key={entry.iconKey} style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <svg width={20} height={18} viewBox="-10 -9 20 18" aria-hidden="true">
                 <TreeGlyph iconKey={entry.iconKey} color="var(--muted)" />
@@ -147,7 +151,7 @@ export function TopologyTreeLegend() {
             <svg width={20} height={10} aria-hidden="true">
               <circle cx={10} cy={5} r={2.6} fill="var(--muted)" />
             </svg>
-            Port (recorded interface)
+            {l3 ? "Interface address" : "Port (recorded interface)"}
           </li>
         </ul>
       ) : null}
@@ -172,11 +176,14 @@ export function UnconnectedRail({
   selectedNodeId,
   onSelect,
   onClose,
+  l3 = false,
 }: {
   devices: RenderNode[];
   selectedNodeId: string | null;
   onSelect: (id: string) => void;
   onClose: () => void;
+  /** L3 view: "not connected" means no shared subnet or route, not no LLDP. */
+  l3?: boolean;
 }) {
   const groups = groupBy(devices, typeLabel);
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(groups.slice(0, 1).map((g) => g.key)));
@@ -215,8 +222,9 @@ export function UnconnectedRail({
           </button>
         </div>
         <p style={{ margin: "4px 0 0", fontSize: 11, color: "var(--muted)", lineHeight: 1.4 }}>
-          No LLDP/CDP neighbour or manual relationship is recorded for these devices, so they have no
-          place on the map yet.{" "}
+          {l3
+            ? "These devices share no subnet or static route with another device in this view, or no collector has reported their addresses yet."
+            : "No LLDP/CDP neighbour or manual relationship is recorded for these devices, so they have no place on the map yet."}{" "}
           <Link href="/infrastructure/discovery" style={{ color: "var(--accent, #38bdf8)" }}>
             Run discovery
           </Link>

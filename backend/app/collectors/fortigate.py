@@ -34,6 +34,14 @@ from app.collectors.base import (
     NormalizedBundle,
     NormalizedDevice,
     NormalizedInterface,
+    NormalizedInterfaceAddress,
+    NormalizedRoute,
+)
+from app.core.ip_addressing import (
+    normalise_vrf,
+    parse_interface_address,
+    parse_next_hop,
+    parse_route_destination,
 )
 
 logger = logging.getLogger(__name__)
@@ -161,6 +169,20 @@ class FortiGateCollector(BaseCollector):
         except (httpx.TransportError, httpx.TimeoutException, httpx.HTTPStatusError) as exc:
             logger.warning("FortiGate collect(): system/interface failed: source_id=%s error_type=%s", self.source.id, type(exc).__name__)
             result["interfaces"] = {"results": []}
+            result["interfaces_failed"] = True
+
+        # Routing table (L3 topology). Optional: a missing permission or an
+        # older FortiOS without the endpoint is "unavailable", never an error.
+        try:
+            route_resp = await self._request("/api/v2/monitor/router/ipv4", timeout=_TABLE_TIMEOUT)
+            if route_resp.status_code == 200:
+                result["routes"] = route_resp.json()
+                result["routes_status"] = "collected"
+            else:
+                result["routes_status"] = "unavailable"
+        except (httpx.TransportError, httpx.TimeoutException) as exc:
+            logger.warning("FortiGate collect(): router/ipv4 failed: source_id=%s error_type=%s", self.source.id, type(exc).__name__)
+            result["routes_status"] = "failed"
 
         return result
 
@@ -213,7 +235,28 @@ class FortiGateCollector(BaseCollector):
             )
             interfaces.append(interface)
 
-        return NormalizedBundle(devices=devices, interfaces=interfaces)
+        addresses = _parse_addresses(iface_results)
+        routes = _parse_routes(raw.get("routes", {}).get("results", []))
+
+        l3_status: dict[str, str] = {}
+        if "interfaces" in raw:
+            if raw.get("interfaces_failed"):
+                l3_status["addresses"] = "failed"
+            else:
+                l3_status["addresses"] = "collected" if addresses else "empty"
+        routes_status = raw.get("routes_status")
+        if routes_status == "collected":
+            l3_status["routes"] = "collected" if routes else "empty"
+        elif routes_status is not None:
+            l3_status["routes"] = routes_status
+
+        return NormalizedBundle(
+            devices=devices,
+            interfaces=interfaces,
+            addresses=addresses,
+            routes=routes,
+            l3_status=l3_status,
+        )
 
 
 def _parse_speed(speed_str: str | None) -> float | None:
@@ -224,3 +267,86 @@ def _parse_speed(speed_str: str | None) -> float | None:
         return float(speed_str)
     except (ValueError, TypeError):
         return None
+
+
+def _vrf(value: Any) -> str:
+    """FortiOS VRF ids are integers; 0 is the global table."""
+    return normalise_vrf(value)
+
+
+def _fortios_address(value: Any, netmask: Any = None):
+    """FortiOS writes ``"192.168.1.1 255.255.255.0"`` in one field; some
+    exports split the mask into ``netmask``. Both are accepted."""
+    if isinstance(value, list) and len(value) == 2:
+        value, netmask = value
+    if not isinstance(value, str):
+        return None
+    return parse_interface_address(value, netmask if " " not in value.strip() else None)
+
+
+def _parse_addresses(iface_results: list[dict[str, Any]]) -> list[NormalizedInterfaceAddress]:
+    out: list[NormalizedInterfaceAddress] = []
+    for row in iface_results:
+        name = row.get("name")
+        if not name:
+            continue
+        vrf = _vrf(row.get("vrf"))
+        candidates = [(row.get("ip"), row.get("netmask"), True)]
+        for secondary in row.get("secondaryip") or []:
+            if isinstance(secondary, dict):
+                candidates.append((secondary.get("ip"), secondary.get("netmask"), False))
+        for value, netmask, primary in candidates:
+            parsed = _fortios_address(value, netmask)
+            if parsed is None or parsed.address == "0.0.0.0":
+                continue
+            out.append(NormalizedInterfaceAddress(
+                device_external_id="1",
+                interface_external_id=name,
+                interface_name=name,
+                address=parsed.address,
+                prefix_length=parsed.prefix_length,
+                vrf=vrf,
+                is_primary=primary,
+            ))
+    return out
+
+
+_FORTIOS_ROUTE_TYPES = {
+    "connect": "connected",
+    "connected": "connected",
+    "static": "static",
+    "bgp": "bgp",
+    "ospf": "ospf",
+}
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_routes(route_results: list[dict[str, Any]]) -> list[NormalizedRoute]:
+    """``/api/v2/monitor/router/ipv4`` rows: ``ip_mask`` "0.0.0.0/0",
+    ``type`` connect|static|bgp|ospf|kernel, ``gateway``, ``interface``."""
+    out: list[NormalizedRoute] = []
+    for row in route_results:
+        if not isinstance(row, dict):
+            continue
+        destination = parse_route_destination(row.get("ip_mask"))
+        if destination is None:
+            continue
+        protocol = _FORTIOS_ROUTE_TYPES.get(str(row.get("type", "")).lower(), "other")
+        out.append(NormalizedRoute(
+            device_external_id="1",
+            destination=destination[0],
+            prefix_length=destination[1],
+            protocol=protocol,
+            next_hop=parse_next_hop(row.get("gateway")),
+            outgoing_interface=row.get("interface") or None,
+            metric=_int_or_none(row.get("metric")),
+            administrative_distance=_int_or_none(row.get("distance")),
+            vrf=_vrf(row.get("vrf")),
+        ))
+    return out

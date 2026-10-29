@@ -158,6 +158,44 @@ class NormalizedNeighbor:
 
 
 @dataclass
+class NormalizedInterfaceAddress:
+    """One IP address configured on a device interface (L3 topology).
+
+    ``address``/``prefix_length`` are already normalised by
+    ``app.core.ip_addressing.parse_interface_address``; the saver derives the
+    subnet from them, never from a vendor-supplied network string.
+    """
+
+    device_external_id: str
+    address: str
+    prefix_length: int
+    #: Matches ``NormalizedInterface.external_id`` (SNMP ifIndex, FortiGate
+    #: interface name) when the collector knows it.
+    interface_external_id: str | None = None
+    interface_name: str | None = None
+    vrf: str = "-"
+    is_primary: bool = True
+
+
+@dataclass
+class NormalizedRoute:
+    """One routing-table entry reported by the device itself."""
+
+    device_external_id: str
+    #: Normalised CIDR (``0.0.0.0/0``), from ``parse_route_destination``.
+    destination: str
+    prefix_length: int
+    #: connected | static | bgp | ospf | other
+    protocol: str
+    next_hop: str | None = None
+    outgoing_interface: str | None = None
+    metric: int | None = None
+    administrative_distance: int | None = None
+    vrf: str = "-"
+    is_best: bool = True
+
+
+@dataclass
 class NormalizedBundle:
     devices: list[NormalizedDevice] = field(default_factory=list)
     interfaces: list[NormalizedInterface] = field(default_factory=list)
@@ -171,6 +209,15 @@ class NormalizedBundle:
     #: Per-protocol collection outcome so "SNMP failed" is never reported as
     #: "no neighbours found". Values: collected | empty | unavailable | failed.
     neighbor_status: dict[str, str] = field(default_factory=dict)
+    #: Interface addresses and routes (L3 topology). Persisted by BundleSaver.
+    addresses: list[NormalizedInterfaceAddress] = field(default_factory=list)
+    routes: list[NormalizedRoute] = field(default_factory=list)
+    #: Outcome per table, keys "addresses" / "routes", same values as
+    #: ``neighbor_status``. Stored rows the poll did not see are retired ONLY
+    #: when the table was "collected" or "empty" - a failed or unsupported read
+    #: never wipes what an earlier poll stored. A missing key means the
+    #: collector does not read that table at all.
+    l3_status: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

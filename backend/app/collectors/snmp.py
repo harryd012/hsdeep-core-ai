@@ -17,6 +17,8 @@ OIDs covered:
     sysName         (.1.3.6.1.2.1.1.5.0)
     ifTable         (.1.3.6.1.2.1.2.2.1) — ifDescr, ifAdminStatus, ifOperStatus,
                     ifInOctets, ifOutOctets, ifInErrors, ifOutErrors, ifSpeed
+    IP-MIB / IP-FORWARD-MIB address and route tables (L3 topology) - see
+                    app/collectors/snmp_l3.py
 
 Dependency: pysnmp==6.2.5 (pinned in requirements.txt)
 """
@@ -37,6 +39,7 @@ from app.collectors.base import (
     NormalizedNeighbor,
     NormalizedSensorReading,
 )
+from app.collectors.snmp_l3 import collect_l3, normalize_l3
 
 from app.collectors.switching import (
     _DOT1D_BASE_PORT_IF_INDEX,
@@ -362,7 +365,7 @@ class SNMPCollector(BaseCollector):
         return rows
 
     async def _walk_with_status(
-        self, base_oid: str
+        self, base_oid: str, max_rows: int | None = None
     ) -> tuple[list[tuple[str, str]], str | None]:
         """WALK that also reports WHY it returned nothing.
 
@@ -430,6 +433,8 @@ class SNMPCollector(BaseCollector):
                 rows.append((oid, str(var_bind[1])))
                 current = oid
                 advanced = True
+                if max_rows is not None and len(rows) >= max_rows:
+                    return rows, error
 
             if not advanced:
                 break
@@ -869,6 +874,19 @@ class SNMPCollector(BaseCollector):
             )
             raw["identity"] = {"status": NEIGHBOR_FAILED}
 
+        # Interface addresses and routes (L3 topology). Best-effort and
+        # independently statused, like the tables above.
+        try:
+            raw["l3"] = await collect_l3(self._walk_with_status)
+        except CollectorConfigError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SNMP collect(): L3 address/route read failed: source_id=%s error=%s",
+                self.source.id, exc,
+            )
+            raw["l3"] = {"addresses_status": NEIGHBOR_FAILED, "routes_status": NEIGHBOR_FAILED}
+
         return raw
 
     def normalize(self, raw: dict[str, Any]) -> NormalizedBundle:
@@ -1017,6 +1035,13 @@ class SNMPCollector(BaseCollector):
                 evidence_type="cdp",
             ))
 
+        addresses, routes, l3_status = normalize_l3(
+            raw.get("l3") or {},
+            device_external_id=hostname,
+            if_names=descr_map,
+            coerce_ipv4=_coerce_ipv4,
+        )
+
         return NormalizedBundle(
             devices=[device],
             interfaces=interfaces,
@@ -1025,6 +1050,9 @@ class SNMPCollector(BaseCollector):
                 "lldp": raw.get("lldp_status", NEIGHBOR_UNAVAILABLE),
                 "cdp": raw.get("cdp_status", NEIGHBOR_UNAVAILABLE),
             },
+            addresses=addresses,
+            routes=routes,
+            l3_status=l3_status,
         )
 
 
