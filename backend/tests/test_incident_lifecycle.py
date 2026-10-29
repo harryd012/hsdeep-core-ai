@@ -31,7 +31,7 @@ from app.models.incident import Incident
 from app.models.monitoring_source import MonitoringSource
 from app.models.tenant import Tenant
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("dev_tenant")]
 
 # The 'dev' tenant has an active subscription (seeded by seed_admin_direct.py).
 DEV_TENANT_ID = uuid.UUID("54dd0ca8-873f-4b8e-bb54-c4f45f64d0b3")
