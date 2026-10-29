@@ -3,11 +3,13 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Radar, ShieldCheck, Wifi } from "lucide-react";
+import { Banner, DataTable, PageShell, Panel, Pill, ago, statusTone, titleCaseWords } from "@/components/ui/PageKit";
 import {
   type DiscoveryRunResponse,
   listDiscoveryJobs,
   runDiscovery,
 } from "@/lib/infrastructureIntelligence";
+import DiscoveryProbeReview from "@/components/infrastructure/DiscoveryProbeReview";
 
 /**
  * /infrastructure/discovery — Universal Discovery console.
@@ -34,7 +36,7 @@ function tone(outcome: string): string {
 }
 
 export default function DiscoveryPage() {
-  const [target, setTarget] = useState("192.168.159.130");
+  const [target, setTarget] = useState("");
   const [protocols, setProtocols] = useState<string[]>([...PROTOCOL_OPTIONS]);
   const [community, setCommunity] = useState("");
   const queryClient = useQueryClient();
@@ -65,88 +67,81 @@ export default function DiscoveryPage() {
     : null;
   const jobs = jobsQuery.data ?? [];
 
+  const duration = (a: string, b: string | null) => {
+    if (!b) return "—";
+    const sec = Math.max(0, Math.round((new Date(b).getTime() - new Date(a).getTime()) / 1000));
+    return sec < 60 ? `${sec} s` : `${Math.round(sec / 60)} min`;
+  };
+
   return (
-    <div className="dashboard" style={{ paddingTop: "clamp(84px,8.5vh,104px)" }}>
-      <div className="overview" style={{ gridTemplateColumns: "1fr", gap: 16 }}>
-        <section className="hud-panel ni-panel">
-          <div className="ni-header">
-            <div>
-              <h2>UNIVERSAL DISCOVERY</h2>
-              <p className="ni-header__sub">NETWORK · CLOUD · UNKNOWN</p>
-            </div>
+    <PageShell
+      title="Discovery"
+      subtitle="Probe a host, hostname or CIDR range. The backend identifies what answers and records it; the browser never creates devices."
+      crumbs={[{ label: "Infrastructure", href: "/infrastructure" }, { label: "Discovery" }]}
+    >
+      <Panel title="Run discovery" info="Probes run from the backend using the protocols you select." state="ready">
+        <div className="pk-form" style={{ maxWidth: "none", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
+          <div className="pk-field">
+            <label htmlFor="disc-target">Target</label>
+            <input
+              id="disc-target"
+              className="pk-input"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              placeholder="10.0.0.0/24, 192.168.1.10 or core-sw01"
+              autoComplete="off"
+            />
+            <small>IP address, hostname or CIDR range.</small>
           </div>
-
-          <div className="disc-form">
-            <label className="disc-field">
-              <span>Target (IP, hostname, or CIDR)</span>
+          <div className="pk-field">
+            <label htmlFor="disc-community">SNMP community</label>
+            <input
+              id="disc-community"
+              className="pk-input"
+              type="password"
+              value={community}
+              onChange={(e) => setCommunity(e.target.value)}
+              placeholder="Optional"
+              autoComplete="new-password"
+            />
+            <small>Used for this probe only — never stored or returned.</small>
+          </div>
+        </div>
+        <div className="pk-toolbar" style={{ marginTop: 12 }}>
+          <span className="pk-count">Protocols</span>
+          {PROTOCOL_OPTIONS.map((p) => (
+            <label key={p} className="pk-switch">
               <input
-                className="ni-select disc-input"
-                value={target}
-                onChange={(e) => setTarget(e.target.value)}
-                placeholder="10.0.0.0/24"
-                aria-label="Discovery target"
+                type="checkbox"
+                checked={protocols.includes(p)}
+                onChange={(e) =>
+                  setProtocols((cur) => (e.target.checked ? [...cur, p] : cur.filter((x) => x !== p)))
+                }
               />
+              {p.toUpperCase()}
             </label>
-
-            <label className="disc-field">
-              <span>SNMP community (this probe only)</span>
-              <input
-                className="ni-select disc-input"
-                type="password"
-                value={community}
-                onChange={(e) => setCommunity(e.target.value)}
-                placeholder="public"
-                autoComplete="off"
-                aria-label="SNMP community"
-              />
-            </label>
+          ))}
+          <span className="pk-toolbar__spacer" />
+          <button
+            type="button"
+            className="pk-button pk-button--primary"
+            onClick={() => runMutation.mutate()}
+            disabled={runMutation.isPending || !target.trim() || protocols.length === 0}
+          >
+            <Radar size={14} /> {runMutation.isPending ? "Discovering…" : "Run discovery"}
+          </button>
+        </div>
+        {error && (
+          <div style={{ marginTop: 12 }}>
+            <Banner tone="bad">Discovery failed: {error}</Banner>
           </div>
-
-          <div className="disc-protocols">
-            {PROTOCOL_OPTIONS.map((p) => (
-              <label key={p} className="disc-check">
-                <input
-                  type="checkbox"
-                  checked={protocols.includes(p)}
-                  onChange={(e) =>
-                    setProtocols((cur) =>
-                      e.target.checked ? [...cur, p] : cur.filter((x) => x !== p),
-                    )
-                  }
-                />
-                {p.toUpperCase()}
-              </label>
-            ))}
-            <button
-              type="button"
-              className="ni-button"
-              onClick={() => runMutation.mutate()}
-              disabled={runMutation.isPending || !target.trim()}
-            >
-              {runMutation.isPending ? "Discovering…" : "Run discovery"}
-            </button>
-          </div>
-
-          <p className="ni-safety">
-            Credentials are used only for this probe — never stored or returned.
-            Devices are created by the backend, not the browser.
-          </p>
-
-          {error && (
-            <div className="ni-problem" role="status">
-              <AlertTriangle size={14} />
-              <div>
-                <strong className="ni-problem__label">DISCOVERY FAILED</strong>
-                <p className="ni-problem__detail">{error}</p>
-              </div>
-            </div>
-          )}
-        </section>
+        )}
+      </Panel>
 
         {outcome && (
           <>
-            <section className="hud-panel ni-panel">
-              <h2>PROBE RESULTS · {outcome.target}</h2>
+            <section className="ecc-card" aria-label="Probe Results">
+              <header className="ecc-card__header"><h2 className="ecc-card__title">Probe results · {outcome.target}</h2></header>
               <div className="ni-status">
                 <div className="ni-status__tile ni-status__tile--neutral">
                   <span className="ni-status__label">JOB</span>
@@ -220,8 +215,8 @@ export default function DiscoveryPage() {
               ))}
             </section>
 
-            <section className="hud-panel ni-panel">
-              <h2>RECOGNITION · IDENTITY · INVENTORY</h2>
+            <section className="ecc-card" aria-label="Recognition · Identity · Inventory">
+              <header className="ecc-card__header"><h2 className="ecc-card__title">Recognition, identity and inventory</h2></header>
               {outcome.result.resources.map((r) => {
                 const matched = r.recognition_status === "identified";
                 const canonical = r.canonical_resource;
@@ -362,32 +357,31 @@ export default function DiscoveryPage() {
           </>
         )}
 
-        <section className="hud-panel ni-panel">
-          <h2>DISCOVERY JOBS ({jobs.length})</h2>
-          {jobs.length === 0 ? (
-            <p className="ni-empty">No discovery jobs recorded yet.</p>
-          ) : (
-            <ul className="ni-audit">
-              {jobs.map((j) => (
-                <li key={j.job_id} className="ni-audit__row">
-                  <span className="ni-audit__engine disc-mono">
-                    {j.job_id.slice(0, 8)}
-                  </span>
-                  <span className="ni-audit__stage">{j.status.toUpperCase()}</span>
-                  <span className="ni-audit__decision">
-                    {j.devices_upserted} created
-                  </span>
-                  <span className="ni-audit__meta">
-                    started {j.started_at}
-                    {j.finished_at ? ` · finished ${j.finished_at}` : ""}
-                    {j.error ? ` · ${j.error}` : ""}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      </div>
-    </div>
+      <Panel
+        title="Discovery jobs"
+        info="The 10 most recent discovery runs for this tenant."
+        aside={jobsQuery.data ? `${jobs.length} recent` : undefined}
+        state={jobsQuery.data ? "ready" : jobsQuery.isError ? "error" : "loading"}
+        onRetry={() => jobsQuery.refetch()}
+      >
+        <DataTable
+          caption="Discovery jobs"
+          rows={jobs}
+          rowKey={(j) => j.job_id}
+          emptyText="No discovery jobs recorded yet. Run one above."
+          defaultSort={{ key: "started", dir: "desc" }}
+          columns={[
+            { key: "job", header: "Job", render: (j) => <span className="pk-mono">{j.job_id.slice(0, 8)}</span> },
+            { key: "status", header: "Status", sortValue: (j) => j.status, render: (j) => <Pill tone={statusTone(j.status)}>{titleCaseWords(j.status)}</Pill> },
+            { key: "created", header: "Devices created", numeric: true, sortValue: (j) => j.devices_upserted, render: (j) => j.devices_upserted },
+            { key: "started", header: "Started", sortValue: (j) => new Date(j.started_at).getTime(), render: (j) => <span title={new Date(j.started_at).toLocaleString()}>{ago(j.started_at)}</span> },
+            { key: "duration", header: "Duration", render: (j) => <span className="pk-muted">{duration(j.started_at, j.finished_at)}</span> },
+            { key: "error", header: "Error", render: (j) => (j.error ? <span className="pk-truncate" style={{ color: "var(--ecc-bad)" }} title={j.error}>{j.error}</span> : <span className="pk-muted">—</span>) },
+          ]}
+        />
+      </Panel>
+
+      <DiscoveryProbeReview />
+    </PageShell>
   );
 }

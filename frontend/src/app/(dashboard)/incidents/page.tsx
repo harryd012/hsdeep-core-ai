@@ -8,128 +8,102 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 import { Suspense, useEffect, useState, useCallback } from "react";
-import { useSearchParams } from "next/navigation";
-import {
-  AlertTriangle, CheckCircle2, Bell, Activity, Zap, Shield,
-  TrendingDown, Layers, ChevronDown, ChevronRight, Clock,
-  Play, Archive, XCircle, Eye, Brain,
-} from "lucide-react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Brain, Zap } from "lucide-react";
 import {
   Incident, AlertIntelligenceMetrics, CollectorHealthList, IncidentSeverity,
   listIncidents, getAlertIntelligenceMetrics, getCollectorHealth,
   acknowledgeIncident, investigateIncident, monitorIncident,
   recoverIncident, closeIncident, archiveIncident,
 } from "@/lib/api";
+import { formatAge } from "@/lib/commandCenter/format";
+import {
+  Banner,
+  DataTable,
+  PageShell,
+  Panel,
+  Pill,
+  SearchBox,
+  StatStrip,
+  StatTile,
+  Tabs,
+  ago,
+  statusTone,
+  titleCaseWords,
+  type Column,
+} from "@/components/ui/PageKit";
 
 /** A metric the backend did not report renders as "—", never as a measured 0. */
-function nullOr(value: number | null | undefined): number | string {
-  return value === null || value === undefined ? "—" : value;
+function nullOr(value: number | null | undefined): string {
+  return value === null || value === undefined ? "—" : value.toLocaleString("en-US");
 }
 
+type Action = "acknowledge" | "investigate" | "monitor" | "recover" | "close" | "archive";
 
-function timeAgo(iso: string): string {
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const minutes = Math.max(0, Math.round(diffMs / 60000));
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
-}
-
-function duration(iso: string): string {
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const minutes = Math.max(0, Math.round(diffMs / 60000));
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.round(hours / 24)}d`;
-}
-
-const severityColor = (s: string): string => {
-  if (s === "critical") return "var(--red)";
-  if (s === "warning") return "var(--amber)";
-  return "#119be1";
+/** The single next lifecycle step offered for each status. */
+const NEXT_ACTION: Record<string, { action: Action; label: string } | undefined> = {
+  open: { action: "acknowledge", label: "Acknowledge" },
+  acknowledged: { action: "investigate", label: "Investigate" },
+  investigating: { action: "monitor", label: "Monitor" },
+  monitoring: { action: "recover", label: "Recover" },
+  recovered: { action: "close", label: "Close" },
+  resolved: { action: "close", label: "Close" },
+  closed: { action: "archive", label: "Archive" },
 };
 
-const statusColor = (s: string): string => {
-  if (s === "open") return "var(--red)";
-  if (s === "acknowledged") return "var(--amber)";
-  if (s === "investigating") return "#119be1";
-  if (s === "monitoring") return "var(--cyan)";
-  if (s === "recovered" || s === "resolved") return "var(--green)";
-  if (s === "closed") return "var(--muted)";
-  if (s === "archived") return "var(--muted)";
-  return "var(--muted)";
-};
-
-const stateColor = (s: string): string => {
-  if (s === "healthy") return "var(--green)";
-  if (s === "degraded") return "var(--amber)";
-  if (s === "failing") return "var(--red)";
-  return "var(--muted)";
-};
-
-function LoadingFallback() {
-  return (
-    <div className="dashboard" style={{ paddingTop: "clamp(84px,8.5vh,104px)" }}>
-      <div className="overview" style={{ gridTemplateColumns: "1fr", gap: 16 }}>
-        <section className="hud-panel">
-          <h2>ALERT INTELLIGENCE METRICS</h2>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 16, marginBottom: 24 }}>
-            {["Active Incidents", "Correlated", "Suppressed", "Duplicates Removed", "Noise Reduction"].map((label) => (
-              <div key={label} style={{ textAlign: "center", padding: 16, border: "1px solid var(--line)", borderRadius: 8 }}>
-                <div style={{ fontSize: "clamp(24px,1.8vw,36px)", color: "var(--muted)", fontWeight: 700 }}>—</div>
-                <div style={{ fontSize: "clamp(10px,.65vw,12px)", color: "var(--muted)" }}>{label}</div>
-              </div>
-            ))}
-          </div>
-          <h2>CORRELATED INCIDENTS</h2>
-          <p style={{ color: "var(--muted)", fontSize: 12 }}>Loading incidents…</p>
-        </section>
-      </div>
-    </div>
-  );
-}
+const SEVERITY_TONE = { critical: "bad", warning: "warn", info: "info" } as const;
+type SeverityTab = "all" | IncidentSeverity;
 
 function IncidentIntelligenceContent() {
-  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [incidents, setIncidents] = useState<Incident[] | null>(null);
   const [metrics, setMetrics] = useState<AlertIntelligenceMetrics | null>(null);
   const [collectorHealth, setCollectorHealth] = useState<CollectorHealthList | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [errors, setErrors] = useState<{ incidents?: string; metrics?: string; collectors?: string }>({});
+  const [actionError, setActionError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
 
   const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname() ?? "/incidents";
+  const severity = (searchParams?.get("severity") as IncidentSeverity | null) ?? null;
 
+  // Each read settles on its own: the intelligence aggregate can take far
+  // longer than the incident list on a large estate, and must not hold the
+  // list (or each other) hostage.
   const load = useCallback(async () => {
-    try {
-      const severity = searchParams.get("severity") as IncidentSeverity | null;
-      const [incidentList, metricsData, healthData] = await Promise.all([
-        listIncidents({ severity: severity ?? undefined, limit: 50 }),
-        getAlertIntelligenceMetrics(),
-        getCollectorHealth(),
-      ]);
-      setIncidents(incidentList);
-      setMetrics(metricsData);
-      setCollectorHealth(healthData);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load incident intelligence");
-    } finally {
-      setLoaded(true);
-    }
-  }, [searchParams]);
+    const msg = (r: PromiseRejectedResult) => (r.reason instanceof Error ? r.reason.message : "Request failed");
+    const [inc, met, col] = await Promise.allSettled([
+      listIncidents({ severity: severity ?? undefined, limit: 50 }),
+      getAlertIntelligenceMetrics(),
+      getCollectorHealth(),
+    ]);
+    if (inc.status === "fulfilled") setIncidents(inc.value);
+    if (met.status === "fulfilled") setMetrics(met.value);
+    if (col.status === "fulfilled") setCollectorHealth(col.value);
+    setErrors({
+      incidents: inc.status === "rejected" ? msg(inc) : undefined,
+      metrics: met.status === "rejected" ? msg(met) : undefined,
+      collectors: col.status === "rejected" ? msg(col) : undefined,
+    });
+    setUpdatedAt(new Date().toISOString());
+  }, [severity]);
 
   useEffect(() => {
-    load();
+    // First load is scheduled, not called inline, so no state update happens
+    // synchronously inside the effect body.
+    const first = window.setTimeout(load, 0);
     const timer = window.setInterval(load, 15000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
   }, [load]);
 
-  const handleAction = async (incidentId: string, action: string) => {
+  const handleAction = async (incidentId: string, action: Action) => {
     setActionLoading(`${incidentId}:${action}`);
+    setActionError(null);
     try {
       if (action === "acknowledge") await acknowledgeIncident(incidentId, "00000000-0000-0000-0000-000000000000");
       else if (action === "investigate") await investigateIncident(incidentId);
@@ -139,308 +113,185 @@ function IncidentIntelligenceContent() {
       else if (action === "archive") await archiveIncident(incidentId);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Failed to ${action} incident`);
+      setActionError(err instanceof Error ? err.message : `Failed to ${action} incident`);
     } finally {
       setActionLoading(null);
     }
   };
 
+  const setSeverity = (tab: SeverityTab) => {
+    const next = new URLSearchParams(searchParams?.toString() ?? "");
+    if (tab === "all") next.delete("severity");
+    else next.set("severity", tab);
+    const qs = next.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  };
+
+  const list = incidents ?? [];
+  const q = search.trim().toLowerCase();
+  const visible = list.filter(
+    (i) => !q || [i.title, i.device_name, i.site_name, i.correlation_type].some((v) => (v ?? "").toLowerCase().includes(q)),
+  );
+
+  const columns: Column<Incident>[] = [
+    {
+      key: "severity",
+      header: "Severity",
+      width: 96,
+      sortValue: (i) => ({ critical: 0, warning: 1, info: 2 })[i.severity] ?? 3,
+      render: (i) => <Pill tone={SEVERITY_TONE[i.severity] ?? "neutral"}>{titleCaseWords(i.severity)}</Pill>,
+    },
+    {
+      key: "incident",
+      header: "Incident",
+      sortValue: (i) => i.title.toLowerCase(),
+      render: (i) => (
+        <>
+          <span className="pk-cell-main" style={{ whiteSpace: "normal" }}>{i.title}</span>
+          <span className="pk-cell-sub" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+            <span>{i.alert_count} alerts · {i.total_occurrences.toLocaleString("en-US")} occurrences</span>
+            {(i.device_name || i.site_name) && <span>{[i.device_name, i.site_name].filter(Boolean).join(" · ")}</span>}
+            {i.correlation_type && (
+              <span style={{ display: "inline-flex", gap: 3, alignItems: "center", color: "var(--ecc-accent)" }}>
+                <Brain size={11} aria-hidden="true" /> {titleCaseWords(i.correlation_type)}
+              </span>
+            )}
+            {i.automation_available && (
+              <span style={{ display: "inline-flex", gap: 3, alignItems: "center", color: "var(--ecc-good)" }}>
+                <Zap size={11} aria-hidden="true" /> SOP available
+              </span>
+            )}
+          </span>
+        </>
+      ),
+    },
+    { key: "status", header: "Status", sortValue: (i) => i.status, render: (i) => <Pill tone={statusTone(i.status)}>{titleCaseWords(i.status)}</Pill> },
+    { key: "age", header: "Open for", sortValue: (i) => -new Date(i.opened_at).getTime(), render: (i) => formatAge(i.opened_at) },
+    { key: "last", header: "Last alert", sortValue: (i) => new Date(i.last_alert_at).getTime(), render: (i) => <span className="pk-muted">{ago(i.last_alert_at)}</span> },
+    { key: "assigned", header: "Assigned", sortValue: (i) => i.assigned_team ?? "", render: (i) => (i.assigned_team ? titleCaseWords(i.assigned_team) : <span className="pk-muted">Unassigned</span>) },
+    {
+      key: "action",
+      header: "",
+      render: (i) => {
+        const next = NEXT_ACTION[i.status];
+        return (
+          <span style={{ display: "inline-flex", gap: 6 }} onClick={(e) => e.stopPropagation()}>
+            {next && (
+              <button
+                type="button"
+                className="pk-button"
+                style={{ height: 26, fontSize: 12 }}
+                disabled={actionLoading !== null}
+                onClick={() => handleAction(i.id, next.action)}
+              >
+                {actionLoading === `${i.id}:${next.action}` ? "Working…" : next.label}
+              </button>
+            )}
+            {i.automation_available && (
+              <Link className="pk-button" style={{ height: 26, fontSize: 12 }} href="/sop-engine">Run SOP</Link>
+            )}
+          </span>
+        );
+      },
+    },
+  ];
+
+  const metricsLoading = !metrics && !errors.metrics;
+  const tabs: { key: SeverityTab; label: string }[] = [
+    { key: "all", label: "All" },
+    { key: "critical", label: "Critical" },
+    { key: "warning", label: "Warning" },
+    { key: "info", label: "Info" },
+  ];
+
   return (
-    <div className="dashboard" style={{ paddingTop: "clamp(84px,8.5vh,104px)" }}>
-      <div className="overview" style={{ gridTemplateColumns: "1fr", gap: 16 }}>
-        {/* Alert Intelligence Metrics */}
-        <section className="hud-panel">
-          <h2><Activity size={18} style={{ display: "inline", marginRight: 8 }} />ALERT INTELLIGENCE METRICS</h2>
-          {error && (
-            <p style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--amber)", fontSize: 12 }}>
-              <AlertTriangle size={14} /> {error}
-            </p>
-          )}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 16, marginBottom: 24 }}>
-            {[
-              { label: "Active Incidents", value: nullOr(metrics?.active_incidents), icon: AlertTriangle, color: "var(--red)" },
-              { label: "Correlated", value: nullOr(metrics?.correlated_incidents), icon: Layers, color: "var(--cyan)" },
-              { label: "Suppressed", value: nullOr(metrics?.suppressed_alerts), icon: TrendingDown, color: "var(--amber)" },
-              { label: "Duplicates Removed", value: nullOr(metrics?.duplicate_alerts_removed), icon: XCircle, color: "var(--amber)" },
-              { label: "Noise Reduction", value: metrics ? `${metrics.noise_reduction_pct}%` : "—", icon: Zap, color: "var(--green)" },
-            ].map(({ label, value, icon: Icon, color }) => (
-              <div key={label} style={{ textAlign: "center", padding: 16, border: "1px solid var(--line)", borderRadius: 8 }}>
-                <Icon size={20} style={{ color, margin: "0 auto 8px" }} />
-                <div style={{ fontSize: "clamp(24px,1.8vw,36px)", color, fontWeight: 700 }}>{value}</div>
-                <div style={{ fontSize: "clamp(10px,.65vw,12px)", color: "var(--muted)" }}>{label}</div>
+    <PageShell
+      title="Incidents"
+      subtitle="Correlated incidents built from related alerts, with the next response step for each."
+      meta={updatedAt ? `Updated ${ago(updatedAt)} · refreshes every 15 s` : undefined}
+    >
+      {actionError && <Banner tone="bad">{actionError}</Banner>}
+      {errors.metrics && <Banner tone="warn">Alert-intelligence metrics are unavailable: {errors.metrics}</Banner>}
+
+      <StatStrip>
+        <StatTile label="Active incidents" value={nullOr(metrics?.active_incidents)} info="Incidents open, acknowledged or investigating." loading={metricsLoading} naText={errors.metrics ? "Unavailable" : undefined} />
+        <StatTile label="Correlated" value={nullOr(metrics?.correlated_incidents)} info="Incidents that grouped more than one alert." loading={metricsLoading} naText={errors.metrics ? "Unavailable" : undefined} />
+        <StatTile label="Suppressed alerts" value={nullOr(metrics?.suppressed_alerts)} info="Alerts suppressed as symptoms of an existing incident." loading={metricsLoading} naText={errors.metrics ? "Unavailable" : undefined} />
+        <StatTile label="Duplicates removed" value={nullOr(metrics?.duplicate_alerts_removed)} info="Repeat alerts folded into an existing alert." loading={metricsLoading} naText={errors.metrics ? "Unavailable" : undefined} />
+        <StatTile label="Noise reduction" value={metrics ? `${metrics.noise_reduction_pct}%` : "—"} info="Share of raw alert volume that did not become a separate incident." loading={metricsLoading} naText={errors.metrics ? "Unavailable" : undefined} />
+      </StatStrip>
+
+      <div className="pk-grid">
+        <Panel
+          title="Incidents"
+          info="The 50 most recent incidents. Select a row to open its investigation workspace."
+          aside={incidents ? `${visible.length} of ${list.length}` : undefined}
+          state={incidents ? "ready" : errors.incidents ? "error" : "loading"}
+          errorText={errors.incidents ? `Incidents could not be loaded: ${errors.incidents}` : undefined}
+          onRetry={load}
+          skeletonHeight={360}
+          className="pk-col-8"
+        >
+          <div className="pk-toolbar" style={{ marginBottom: 10 }}>
+            <SearchBox value={search} onChange={setSearch} placeholder="Search title, device, site" label="Search incidents" />
+            <Tabs label="Severity" value={(severity ?? "all") as SeverityTab} onChange={setSeverity} tabs={tabs} />
+          </div>
+          <DataTable
+            caption="Incidents"
+            columns={columns}
+            rows={visible}
+            rowKey={(i) => i.id}
+            rowHref={(i) => `/incidents/${i.id}`}
+            defaultSort={{ key: "last", dir: "desc" }}
+            emptyText={list.length === 0 ? "No incidents. All systems operational." : "No incidents match the current filter."}
+            maxHeight={620}
+          />
+        </Panel>
+
+        <Panel
+          title="Collector health"
+          info="Run-based health of each collection source feeding these incidents."
+          aside={<Link className="ecc-link" href="/monitoring">Monitoring →</Link>}
+          state={collectorHealth ? (collectorHealth.collectors.length ? "ready" : "empty") : errors.collectors ? "error" : "loading"}
+          emptyText="No collectors configured."
+          errorText={errors.collectors ? `Collector health is unavailable: ${errors.collectors}` : undefined}
+          onRetry={load}
+          className="pk-col-4"
+        >
+          {collectorHealth && (
+            <>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                <Pill tone="good">{collectorHealth.healthy_count} healthy</Pill>
+                <Pill tone="warn">{collectorHealth.degraded_count} degraded</Pill>
+                <Pill tone="bad">{collectorHealth.failing_count} failing</Pill>
+                <Pill tone="neutral">{collectorHealth.unknown_count} unknown</Pill>
               </div>
-            ))}
-          </div>
-        </section>
-
-        {/* Collector Health */}
-        {collectorHealth && collectorHealth.collectors.length > 0 && (
-          <section className="hud-panel">
-            <h2><Shield size={18} style={{ display: "inline", marginRight: 8 }} />COLLECTOR HEALTH</h2>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 16 }}>
-              {[
-                { label: "Healthy", value: collectorHealth.healthy_count, color: "var(--green)" },
-                { label: "Degraded", value: collectorHealth.degraded_count, color: "var(--amber)" },
-                { label: "Failing", value: collectorHealth.failing_count, color: "var(--red)" },
-                { label: "Unknown", value: collectorHealth.unknown_count, color: "var(--muted)" },
-              ].map(({ label, value, color }) => (
-                <div key={label} style={{ textAlign: "center", padding: 12, border: "1px solid var(--line)", borderRadius: 8 }}>
-                  <div style={{ fontSize: 28, color, fontWeight: 700 }}>{value}</div>
-                  <div style={{ fontSize: 11, color: "var(--muted)" }}>{label}</div>
-                </div>
-              ))}
-            </div>
-            <div style={{ overflowY: "auto", maxHeight: 200 }}>
-              {collectorHealth.collectors.map((c) => (
-                <div key={c.source_id} className="alert-row" style={{ padding: "8px 12px" }}>
-                  <i style={{ background: stateColor(c.current_state) }} />
-                  <div style={{ flex: 1 }}>
-                    <span style={{ fontSize: 13 }}>{c.source_name}</span>
-                    <small style={{ display: "block", color: "var(--muted)", fontSize: 11 }}>
-                      {c.current_state} · {c.success_rate_pct}% success · {c.total_runs} runs
-                      {c.last_error && ` · ${c.last_error.substring(0, 60)}`}
-                    </small>
-                  </div>
-                  <time style={{ fontSize: 11, color: "var(--muted)" }}>
-                    {c.last_success_at ? timeAgo(c.last_success_at) : "—"}
-                  </time>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* Incident Cards */}
-        <section className="hud-panel">
-          <h2><Bell size={18} style={{ display: "inline", marginRight: 8 }} />CORRELATED INCIDENTS ({incidents.length})</h2>
-          {!loaded && <p style={{ color: "var(--muted)", fontSize: 12 }}>Loading incidents…</p>}
-          {loaded && incidents.length === 0 && (
-            <div style={{ textAlign: "center", padding: 32 }}>
-              <CheckCircle2 size={48} style={{ color: "var(--green)", margin: "0 auto 12px" }} />
-              <p style={{ color: "var(--muted)" }}>No active incidents. All systems operational.</p>
-            </div>
+              <ul className="pk-list">
+                {collectorHealth.collectors.map((c) => (
+                  <li key={c.source_id}>
+                    <div className="pk-list__main">
+                      <span className="pk-cell-main">{c.source_name}</span>
+                      <span className="pk-cell-sub">{c.success_rate_pct}% success · {c.total_runs} runs</span>
+                      {c.last_error && <span className="pk-cell-sub pk-truncate" style={{ color: "var(--ecc-bad)" }} title={c.last_error}>{c.last_error}</span>}
+                    </div>
+                    <div className="pk-list__aside">
+                      <Pill tone={c.current_state === "failing" ? "bad" : statusTone(c.current_state)}>{titleCaseWords(c.current_state)}</Pill>
+                      <div style={{ marginTop: 4 }}>{c.last_success_at ? `OK ${ago(c.last_success_at)}` : "No success yet"}</div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
-          <div style={{ overflowY: "auto", maxHeight: 600 }}>
-            {incidents.map((inc) => {
-              const isExpanded = expandedId === inc.id;
-              const evidence = (inc.supporting_evidence as Record<string, unknown[]>)?.evidence as
-                { alert_id: string; title: string; reason: string; severity: string; category: string }[] | undefined;
-              const assets = (inc.affected_assets as unknown as Record<string, unknown[]>)?.assets as
-                { id: string; type: string; name: string }[] | undefined;
-              return (
-                <div key={inc.id} style={{ border: "1px solid var(--line)", borderRadius: 8, marginBottom: 12, overflow: "hidden" }}>
-                  {/* Card Header */}
-                  <div
-                    className="alert-row"
-                    style={{ cursor: "pointer", padding: "12px 16px" }}
-                    onClick={() => setExpandedId(isExpanded ? null : inc.id)}
-                  >
-                    <i style={{ background: severityColor(inc.severity) }} />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                        <span style={{ fontSize: 14, fontWeight: 600 }}>{inc.title}</span>
-                        {/* Severity badge */}
-                        <span style={{
-                          padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700,
-                          background: severityColor(inc.severity), color: "#fff",
-                        }}>
-                          {inc.severity.toUpperCase()}
-                        </span>
-                        {/* Status badge */}
-                        <span style={{
-                          padding: "2px 8px", borderRadius: 4, fontSize: 10,
-                          border: `1px solid ${statusColor(inc.status)}`, color: statusColor(inc.status),
-                        }}>
-                          {inc.status}
-                        </span>
-                        {/* AI badge */}
-                        {inc.correlation_type && (
-                          <span style={{
-                            padding: "2px 8px", borderRadius: 4, fontSize: 10,
-                            background: "rgba(17,155,225,0.15)", color: "#119be1",
-                            display: "flex", alignItems: "center", gap: 4,
-                          }}>
-                            <Brain size={10} /> {inc.correlation_type}
-                          </span>
-                        )}
-                        {/* Automation badge */}
-                        {inc.automation_available && (
-                          <span style={{
-                            padding: "2px 8px", borderRadius: 4, fontSize: 10,
-                            background: "rgba(0,200,83,0.15)", color: "var(--green)",
-                            display: "flex", alignItems: "center", gap: 4,
-                          }}>
-                            <Zap size={10} /> Auto
-                          </span>
-                        )}
-                      </div>
-                      <small style={{ display: "block", color: "var(--muted)", fontSize: 11, marginTop: 4 }}>
-                        {inc.alert_count} alerts · {inc.total_occurrences} occurrences · {duration(inc.opened_at)} duration
-                        {inc.device_name && ` · ${inc.device_name}`}
-                        {inc.site_name && ` · ${inc.site_name}`}
-                      </small>
-                    </div>
-                    {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                  </div>
-
-                  {/* Expanded Details */}
-                  {isExpanded && (
-                    <div style={{ padding: "16px", borderTop: "1px solid var(--line)", background: "rgba(0,0,0,0.2)" }}>
-                      {/* Entry point into the unified investigation workspace (PHASE 3) */}
-                      <Link
-                        href={`/incidents/${inc.id}`}
-                        style={{
-                          display: "inline-flex", alignItems: "center", gap: 6,
-                          marginBottom: 16, padding: "6px 14px", borderRadius: 6,
-                          border: "1px solid var(--cyan)", color: "var(--cyan)",
-                          fontSize: 12, textDecoration: "none",
-                        }}
-                      >
-                        <Layers size={12} /> Open investigation workspace
-                      </Link>
-                      {/* Root Cause Summary */}
-                      {inc.root_cause_summary && (
-                        <div style={{ marginBottom: 16 }}>
-                          <h3 style={{ fontSize: 12, color: "var(--cyan)", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                            <Brain size={14} /> AI ROOT CAUSE
-                          </h3>
-                          <p style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>{inc.root_cause_summary}</p>
-                        </div>
-                      )}
-
-                      {/* Supporting Evidence */}
-                      {evidence && evidence.length > 0 && (
-                        <div style={{ marginBottom: 16 }}>
-                          <h3 style={{ fontSize: 12, color: "var(--cyan)", marginBottom: 4 }}>SUPPORTING EVIDENCE</h3>
-                          {evidence.map((ev, i) => (
-                            <div key={i} style={{ display: "flex", gap: 8, fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>
-                              <span style={{ color: severityColor(ev.severity) }}>●</span>
-                              <span>{ev.title}</span>
-                              <span style={{ opacity: 0.6 }}>({ev.reason})</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Affected Assets */}
-                      {assets && assets.length > 0 && (
-                        <div style={{ marginBottom: 16 }}>
-                          <h3 style={{ fontSize: 12, color: "var(--cyan)", marginBottom: 4 }}>AFFECTED ASSETS</h3>
-                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            {assets.map((a, i) => (
-                              <span key={i} style={{
-                                padding: "2px 8px", borderRadius: 4, fontSize: 11,
-                                border: "1px solid var(--line)", color: "var(--muted)",
-                              }}>
-                                {a.type}: {a.name}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Timeline */}
-                      <div style={{ marginBottom: 16, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
-                        {[
-                          { label: "First Seen", value: timeAgo(inc.opened_at), icon: Clock },
-                          { label: "Last Seen", value: timeAgo(inc.last_alert_at), icon: Clock },
-                          { label: "Assigned", value: inc.assigned_team || "Unassigned", icon: Eye },
-                        ].map(({ label, value, icon: Icon }) => (
-                          <div key={label} style={{ padding: 8, border: "1px solid var(--line)", borderRadius: 6 }}>
-                            <Icon size={12} style={{ color: "var(--muted)", marginBottom: 4 }} />
-                            <div style={{ fontSize: 11, color: "var(--muted)" }}>{label}</div>
-                            <div style={{ fontSize: 12 }}>{value}</div>
-                          </div>
-                        ))}
-                      </div>
-
-                      {/* Quick Actions */}
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        {inc.status === "open" && (
-                          <button
-                            className="hud-btn"
-                            disabled={actionLoading === `${inc.id}:acknowledge`}
-                            onClick={(e) => { e.stopPropagation(); handleAction(inc.id, "acknowledge"); }}
-                            style={{ fontSize: 11, padding: "4px 12px" }}
-                          >
-                            <CheckCircle2 size={12} /> Acknowledge
-                          </button>
-                        )}
-                        {(inc.status === "acknowledged" || inc.status === "open") && (
-                          <button
-                            className="hud-btn"
-                            disabled={actionLoading === `${inc.id}:investigate`}
-                            onClick={(e) => { e.stopPropagation(); handleAction(inc.id, "investigate"); }}
-                            style={{ fontSize: 11, padding: "4px 12px" }}
-                          >
-                            <Eye size={12} /> Investigate
-                          </button>
-                        )}
-                        {inc.status === "investigating" && (
-                          <button
-                            className="hud-btn"
-                            disabled={actionLoading === `${inc.id}:monitor`}
-                            onClick={(e) => { e.stopPropagation(); handleAction(inc.id, "monitor"); }}
-                            style={{ fontSize: 11, padding: "4px 12px" }}
-                          >
-                            <Activity size={12} /> Monitor
-                          </button>
-                        )}
-                        {(inc.status === "investigating" || inc.status === "monitoring") && (
-                          <button
-                            className="hud-btn"
-                            disabled={actionLoading === `${inc.id}:recover`}
-                            onClick={(e) => { e.stopPropagation(); handleAction(inc.id, "recover"); }}
-                            style={{ fontSize: 11, padding: "4px 12px" }}
-                          >
-                            <CheckCircle2 size={12} /> Recover
-                          </button>
-                        )}
-                        {(inc.status === "recovered" || inc.status === "resolved") && (
-                          <button
-                            className="hud-btn"
-                            disabled={actionLoading === `${inc.id}:close`}
-                            onClick={(e) => { e.stopPropagation(); handleAction(inc.id, "close"); }}
-                            style={{ fontSize: 11, padding: "4px 12px" }}
-                          >
-                            <XCircle size={12} /> Close
-                          </button>
-                        )}
-                        {inc.status === "closed" && (
-                          <button
-                            className="hud-btn"
-                            disabled={actionLoading === `${inc.id}:archive`}
-                            onClick={(e) => { e.stopPropagation(); handleAction(inc.id, "archive"); }}
-                            style={{ fontSize: 11, padding: "4px 12px" }}
-                          >
-                            <Archive size={12} /> Archive
-                          </button>
-                        )}
-                        {inc.automation_available && (
-                          <button
-                            className="hud-btn"
-                            style={{ fontSize: 11, padding: "4px 12px", borderColor: "var(--green)", color: "var(--green)" }}
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <Play size={12} /> Run SOP
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </section>
+        </Panel>
       </div>
-    </div>
+    </PageShell>
   );
 }
 
 export default function IncidentIntelligencePage() {
   return (
-    <Suspense fallback={<LoadingFallback />}>
+    <Suspense fallback={<PageShell title="Incidents"><Panel title="Incidents" state="loading" skeletonHeight={360} /></PageShell>}>
       <IncidentIntelligenceContent />
     </Suspense>
   );

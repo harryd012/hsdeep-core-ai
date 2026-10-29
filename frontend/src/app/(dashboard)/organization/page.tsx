@@ -1,30 +1,33 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useEffect, useMemo } from "react";
-import {
-    Building2, Users, ChevronRight, ChevronDown, Plus, Eye,
-  Shield, Server, type LucideIcon,
-} from "lucide-react";
-import {
-  getTenantHealth, TenantHealthSummary,
-  getMe, MeResponse,
-  getTenantId,
-} from "@/lib/api";
+import { Building2, Users, ChevronRight, ChevronDown, Shield, Network, type LucideIcon } from "lucide-react";
+import { getTenantHealth, TenantHealthSummary, getMe, MeResponse, getTenantId } from "@/lib/api";
+import { Banner, PageShell, Panel, Pill, SearchBox, StatStrip, StatTile, titleCaseWords, type Tone } from "@/components/ui/PageKit";
 
 interface OrgNode {
   id: string;
   name: string;
-  type: "organization" | "business_unit" | "department" | "team" | "user" | "placeholder";
   icon: LucideIcon;
   meta?: string;
-  childCount?: number;
+  tone?: Tone;
+  badge?: string;
+  /** Existing page that manages this node; omitted when none exists yet. */
+  href?: string;
+  /** Shown instead of children when the backend has no model for this level. */
+  pendingNote?: string;
   children?: OrgNode[];
-  status?: string;
+}
+
+function healthTone(score: number | null | undefined): Tone {
+  if (score === null || score === undefined) return "neutral";
+  return score >= 90 ? "good" : score >= 70 ? "warn" : "bad";
 }
 
 export default function OrganizationPage() {
   const [search, setSearch] = useState("");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(["root"]));
+  const [expanded, setExpanded] = useState<Set<string>>(new Set(["root", "users"]));
   const [health, setHealth] = useState<TenantHealthSummary | null>(null);
   const [user, setUser] = useState<MeResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -38,9 +41,11 @@ export default function OrganizationPage() {
           getTenantHealth().catch(() => null),
           getMe().catch(() => null),
         ]);
-        if (!cancelled) { setHealth(h); setUser(me); setError(null); }
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load");
+        if (!cancelled) {
+          setHealth(h);
+          setUser(me);
+          setError(h === null && me === null ? "Organization data is unavailable" : null);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -53,28 +58,59 @@ export default function OrganizationPage() {
   const tree = useMemo((): OrgNode[] => {
     const tenantId = getTenantId();
     const tenantName = user?.tenant_name ?? (tenantId === "00000000-0000-0000-0000-000000000000" ? "Default Organization" : `Tenant ${tenantId.slice(0, 8)}`);
+    const tenants = user?.accessible_tenants ?? [];
     return [{
-      id: "root", name: tenantName, type: "organization", icon: Building2,
-      meta: health ? `Health: ${health.health_score}%` : undefined,
-      childCount: health ? health.sites_count + health.devices_count : undefined,
-      status: health?.health_score && health.health_score >= 90 ? "healthy" : health?.health_score && health.health_score >= 70 ? "warning" : "critical",
+      id: "root",
+      name: tenantName,
+      icon: Building2,
+      meta: health ? `${health.sites_count} sites · ${health.devices_count} devices · ${health.sensors_count} sensors` : undefined,
+      tone: healthTone(health?.health_score),
+      badge: health ? `Health ${health.health_score}%` : undefined,
+      href: "/infrastructure",
       children: [
-        { id: "users", name: "Users & Team Members", type: "team", icon: Users, children: [
-          { id: "current-user", name: user?.full_name ?? user?.email ?? "Current User", type: "user", icon: Shield, meta: user?.roles?.join(", ") ?? "operator", status: "healthy" },
-        ]},
-        { id: "dept-placeholder", name: "Departments", type: "placeholder", icon: Server, meta: "Backend model pending", children: [] },
+        {
+          id: "users",
+          name: "Users & team members",
+          icon: Users,
+          href: "/settings/users-roles",
+          children: user
+            ? [{
+                id: "current-user",
+                name: user.full_name ?? user.email,
+                icon: Shield,
+                meta: `${user.email} · ${user.roles.length ? user.roles.map(titleCaseWords).join(", ") : "No roles"}`,
+                badge: "You",
+                tone: "good" as Tone,
+              }]
+            : [],
+        },
+        ...(tenants.length > 1
+          ? [{
+              id: "tenants",
+              name: "Accessible tenants",
+              icon: Network,
+              meta: `${tenants.length} tenants`,
+              href: "/admin/customers",
+              children: [],
+            }]
+          : []),
+        {
+          id: "departments",
+          name: "Departments & business units",
+          icon: Network,
+          pendingNote: "Departments, teams and business units are not modelled in the backend yet, so nothing is shown here.",
+        },
       ],
     }];
   }, [health, user]);
 
   const filteredTree = useMemo(() => {
-    if (!search.trim()) return tree;
-    const q = search.toLowerCase();
+    const q = search.trim().toLowerCase();
+    if (!q) return tree;
     function filterNodes(nodes: OrgNode[]): OrgNode[] {
       return nodes.reduce<OrgNode[]>((acc, node) => {
-        const matches = node.name.toLowerCase().includes(q) || node.type.includes(q);
-        const filteredChildren = node.children ? filterNodes(node.children) : [];
-        if (matches || filteredChildren.length > 0) acc.push({ ...node, children: filteredChildren.length > 0 ? filteredChildren : node.children });
+        const kids = node.children ? filterNodes(node.children) : [];
+        if (node.name.toLowerCase().includes(q) || kids.length > 0) acc.push({ ...node, children: kids.length > 0 ? kids : node.children });
         return acc;
       }, []);
     }
@@ -85,53 +121,65 @@ export default function OrganizationPage() {
     setExpanded((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   }
 
-  if (loading) return <div className="page-shell" style={{ paddingTop: "clamp(84px,8.5vh,104px)" }}><div className="infra-topo"><p style={{ color: "var(--muted)", fontSize: 13 }}>Loading organization hierarchy…</p></div></div>;
+  const v = (x: number | undefined) => (health && x !== undefined ? x.toLocaleString("en-US") : "—");
 
   return (
-    <div className="page-shell" style={{ paddingTop: "clamp(84px,8.5vh,104px)" }}>
-      <div className="org-hierarchy">
-        <h2 style={{ color: "var(--cyan)", fontSize: 14, margin: 0, textTransform: "uppercase", letterSpacing: "0.5px" }}>Organization Hierarchy</h2>
-        {error && <p style={{ color: "var(--amber)", fontSize: 12 }}>{error}</p>}
-        <div className="org-hierarchy__toolbar">
-          <input type="text" placeholder="Search organization nodes…" value={search} onChange={(e) => setSearch(e.target.value)} className="org-hierarchy__search" />
+    <PageShell title="Organization" subtitle="The tenant, its people and the estate it owns.">
+      {error && <Banner tone="warn">{error}</Banner>}
+      <StatStrip>
+        <StatTile label="Health score" value={health ? `${health.health_score}%` : "—"} info="Tenant health score reported by the asset service." loading={loading} />
+        <StatTile label="Sites" value={v(health?.sites_count)} info="Sites registered for this tenant." href="/infrastructure" loading={loading} />
+        <StatTile label="Devices" value={v(health?.devices_count)} info="Devices registered for this tenant." href="/explorer" loading={loading} />
+        <StatTile label="Sensors" value={v(health?.sensors_count)} info="Sensors collected for this tenant." href="/monitoring" loading={loading} />
+        <StatTile label="Active alerts" value={v(health?.alerts_active)} alarm={!!health?.alerts_active} info="Alerts currently active." href="/alerts" loading={loading} />
+      </StatStrip>
+
+      <Panel title="Hierarchy" state={loading ? "loading" : "ready"} skeletonHeight={220}>
+        <div className="pk-toolbar" style={{ marginBottom: 10 }}>
+          <SearchBox value={search} onChange={setSearch} placeholder="Search organization" label="Search organization" />
         </div>
-        <div className="org-hierarchy__tree">
-          {filteredTree.map((node) => <OrgTreeNode key={node.id} node={node} depth={0} expanded={expanded} onToggle={toggle} />)}
-          {filteredTree.length === 0 && <p className="org-node__empty">No organization nodes match your search.</p>}
-        </div>
-      </div>
-    </div>
+        {filteredTree.length === 0 ? (
+          <div className="ecc-state" role="status">Nothing in the organization matches “{search}”.</div>
+        ) : (
+          <ul className="pk-tree" aria-label="Organization hierarchy">
+            {filteredTree.map((node) => <TreeNode key={node.id} node={node} expanded={expanded} onToggle={toggle} />)}
+          </ul>
+        )}
+      </Panel>
+    </PageShell>
   );
 }
 
-function OrgTreeNode({ node, depth, expanded, onToggle }: { node: OrgNode; depth: number; expanded: Set<string>; onToggle: (id: string) => void }) {
-  const isExpanded = expanded.has(node.id);
-  const hasChildren = node.children && node.children.length > 0;
-  const isPlaceholder = node.type === "placeholder";
+function TreeNode({ node, expanded, onToggle }: { node: OrgNode; expanded: Set<string>; onToggle: (id: string) => void }) {
+  const expandable = (node.children && node.children.length > 0) || !!node.pendingNote;
+  const open = expanded.has(node.id);
   const Icon = node.icon;
-  const statusColor = node.status === "healthy" ? "var(--green)" : node.status === "warning" ? "var(--amber)" : node.status === "critical" ? "var(--red)" : undefined;
-
   return (
-    <div className="org-node">
-      <div className="org-node__header" onClick={() => (hasChildren || isPlaceholder) ? onToggle(node.id) : null}>
-        {(hasChildren || isPlaceholder) ? (isExpanded ? <ChevronDown size={14} className="org-node__chev" /> : <ChevronRight size={14} className="org-node__chev" />) : <span style={{ width: 14 }} />}
-        <div className="org-node__icon"><Icon size={14} /></div>
-        <div className="org-node__info">
-          <span className="org-node__name">{node.name}</span>
-          {node.meta && <span className="org-node__meta">{node.meta}</span>}
+    <li>
+      <div className="pk-tree__row">
+        {expandable ? (
+          <button type="button" className="pk-tree__toggle" aria-expanded={open} aria-label={open ? `Collapse ${node.name}` : `Expand ${node.name}`} onClick={() => onToggle(node.id)}>
+            {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </button>
+        ) : (
+          <span style={{ width: 18 }} />
+        )}
+        <span className="pk-tree__icon" aria-hidden="true"><Icon size={14} /></span>
+        <div style={{ minWidth: 0 }}>
+          <div className="pk-tree__name">{node.name}</div>
+          {node.meta && <div className="pk-tree__meta">{node.meta}</div>}
         </div>
-        {statusColor && <span className="infra-node__status" style={{ color: statusColor }}><i className="infra-node__dot" style={{ background: statusColor }} /></span>}
-        <div className="org-node__actions">
-          <button className="org-node__action" onClick={(e) => e.stopPropagation()}><Eye size={11} /> View</button>
-          {depth < 2 && <button className="org-node__action" onClick={(e) => e.stopPropagation()} title={isPlaceholder ? "Backend model pending" : "Add child"}><Plus size={11} /> Add</button>}
+        <div className="pk-tree__actions">
+          {node.badge && <Pill tone={node.tone ?? "neutral"}>{node.badge}</Pill>}
+          {node.href && <Link className="pk-button" style={{ height: 26, fontSize: 12 }} href={node.href}>Manage</Link>}
         </div>
       </div>
-      {isExpanded && (hasChildren || isPlaceholder) && (
-        <div className="org-node__children">
-          {isPlaceholder && <p className="org-node__empty">This hierarchy level is not yet supported by the backend. Department, team, and business unit models will be added in a future migration.</p>}
-          {hasChildren && node.children!.map((child) => <OrgTreeNode key={child.id} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} />)}
-        </div>
+      {open && node.pendingNote && <p className="pk-tree__meta" style={{ margin: "2px 0 8px 58px" }}>{node.pendingNote}</p>}
+      {open && node.children && node.children.length > 0 && (
+        <ul>
+          {node.children.map((child) => <TreeNode key={child.id} node={child} expanded={expanded} onToggle={onToggle} />)}
+        </ul>
       )}
-    </div>
+    </li>
   );
 }

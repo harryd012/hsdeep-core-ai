@@ -10,9 +10,10 @@
  * state and no API.
  */
 
-export type LayoutKind = "hierarchical" | "force" | "radial" | "site-grouped";
+export type LayoutKind = "connected-first" | "hierarchical" | "force" | "radial" | "site-grouped";
 
 export const LAYOUTS: readonly { kind: LayoutKind; label: string; hint: string }[] = [
+  { kind: "connected-first", label: "Connected first", hint: "Linked devices as a hierarchy; unlinked devices grouped by state below." },
   { kind: "hierarchical", label: "Hierarchical", hint: "Roots at the top, one row per hop." },
   { kind: "force", label: "Force", hint: "Clusters connected devices together." },
   { kind: "radial", label: "Radial", hint: "Concentric rings around the busiest device." },
@@ -24,6 +25,8 @@ export interface LayoutNode {
   /** Site grouping key. Null/undefined means the resource has no site. */
   siteId?: string | null;
   type?: string;
+  /** Cluster key for unlinked devices in the connected-first layout (e.g. state). */
+  group?: string | null;
 }
 
 export interface LayoutEdge {
@@ -320,15 +323,84 @@ function siteGrouped(
   return result;
 }
 
+/**
+ * Connected-first: the devices that actually have relationships are laid out
+ * hierarchically at the top, and every device with NO recorded relationship is
+ * packed into compact clusters below, one per `group` (e.g. device state),
+ * in the caller's `groupOrder` (worst state first). On an estate where discovery
+ * has found few links this keeps the real topology readable instead of burying
+ * it in a wall of unconnected boxes - while still drawing every device.
+ */
+function connectedFirst(
+  nodes: readonly LayoutNode[],
+  edges: readonly LayoutEdge[],
+  options: Required<LayoutOptions>,
+  groupOrder: readonly string[]
+): LayoutResult[] {
+  const linked = linkedNodeIds(nodes, edges);
+  const connected = nodes.filter((n) => linked.has(n.id));
+  const result = hierarchical(connected, edges, options);
+  const connectedBottom = result.length ? Math.max(...result.map((r) => r.y)) + options.yGap * 1.6 : 0;
+
+  const groups = new Map<string, LayoutNode[]>();
+  for (const node of sorted(nodes)) {
+    if (linked.has(node.id)) continue;
+    const key = node.group?.trim() || "__ungrouped__";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(node);
+  }
+  const rank = (key: string) => {
+    const i = groupOrder.indexOf(key);
+    return i === -1 ? groupOrder.length : i;
+  };
+  const keys = [...groups.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+
+  // Compact grid: tighter spacing than the linked map, a fixed row width so
+  // clusters stack as readable bands centred under the connected graph.
+  const cellX = options.xGap * 0.82;
+  const cellY = options.yGap * 0.62;
+  const perRow = 14;
+  let cursorY = connectedBottom;
+  for (const key of keys) {
+    const members = groups.get(key)!;
+    const width = (Math.min(perRow, members.length) - 1) * cellX;
+    members.forEach((node, index) => {
+      result.push({
+        id: node.id,
+        x: (index % perRow) * cellX - width / 2,
+        y: cursorY + Math.floor(index / perRow) * cellY,
+      });
+    });
+    cursorY += Math.ceil(members.length / perRow) * cellY + options.yGap * 0.9;
+  }
+  return result;
+}
+
+/** Ids with at least one relationship to another visible node. */
+export function linkedNodeIds(nodes: readonly LayoutNode[], edges: readonly LayoutEdge[]): Set<string> {
+  const ids = new Set(nodes.map((n) => n.id));
+  const linked = new Set<string>();
+  for (const e of edges) {
+    if (ids.has(e.source) && ids.has(e.target) && e.source !== e.target) {
+      linked.add(e.source);
+      linked.add(e.target);
+    }
+  }
+  return linked;
+}
+
 /** Positions for one layout. Deterministic in (nodes, edges, kind, options). */
 export function layoutNodes(
   nodes: readonly LayoutNode[],
   edges: readonly LayoutEdge[],
   kind: LayoutKind,
-  options: LayoutOptions = {}
+  options: LayoutOptions = {},
+  groupOrder: readonly string[] = []
 ): LayoutResult[] {
   const resolved: Required<LayoutOptions> = { ...DEFAULTS, ...options };
   switch (kind) {
+    case "connected-first":
+      return connectedFirst(nodes, edges, resolved, groupOrder);
     case "force":
       return force(nodes, edges, resolved);
     case "radial":

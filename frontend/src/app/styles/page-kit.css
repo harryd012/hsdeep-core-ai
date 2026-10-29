@@ -1,0 +1,171 @@
+/* ==================================================================== */
+/* Page kit — the shared layout for every operational page (header,      */
+/* stat strip, panels, data tables, toolbars, pills, states).            */
+/* Built on the Executive Command Center tokens (--ecc-*), so every page */
+/* matches /dashboard and the light theme stays a token swap.            */
+/* ==================================================================== */
+
+.pk-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 20px 24px;
+  min-width: 0;
+  color: var(--ecc-text);
+}
+
+/* -- header -------------------------------------------------------------- */
+.pk-header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.pk-crumbs { margin: 0 0 4px; font-size: 12px; color: var(--ecc-text-muted); }
+.pk-crumbs a { color: inherit; text-decoration: none; }
+.pk-crumbs a:hover { color: var(--ecc-text); }
+.pk-title { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+.pk-subtitle { margin: 2px 0 0; font-size: 13px; color: var(--ecc-text-muted); max-width: 760px; }
+.pk-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pk-meta { font-size: 12px; color: var(--ecc-text-muted); }
+
+/* -- stat strip -------------------------------------------------------- */
+.pk-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+
+/* -- grid of panels ------------------------------------------------------ */
+.pk-grid { display: grid; gap: 16px; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+.pk-col-3 { grid-column: span 3; }
+.pk-col-4 { grid-column: span 4; }
+.pk-col-5 { grid-column: span 5; }
+.pk-col-6 { grid-column: span 6; }
+.pk-col-7 { grid-column: span 7; }
+.pk-col-8 { grid-column: span 8; }
+.pk-col-12 { grid-column: 1 / -1; }
+@media (max-width: 1279px) {
+  .pk-col-3, .pk-col-4 { grid-column: span 6; }
+  .pk-col-5, .pk-col-6, .pk-col-7, .pk-col-8 { grid-column: 1 / -1; }
+}
+@media (max-width: 767px) {
+  .pk-page { padding: 12px 16px 20px; }
+  .pk-grid > * { grid-column: 1 / -1 !important; }
+}
+
+/* -- toolbar ------------------------------------------------------------- */
+.pk-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pk-toolbar__spacer { flex: 1; }
+.pk-search {
+  position: relative; flex: 1 1 260px; max-width: 420px;
+}
+.pk-search input {
+  width: 100%; height: 32px; padding: 0 10px 0 30px;
+  font: inherit; font-size: 13px; color: var(--ecc-text);
+  background: var(--ecc-surface); border: 1px solid var(--ecc-border-strong); border-radius: 8px;
+}
+.pk-search input:focus { outline: none; border-color: var(--ecc-accent); }
+.pk-search svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--ecc-text-muted); }
+.pk-input {
+  height: 32px; padding: 0 10px; font: inherit; font-size: 13px; color: var(--ecc-text);
+  background: var(--ecc-surface); border: 1px solid var(--ecc-border-strong); border-radius: 8px;
+}
+.pk-input:focus { outline: none; border-color: var(--ecc-accent); }
+textarea.pk-input { height: auto; padding: 8px 10px; min-height: 72px; }
+.pk-count { font-size: 12px; color: var(--ecc-text-muted); }
+
+/* segmented tabs */
+.pk-tabs { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--ecc-border); border-radius: 8px; background: var(--ecc-surface); }
+.pk-tab {
+  height: 28px; padding: 0 12px; border: 0; border-radius: 6px; cursor: pointer;
+  font: inherit; font-size: 13px; color: var(--ecc-text-muted); background: transparent;
+}
+.pk-tab:hover { color: var(--ecc-text); }
+.pk-tab[aria-selected="true"] { color: var(--ecc-text); background: var(--ecc-surface-raised); box-shadow: inset 0 -2px 0 var(--ecc-accent); }
+
+/* -- data table ---------------------------------------------------------- */
+.pk-table-wrap { overflow: auto; border: 1px solid var(--ecc-border); border-radius: 8px; }
+.pk-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.pk-table thead th {
+  position: sticky; top: 0; z-index: 1;
+  padding: 8px 12px; text-align: left; white-space: nowrap;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.02em; color: var(--ecc-text-muted);
+  background: var(--ecc-surface-raised); border-bottom: 1px solid var(--ecc-border);
+}
+.pk-table th.pk-num, .pk-table td.pk-num { text-align: right; font-variant-numeric: tabular-nums; }
+.pk-table th button { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.pk-table th button:hover { color: var(--ecc-text); }
+.pk-table th button:focus-visible { outline: 2px solid var(--ecc-accent); outline-offset: 2px; border-radius: 3px; }
+.pk-table tbody td { padding: 7px 12px; border-bottom: 1px solid var(--ecc-border); vertical-align: middle; }
+.pk-table tbody tr:last-child td { border-bottom: 0; }
+.pk-table tbody tr:hover { background: var(--ecc-surface-raised); }
+.pk-table tbody tr.pk-row--link { cursor: pointer; }
+.pk-table .pk-muted { color: var(--ecc-text-muted); }
+.pk-table .pk-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.pk-cell-main { display: block; font-size: 13px; font-weight: 500; }
+.pk-table .pk-cell-main, .pk-table .pk-cell-sub { white-space: nowrap; }
+.pk-cell-sub { display: block; font-size: 11px; color: var(--ecc-text-muted); margin-top: 1px; }
+.pk-truncate { display: block; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pk-table-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 8px; font-size: 12px; color: var(--ecc-text-muted); }
+
+/* -- pills ----------------------------------------------------------------- */
+.pk-pill {
+  display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; white-space: nowrap; border: 1px solid currentColor;
+}
+.pk-pill__dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pk-pill--good { color: var(--ecc-good); }
+.pk-pill--warn { color: var(--ecc-warn); }
+.pk-pill--bad { color: var(--ecc-bad); }
+.pk-pill--info { color: var(--ecc-accent); }
+.pk-pill--neutral { color: var(--ecc-text-muted); }
+
+/* -- list rows (sources, alerts) ---------------------------------------------- */
+.pk-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.pk-list > li { display: flex; align-items: center; gap: 12px; padding: 9px 4px; border-bottom: 1px solid var(--ecc-border); min-width: 0; }
+.pk-list > li:last-child { border-bottom: 0; }
+.pk-list__main { flex: 1; min-width: 0; }
+.pk-list__aside { flex-shrink: 0; font-size: 12px; color: var(--ecc-text-muted); text-align: right; }
+
+/* -- tiles grid (reports, capabilities) ---------------------------------------- */
+.pk-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.pk-tile {
+  display: flex; flex-direction: column; gap: 8px; padding: 14px;
+  background: var(--ecc-surface); border: 1px solid var(--ecc-border); border-radius: var(--ecc-radius);
+  color: inherit; text-decoration: none;
+}
+a.pk-tile:hover { border-color: var(--ecc-accent); }
+.pk-tile__icon { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; background: var(--ecc-surface-raised); color: var(--ecc-accent); }
+.pk-tile__title { margin: 0; font-size: 14px; font-weight: 600; }
+.pk-tile__desc { margin: 0; font-size: 12px; color: var(--ecc-text-muted); flex: 1; }
+.pk-tile__cta { font-size: 12px; color: var(--ecc-accent); }
+
+/* -- forms ------------------------------------------------------------------ */
+.pk-form { display: grid; gap: 12px; max-width: 640px; }
+.pk-field { display: grid; gap: 4px; }
+.pk-field label { font-size: 12px; font-weight: 600; color: var(--ecc-text-muted); }
+.pk-field small { font-size: 11px; color: var(--ecc-text-muted); }
+.pk-switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.pk-switch input { width: 16px; height: 16px; accent-color: var(--ecc-accent); }
+.pk-button {
+  height: 32px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  font: inherit; font-size: 13px; color: var(--ecc-text); background: var(--ecc-surface);
+  border: 1px solid var(--ecc-border-strong); border-radius: 8px; text-decoration: none;
+}
+.pk-button:hover { border-color: var(--ecc-accent); }
+.pk-button:disabled { opacity: 0.55; cursor: not-allowed; }
+.pk-button--primary { background: var(--ecc-accent); border-color: var(--ecc-accent); color: #fff; }
+.pk-button--primary:hover { filter: brightness(1.08); }
+.pk-banner {
+  display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border-radius: 8px; font-size: 13px;
+  border: 1px solid currentColor; background: color-mix(in srgb, currentColor 8%, transparent);
+}
+.pk-banner--warn { color: var(--ecc-warn); }
+.pk-banner--bad { color: var(--ecc-bad); }
+.pk-banner--good { color: var(--ecc-good); }
+.pk-banner--info { color: var(--ecc-accent); }
+.pk-banner span { color: var(--ecc-text); }
+
+/* -- tree (organization) -------------------------------------------------------- */
+.pk-tree { list-style: none; margin: 0; padding: 0; }
+.pk-tree ul { list-style: none; margin: 0; padding-left: 22px; border-left: 1px dashed var(--ecc-border-strong); margin-left: 11px; }
+.pk-tree__row { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 8px; min-width: 0; }
+.pk-tree__row:hover { background: var(--ecc-surface-raised); }
+.pk-tree__toggle { all: unset; cursor: pointer; width: 18px; height: 18px; display: grid; place-items: center; color: var(--ecc-text-muted); border-radius: 4px; }
+.pk-tree__toggle:focus-visible { outline: 2px solid var(--ecc-accent); }
+.pk-tree__icon { width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center; background: var(--ecc-surface-raised); color: var(--ecc-accent); flex-shrink: 0; }
+.pk-tree__name { font-weight: 600; font-size: 13px; }
+.pk-tree__meta { font-size: 11px; color: var(--ecc-text-muted); }
+.pk-tree__actions { margin-left: auto; display: flex; gap: 6px; }

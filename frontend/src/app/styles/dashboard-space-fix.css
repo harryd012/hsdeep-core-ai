@@ -1,0 +1,414 @@
+/* ============================================================================
+ * HSDEEP CORE AI - SPACE UTILISATION PASS
+ *
+ * Additive override layer, imported LAST from src/app/(dashboard)/layout.tsx.
+ * Purpose: remove dead space on wide monitors (the reference viewport is
+ * ~2560px). CSS only - no data, markup or behaviour changes.
+ *
+ * Root causes addressed:
+ *   - hard `max-width: 960px` caps on the NOC / SOC KPI grids
+ *   - `auto-fill` grids that leave empty tracks instead of stretching
+ *   - Alert Summary clipped at max-height 280px (top alerts + "View all" hidden)
+ *   - AI Copilot column stretched to the height of a neighbour but mostly empty
+ *   - bottom command bar whose input never grew past its intrinsic width
+ *   - Issue badge floating over the left edge of page content
+ *
+ * ROLLBACK: delete this file and its import in (dashboard)/layout.tsx.
+ * ========================================================================== */
+
+
+/* ---------------------------------------------------------------------------
+ * 1. ROW 1 - NOC KPI grid + Assets Summary
+ *    Was: KPI grid capped at 960px (3 cols), assets tiles capped at 180px.
+ *    Now: 60/40 split; KPIs 4 cols (7th card spans 2) and 7 in one row on
+ *    very wide screens; both panels stretch to the same height.
+ * ------------------------------------------------------------------------- */
+
+.hs-dashboard .unified-health-row {
+  align-items: stretch;
+}
+
+.hs-dashboard .unified-health-row__kpi {
+  display: flex;
+  flex-direction: column;
+}
+
+.hs-dashboard .unified-health-row__kpi > .op-health {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.hs-dashboard .unified-health-row .op-health__strip {
+  flex: 1 1 auto;
+  max-width: none;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-auto-rows: minmax(84px, 1fr);
+  align-items: stretch;
+}
+
+/* The KPI <li> and its inner link both drew a border + padding (double frame).
+   Keep the <li> as the single card and let the link fill it. */
+.hs-dashboard .unified-health-row .op-health__kpi {
+  min-height: 84px;
+  max-height: none;
+  padding: 0;
+}
+
+.hs-dashboard .unified-health-row .op-health__link {
+  height: 100%;
+  padding: 10px 12px;
+  gap: 2px;
+  justify-content: center;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.hs-dashboard .unified-health-row__assets .assets-summary {
+  height: 100%;
+  justify-content: center;
+}
+
+.hs-dashboard .assets-summary__tiles {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 6px;
+}
+
+@media (min-width: 1311px) {
+  .hs-dashboard .unified-health-row {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+
+  .hs-dashboard .unified-health-row .op-health__strip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  /* 7 cards in 4 columns leaves a hole after the 7th - let it span two. */
+  .hs-dashboard .unified-health-row .op-health__strip > li:last-child:nth-child(4n + 3) {
+    grid-column: span 2;
+  }
+}
+
+@media (min-width: 2300px) {
+  .hs-dashboard .unified-health-row .op-health__strip {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+
+  .hs-dashboard .unified-health-row .op-health__strip > li:last-child:nth-child(4n + 3) {
+    grid-column: auto;
+  }
+}
+
+
+/* ---------------------------------------------------------------------------
+ * 2. ROW 2 - Alert Summary + Security Overview (SOC)
+ *    Was: Alert Summary clipped at 280px; SOC KPI grid capped at 960px.
+ *    Now: no clipping; on >=1500px donut+legend sit beside the alert list;
+ *    SOC KPI cards fill the full column and match the Alert Summary height.
+ * ------------------------------------------------------------------------- */
+
+@media (min-width: 1200px) {
+  .hs-dashboard .alert-soc-row {
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  }
+}
+
+.hs-dashboard .alert-soc-row .alert-summary {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+}
+
+.hs-dashboard .alert-summary .alert-summary__list {
+  max-height: 260px;
+}
+
+@media (min-width: 1500px) {
+  .hs-dashboard .alert-summary .panel-body:has(> .alert-summary__top) {
+    display: grid;
+    grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
+    grid-template-rows: auto auto 1fr;
+    column-gap: 20px;
+    row-gap: 6px;
+    align-items: start;
+  }
+
+  .hs-dashboard .alert-summary .alert-summary__donut {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: center;
+    width: 112px;
+    height: 112px;
+  }
+
+  .hs-dashboard .alert-summary .alert-summary__legend {
+    grid-column: 1;
+    grid-row: 2;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+  }
+
+  .hs-dashboard .alert-summary .alert-summary__raw-count {
+    grid-column: 1;
+    grid-row: 3;
+    text-align: center;
+  }
+
+  .hs-dashboard .alert-summary .alert-summary__top {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    min-width: 0;
+  }
+}
+
+.hs-dashboard .alert-soc-row__soc .soc-kpis {
+  flex: 1 1 auto;
+  max-width: none;
+  grid-template-rows: repeat(2, minmax(72px, 1fr));
+  align-content: stretch;
+  align-items: stretch;
+}
+
+.hs-dashboard .alert-soc-row__soc .soc-kpi {
+  max-height: none;
+}
+
+
+/* ---------------------------------------------------------------------------
+ * 3. ROW 3 - AI Operations
+ *    Was: AI CTO summary and AI Copilot side by side; the Copilot column was
+ *    ~70% empty (chips + one input) yet stretched to the summary's height.
+ *    Now: Copilot is a slim full-width bar on top; the AI CTO summary below
+ *    uses two columns (metrics + focus | recommendations).
+ * ------------------------------------------------------------------------- */
+
+.hs-dashboard .unified-ai-row__ai {
+  display: flex;
+  flex-direction: column;
+}
+
+.hs-dashboard .unified-ai-row__ai > .ai-ops {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.hs-dashboard .hs-zone--ai .ai-ops > .ai-ops__grid {
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
+  gap: 8px;
+}
+
+/* Copilot: one wrapping row - title, quick actions, input, workspace link. */
+.hs-dashboard .hs-zone--ai .ai-ops > .ai-ops__grid > .ai-ops__copilot {
+  order: -1;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 6px 10px;
+}
+
+.hs-dashboard .hs-zone--ai .ai-ops__copilot h3 {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.hs-dashboard .hs-zone--ai .ai-ops__copilot .ai-ops__actions {
+  flex: 0 1 auto;
+  margin: 0;
+}
+
+.hs-dashboard .hs-zone--ai .ai-ops__copilot .ai-ops__chat {
+  flex: 1 1 300px;
+}
+
+.hs-dashboard .hs-zone--ai .ai-ops__copilot .ai-ops__workspace-link {
+  order: 1;
+  margin: 0;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.hs-dashboard .hs-zone--ai .ai-ops__copilot .ai-ops__answer,
+.hs-dashboard .hs-zone--ai .ai-ops__copilot .ai-ops__rec {
+  order: 2;
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+/* AI CTO summary: header across the top, then two columns. */
+.hs-dashboard .hs-zone--ai .ai-ops > .ai-ops__grid > .ai-ops__summary {
+  display: grid;
+  grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+  grid-template-areas:
+    "cto     cto"
+    "metrics recs"
+    "focus   recs"
+    "updated recs";
+  grid-template-rows: auto auto auto 1fr;
+  column-gap: 16px;
+  row-gap: 6px;
+  align-content: start;
+}
+
+.hs-dashboard .hs-zone--ai .ai-ops__summary > .ai-ops__cto {
+  grid-area: cto;
+  margin: 0;
+}
+
+.hs-dashboard .hs-zone--ai .ai-ops__summary > .ai-ops__metrics {
+  grid-area: metrics;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.hs-dashboard .hs-zone--ai .ai-ops__summary > .ai-ops__focus {
+  grid-area: focus;
+}
+
+.hs-dashboard .hs-zone--ai .ai-ops__summary > .ai-ops__recommendations {
+  grid-area: recs;
+  min-width: 0;
+}
+
+.hs-dashboard .hs-zone--ai .ai-ops__summary > .ai-ops__updated {
+  grid-area: updated;
+  margin: 0;
+}
+
+/* Narrower left column: stack the summary instead of squeezing two columns. */
+@media (max-width: 1399px) {
+  .hs-dashboard .hs-zone--ai .ai-ops > .ai-ops__grid > .ai-ops__summary {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "cto"
+      "metrics"
+      "focus"
+      "recs"
+      "updated";
+    grid-template-rows: none;
+  }
+
+  .hs-dashboard .hs-zone--ai .ai-ops__summary > .ai-ops__metrics {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 540px) {
+  .hs-dashboard .hs-zone--ai .ai-ops__summary > .ai-ops__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* AI CTO topology (also used on /ai-copilot, so intentionally NOT scoped to
+   .hs-dashboard): stat tiles and department cards stretch instead of stopping
+   at a fixed max width / leaving empty auto-fill tracks. */
+.org-cto__metrics {
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+}
+
+.org-compact__depts {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+
+/* ---------------------------------------------------------------------------
+ * 4. SHELL - bottom command bar + issue badge (every page)
+ *    Was: `.command-center__input` had no styles, so the input kept its
+ *    intrinsic ~150px width inside a full-width bar; the Issue badge sat on
+ *    top of the left edge of page content.
+ * ------------------------------------------------------------------------- */
+
+.command-center__chat {
+  max-width: 1280px;
+  margin-inline: auto;
+}
+
+.command-center__input {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.375rem;
+}
+
+.command-center__chat .command-center__input > svg {
+  flex: none;
+  color: var(--cyan);
+}
+
+.command-center__chat .command-center__input input {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
+}
+
+.command-center__chat .command-center__input button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  margin-top: 0;
+  padding: 0.4375rem 0.625rem;
+}
+
+.command-center__chat .command-center__input button[type="button"] {
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+/* Pin the badge to the right edge so it no longer covers page content. */
+.issue-badge {
+  left: auto;
+  right: 1rem;
+}
+
+
+/* ---------------------------------------------------------------------------
+ * 5. NETWORK INTELLIGENCE (/infrastructure)
+ *    The SASE pipeline (6 stacked rows) made its card ~1.5x the height of the
+ *    SD-WAN and Recommendation cards, leaving empty space under both. On wide
+ *    screens lay the pipeline out in two columns so the three cards balance.
+ * ------------------------------------------------------------------------- */
+
+@media (min-width: 1900px) {
+  .ni-pipeline {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+}
+
+
+/* ---------------------------------------------------------------------------
+ * 6. SECURITY OPERATIONS ROW (dashboard)
+ *    The PHASE 2 refactor collapsed the three-column SOC row (Analytics | Ops |
+ *    Side) into a single tabbed `SecurityOperationsPanel`, but the base
+ *    `.unified-soc-row` grid (`50fr 28fr 22fr`) was left behind. With only one
+ *    child, the tabbed panel occupied the first 50% column and the other two
+ *    columns rendered as dead horizontal space on wide viewports.
+ *    Now: a single full-width column so the events / incidents / asset-health
+ *    tables and timelines use the whole row.
+ * ------------------------------------------------------------------------- */
+.hs-dashboard .unified-soc-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* The tabbed body must be able to fill the (now full-width) row without its
+   own intrinsic max-width pinning it to a narrow column. */
+.hs-dashboard .unified-soc-row .soc-ops-tabs {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.hs-dashboard .unified-soc-row .soc-ops-tabs__body {
+  min-width: 0;
+}

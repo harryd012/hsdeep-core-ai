@@ -27,6 +27,7 @@ import { buildKpis } from "../../lib/topology/kpis";
 import {
   fitViewport,
   layoutNodes,
+  linkedNodeIds,
   type LayoutKind,
   type Viewport,
 } from "../../lib/topology/layout";
@@ -393,7 +394,7 @@ function filterModel(model: RenderModel, filters: TopologyFilters, query: string
 export default function OperationalTopologyPanel() {
   // View state lives here, so a refresh updates DATA without resetting the view.
   const [viewportOverride, setViewportOverride] = useState<Viewport | null>(null);
-  const [layout, setLayout] = useState<LayoutKind>("hierarchical");
+  const [layout, setLayout] = useState<LayoutKind>("connected-first");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [queryText, setQueryText] = useState("");
@@ -448,9 +449,12 @@ export default function OperationalTopologyPanel() {
 
   const positions = useMemo(() => {
     const placed = layoutNodes(
-      visible.nodes.map((node) => ({ id: node.id, siteId: node.siteId, type: node.kind })),
+      visible.nodes.map((node) => ({ id: node.id, siteId: node.siteId, type: node.kind, group: node.state })),
       visible.edges.map((edge) => ({ source: edge.source, target: edge.target })),
-      layout
+      layout,
+      {},
+      // Worst first, so the devices that need attention sit right under the map.
+      ["OFFLINE", "WARNING", "STALE", "UNKNOWN", "MAINTENANCE", "ONLINE"]
     );
     return new Map(placed.map((entry) => [entry.id, { x: entry.x, y: entry.y }]));
   }, [visible, layout]);
@@ -570,6 +574,11 @@ export default function OperationalTopologyPanel() {
   const kpis = useMemo(() => (model ? buildKpis(model.summary) : []), [model]);
 
   const nodeCount = visible.nodes.length;
+  const unlinkedCount = useMemo(() => {
+    const devices = visible.nodes.filter((node) => node.kind !== "site");
+    const linked = linkedNodeIds(devices, visible.edges);
+    return devices.filter((node) => !linked.has(node.id)).length;
+  }, [visible]);
   const edgeCount = visible.edges.length;
   /**
    * Zero relationships means the honest empty state applies. Real device nodes
@@ -806,6 +815,17 @@ export default function OperationalTopologyPanel() {
           resultCount={nodeCount}
           totalCount={model.nodes.filter((node) => node.kind !== "site").length}
         />
+      ) : null}
+
+      {model && layout === "connected-first" && unlinkedCount > 0 ? (
+        <p
+          role="status"
+          style={{ margin: "0 0 8px", fontSize: 12, color: "var(--ecc-text-muted, var(--muted))" }}
+        >
+          {unlinkedCount} of {visible.nodes.filter((node) => node.kind !== "site").length} devices have no recorded
+          relationship yet. Linked devices are drawn as a hierarchy at the top; unlinked devices are grouped
+          below by state, worst first. Run discovery with LLDP/CDP or add relationships to connect them.
+        </p>
       ) : null}
 
       <div
