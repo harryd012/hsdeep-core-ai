@@ -20,6 +20,18 @@ export const LAYOUTS: readonly { kind: LayoutKind; label: string; hint: string }
   { kind: "site-grouped", label: "Site grouped", hint: "One cluster per site." },
 ];
 
+/**
+ * What the Layout menu offers: the Meraki-style tree (laid out by
+ * `tree.ts`, which lists unconnected devices instead of placing them) plus the
+ * general layouts above.
+ */
+export type ViewKind = "tree" | LayoutKind;
+
+export const VIEWS: readonly { kind: ViewKind; label: string; hint: string }[] = [
+  { kind: "tree", label: "Tree (L2)", hint: "Upstream on the left, one column per hop; unconnected devices listed aside." },
+  ...LAYOUTS,
+];
+
 export interface LayoutNode {
   id: string;
   /** Site grouping key. Null/undefined means the resource has no site. */

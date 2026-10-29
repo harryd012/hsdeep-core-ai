@@ -52,27 +52,27 @@ test("all five link states exist and are visually distinguishable", () => {
 
 test("online is visibly green", () => {
   assert.equal(deviceState({ operationalState: "up", freshnessState: "fresh" }), "ONLINE");
-  assert.equal(DEVICE_STATE_VISUALS.ONLINE.color, "var(--green)");
+  assert.equal(DEVICE_STATE_VISUALS.ONLINE.color, "var(--green, #22c55e)");
 });
 
 test("warning is amber from degradation or a bad health bucket", () => {
   assert.equal(deviceState({ operationalState: "degraded" }), "WARNING");
   assert.equal(deviceState({ operationalState: "up", health: "critical" }), "WARNING");
   assert.equal(deviceState({ operationalState: "up", health: "warning" }), "WARNING");
-  assert.equal(DEVICE_STATE_VISUALS.WARNING.color, "var(--amber)");
+  assert.equal(DEVICE_STATE_VISUALS.WARNING.color, "var(--amber, #eab308)");
   // A reachable device with a critical health bucket is NOT reported as offline.
   assert.notEqual(deviceState({ operationalState: "up", health: "critical" }), "OFFLINE");
 });
 
 test("offline is red from a stored down state", () => {
   assert.equal(deviceState({ operationalState: "down" }), "OFFLINE");
-  assert.equal(DEVICE_STATE_VISUALS.OFFLINE.color, "var(--red)");
+  assert.equal(DEVICE_STATE_VISUALS.OFFLINE.color, "var(--red, #ef4444)");
 });
 
 test("unknown is grey when nothing has been established", () => {
   assert.equal(deviceState({ operationalState: "unknown" }), "UNKNOWN");
   assert.equal(deviceState({}), "UNKNOWN");
-  assert.equal(DEVICE_STATE_VISUALS.UNKNOWN.color, "var(--muted)");
+  assert.equal(DEVICE_STATE_VISUALS.UNKNOWN.color, "var(--muted, #64748b)");
 });
 
 test("stale is muted and requires old telemetry", () => {
@@ -84,7 +84,7 @@ test("stale is muted and requires old telemetry", () => {
     deviceState({ operationalState: "unknown", freshnessState: "expired" }),
     "STALE"
   );
-  assert.equal(DEVICE_STATE_VISUALS.STALE.color, "var(--muted)");
+  assert.equal(DEVICE_STATE_VISUALS.STALE.color, "var(--muted, #64748b)");
   assert.ok(DEVICE_STATE_VISUALS.STALE.dash.length > 0);
 });
 

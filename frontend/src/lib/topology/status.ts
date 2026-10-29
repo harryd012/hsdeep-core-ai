@@ -38,7 +38,7 @@ export const DEVICE_STATE_VISUALS: Record<DeviceState, StateVisual<DeviceState>>
   ONLINE: {
     state: "ONLINE",
     label: "Online",
-    color: "var(--green)",
+    color: "var(--green, #22c55e)",
     dash: "",
     marker: "dot",
     description: "Reachable and operating normally.",
@@ -46,7 +46,7 @@ export const DEVICE_STATE_VISUALS: Record<DeviceState, StateVisual<DeviceState>>
   WARNING: {
     state: "WARNING",
     label: "Warning",
-    color: "var(--amber)",
+    color: "var(--amber, #eab308)",
     dash: "",
     marker: "triangle",
     description:
@@ -55,7 +55,7 @@ export const DEVICE_STATE_VISUALS: Record<DeviceState, StateVisual<DeviceState>>
   OFFLINE: {
     state: "OFFLINE",
     label: "Offline",
-    color: "var(--red)",
+    color: "var(--red, #ef4444)",
     dash: "",
     marker: "square",
     description: "The stored operational state is down.",
@@ -63,7 +63,7 @@ export const DEVICE_STATE_VISUALS: Record<DeviceState, StateVisual<DeviceState>>
   UNKNOWN: {
     state: "UNKNOWN",
     label: "Unknown",
-    color: "var(--muted)",
+    color: "var(--muted, #64748b)",
     dash: "",
     marker: "ring",
     description: "No operational state has been established for this resource.",
@@ -71,7 +71,7 @@ export const DEVICE_STATE_VISUALS: Record<DeviceState, StateVisual<DeviceState>>
   STALE: {
     state: "STALE",
     label: "Data stale",
-    color: "var(--muted)",
+    color: "var(--muted, #64748b)",
     dash: "2 3",
     marker: "hex",
     description:
@@ -80,7 +80,7 @@ export const DEVICE_STATE_VISUALS: Record<DeviceState, StateVisual<DeviceState>>
   MAINTENANCE: {
     state: "MAINTENANCE",
     label: "Maintenance",
-    color: "var(--muted)",
+    color: "var(--muted, #64748b)",
     dash: "",
     marker: "hex",
     description: "Deliberately out of service (maintenance lifecycle or health).",
@@ -91,7 +91,7 @@ export const LINK_STATE_VISUALS: Record<LinkState, StateVisual<LinkState>> = {
   UP: {
     state: "UP",
     label: "Up",
-    color: "var(--green)",
+    color: "var(--green, #22c55e)",
     dash: "",
     marker: "dot",
     description: "The recorded relationship state is active.",
@@ -99,7 +99,7 @@ export const LINK_STATE_VISUALS: Record<LinkState, StateVisual<LinkState>> = {
   DOWN: {
     state: "DOWN",
     label: "Down",
-    color: "var(--red)",
+    color: "var(--red, #ef4444)",
     dash: "6 4",
     marker: "square",
     description:
@@ -108,7 +108,7 @@ export const LINK_STATE_VISUALS: Record<LinkState, StateVisual<LinkState>> = {
   DEGRADED: {
     state: "DEGRADED",
     label: "Degraded",
-    color: "var(--amber)",
+    color: "var(--amber, #eab308)",
     dash: "10 4",
     marker: "triangle",
     description: "The recorded relationship state is degraded.",
@@ -116,7 +116,7 @@ export const LINK_STATE_VISUALS: Record<LinkState, StateVisual<LinkState>> = {
   UNKNOWN: {
     state: "UNKNOWN",
     label: "Unknown",
-    color: "var(--muted)",
+    color: "var(--muted, #64748b)",
     dash: "1 4",
     marker: "ring",
     description: "No state has been recorded for this relationship.",
@@ -124,7 +124,7 @@ export const LINK_STATE_VISUALS: Record<LinkState, StateVisual<LinkState>> = {
   STALE: {
     state: "STALE",
     label: "Data stale",
-    color: "var(--muted)",
+    color: "var(--muted, #64748b)",
     dash: "3 3",
     marker: "hex",
     description:
