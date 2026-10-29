@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_tenant_id
+from app.core.auth import get_tenant_id, require_permission
 from app.core.db import get_db
 from app.core.entitlements import require_active_subscription
 from app.models.ai_diagnosis import AIDiagnosis
@@ -22,7 +22,7 @@ def get_ai_diagnosis_service(session: AsyncSession = Depends(get_db)) -> AiDiagn
     return AiDiagnosisService(AiDiagnosisRepository(session))
 
 
-@router.post("/", response_model=AiDiagnosisRead, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=AiDiagnosisRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_permission("incidents.write"))])
 async def create_diagnosis(
     diagnosis_data: AiDiagnosisCreate,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -80,7 +80,7 @@ async def get_diagnosis_by_noc_event(
     return diagnosis
 
 
-@router.patch("/{diagnosis_id}", response_model=AiDiagnosisRead)
+@router.patch("/{diagnosis_id}", response_model=AiDiagnosisRead, dependencies=[Depends(require_permission("incidents.write"))])
 async def update_diagnosis(
     diagnosis_id: uuid.UUID,
     diagnosis_data: AiDiagnosisUpdate,
@@ -94,7 +94,7 @@ async def update_diagnosis(
         raise HTTPException(status_code=404, detail="AI diagnosis not found")
 
 
-@router.delete("/{diagnosis_id}")
+@router.delete("/{diagnosis_id}", dependencies=[Depends(require_permission("incidents.write"))])
 async def delete_diagnosis(
     diagnosis_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),

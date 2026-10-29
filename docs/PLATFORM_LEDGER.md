@@ -87,3 +87,93 @@ Files: `backend/app/core/config.py` (`metrics_bearer_token`),
 
 `/ai-cto` was left public: it returns the same up/down dependency states as
 the public `/health` probe and no tenant data.
+
+## Batch 3: RBAC on every mutating route
+
+Outcome: every POST/PUT/PATCH/DELETE route under `/api` requires a catalog
+permission, except 9 that authenticate another way (login/refresh/logout,
+signup, Stripe and ServiceNow webhooks with signatures, collector
+registration with an enrollment token, ingest with a collector credential).
+Approvals and rejections are attributed to the authenticated user.
+
+Found: 89 write routes checked only the tenant. Any signed-in user of a
+tenant, including Viewer, could resolve/close incidents, delete monitoring
+sources, approve runbook and workflow executions, approve SOP versions,
+configure ServiceNow, and the approver id was taken from the request body.
+
+Files:
+- `backend/app/core/permissions.py`: 11 new codes for the newly guarded
+  routes (`sops.approve`, `runbooks.write`, `runbooks.approve`,
+  `workflows.write`, `workflows.approve`, `integrations.write`, `noc.write`,
+  `topology.write`, `tasks.write`, `agents.write`, `changes.write`) plus 5
+  codes that 46 existing routes already required but that were missing from
+  the catalog, so no role could hold them (`tickets.write`,
+  `tickets.execute`, `itsm.write`, `billing.write`, `billing.read`): until
+  now only superusers could create tickets, view or change the
+  subscription, see onboarding status or configure ITSM. Operator also gets
+  `noc.write`, `tasks.write`, `changes.write`, `tickets.write`,
+  `tickets.execute`; Viewer gets `billing.read`. Approval codes are
+  Owner/Admin only.
+- `backend/alembic/versions/c4e8a1f3d7b2_add_write_and_approval_permissions.py`:
+  seeds the codes and backfills existing tenants' Owner/Admin/Operator roles
+  (same pattern as `b7d2e4f6a8c1`); downgrade removes grants then codes.
+- 21 route modules under `backend/app/api/routes/`: a
+  `Depends(require_permission(...))` on each guarded route's decorator.
+- `backend/app/core/auth.py`: `get_acting_user_id` (403 for API keys, which
+  have no user identity); runbook, workflow and SOP approve/reject handlers
+  use it. The body `approved_by`/`rejected_by` fields are still accepted and
+  ignored, so existing clients do not break.
+- `backend/tests/test_rbac_write_routes.py`: a route-table guard (no write
+  route without a permission, every code in the catalog, Viewer reaches only
+  the two read-only POSTs), HTTP 403-then-pass checks, approver attribution,
+  API key approval refusal.
+
+Behaviour change: Operator users can no longer approve runbook/workflow
+executions or SOP/workflow versions (segregation of duties); an Owner or
+Admin approves. Read-only POSTs (`/api/copilot/chat` needs
+`incidents.read`, `/api/network-intelligence/evaluate` needs `devices.read`).
+
+## Batch 4: incident recovery check
+
+Outcome: `GET /api/incidents/{id}/recovery-check` answers "did it recover,
+and what is the evidence?" from persisted telemetry. Member alerts must be
+resolved; the alerts' sensors and the affected devices must report up with
+an observation newer than `since` (default: the incident's last alert).
+Stale or missing telemetry is `inconclusive`, never recovered. Read-only.
+The Incidents page runs the check before "Recover" and asks the operator to
+confirm, listing the failing and unverified checks, when it does not pass.
+
+Found: the automated lifecycle publishes `VALIDATION_STARTED` after an SOP
+completes, but nothing consumes it or ever publishes `VALIDATION_PASSED`,
+and `_on_sop_completed` starts validation even when the SOP failed. The
+orchestrator is deliberately not started in any runtime mode
+(`app/main.py` `_start_rca_consumers`), so this does not close incidents
+today; it must be fixed before automated remediation is enabled.
+
+Files: `backend/app/services/recovery_check.py`,
+`backend/app/schemas/incident.py` (`RecoveryCheckOut`),
+`backend/app/api/routes/incidents.py`, `backend/tests/test_recovery_check.py`
+(6 tests), `frontend/src/lib/incidents/recovery.ts`,
+`frontend/src/lib/api.ts` (`getIncidentRecoveryCheck`),
+`frontend/src/app/(dashboard)/incidents/page.tsx`,
+`frontend/tests/incidents/recovery.test.ts` (3 tests).
+
+## Handoff
+
+Branch `feat/platform-buildout-b1` (worktree `quirky-nightingale-9ab069`).
+
+Remaining blockers: items 2, 3 and 5 of the top five (uncommitted main
+checkout work and the edge agent; no reachable PRTG or credentials).
+
+Next task, in order:
+1. Consume `VALIDATION_STARTED` with `check_incident_recovery` (poll until
+   recovered or a timeout, with a stability window), publish
+   `VALIDATION_PASSED`/`VALIDATION_FAILED` with the checks as evidence, and
+   skip validation when `SOP_COMPLETED.success` is false.
+2. `POST /api/alerts/{id}/acknowledge` and incident acknowledge still take
+   the actor id from the body (the UI sends the nil UUID); attribute them to
+   the principal like approvals.
+3. Read routes: GETs are tenant-scoped but most check no `.read` code;
+   decide whether Viewer-only scoping is enough or guard them too.
+4. Staleness in health scores: an "up" sensor with an old `last_value_at`
+   still scores 100 (the recovery check already treats it as stale).

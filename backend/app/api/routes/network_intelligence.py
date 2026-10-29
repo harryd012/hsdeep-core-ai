@@ -20,7 +20,7 @@ import uuid
 
 from fastapi import APIRouter, Depends
 
-from app.core.auth import get_tenant_id
+from app.core.auth import get_tenant_id, require_permission
 from app.services.network_intelligence import correlate_flow
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ class EvaluateIn(BaseModel):
     incident_context: dict = Field(default_factory=dict)
 
 
-@router.post("/evaluate")
+@router.post("/evaluate", dependencies=[Depends(require_permission("devices.read"))])
 async def evaluate_flow(
     payload: EvaluateIn,
     tenant_id: uuid.UUID = Depends(get_tenant_id),

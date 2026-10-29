@@ -93,7 +93,7 @@ class SOPVersionCreate(BaseModel):
 
 
 class SOPVersionApproveRequest(BaseModel):
-    approved_by: uuid.UUID | None = None
+    approved_by: uuid.UUID | None = None  # ignored: attributed to the authenticated user
 
 
 class SOPRecommendationOut(BaseModel):

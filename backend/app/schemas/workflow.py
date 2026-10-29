@@ -76,7 +76,7 @@ class WorkflowNewVersionRequest(BaseModel):
 
 
 class WorkflowApproveRequest(BaseModel):
-    approved_by: uuid.UUID | None = None
+    approved_by: uuid.UUID | None = None  # ignored: attributed to the authenticated user
 
 
 class WorkflowExecutionOut(BaseModel):
@@ -139,13 +139,13 @@ class WorkflowExecutionRequest(BaseModel):
 
 class WorkflowExecutionApproveRequest(BaseModel):
     node_id: str
-    approved_by: uuid.UUID | None = None
+    approved_by: uuid.UUID | None = None  # ignored: attributed to the authenticated user
     comment: str | None = None
 
 
 class WorkflowExecutionRejectRequest(BaseModel):
     node_id: str
-    rejected_by: uuid.UUID | None = None
+    rejected_by: uuid.UUID | None = None  # ignored: attributed to the authenticated user
     reason: str
 
 

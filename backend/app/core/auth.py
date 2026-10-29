@@ -476,6 +476,25 @@ def get_tenant_id(principal: Principal = Depends(get_current_user)) -> uuid.UUID
     return principal.tenant_id
 
 
+# API keys authenticate with this nil user id (see _resolve_api_key_principal).
+_NO_USER_ID = uuid.UUID(int=0)
+
+
+def get_acting_user_id(principal: Principal = Depends(get_current_user)) -> uuid.UUID:
+    """The signed-in user an approval or rejection is attributed to.
+
+    Approver identity always comes from the authenticated principal, never
+    from the request body (a client could otherwise name any approver).
+    API keys carry no user identity, so they cannot approve or reject.
+    """
+    if principal.user_id == _NO_USER_ID:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Approvals require a signed-in user; API keys cannot approve or reject.",
+        )
+    return principal.user_id
+
+
 def require_admin(principal: Principal = Depends(get_current_user)) -> Principal:
     """Dependency factory: guard a route so only superusers/admins can access it.
 

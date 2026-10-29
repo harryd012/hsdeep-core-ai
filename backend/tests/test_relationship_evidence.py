@@ -342,7 +342,7 @@ class TestMaterializeEndpoint:
             tenant_id=tenant.id,
             email="p96@hsdeep.local",
             is_superuser=False,
-            permissions=frozenset(),
+            permissions=frozenset({"topology.write"}),
         )
         async with httpx.AsyncClient(
             app=app,

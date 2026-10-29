@@ -11,7 +11,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from app.core.auth import get_tenant_id
+from app.core.auth import get_tenant_id, require_permission
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -85,7 +85,7 @@ async def get_connection(
     return ServiceNowConnectionOut.model_validate(conn)
 
 
-@router.post("/connections", dependencies=[_active_sub_guard], response_model=ServiceNowConnectionOut, status_code=201)
+@router.post("/connections", dependencies=[Depends(require_permission("servicenow.write")), _active_sub_guard], response_model=ServiceNowConnectionOut, status_code=201)
 async def create_connection(
     payload: ServiceNowConnectionCreate,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -142,7 +142,7 @@ async def create_connection(
     return ServiceNowConnectionOut.model_validate(conn)
 
 
-@router.patch("/connections/{conn_id}", dependencies=[_active_sub_guard], response_model=ServiceNowConnectionOut)
+@router.patch("/connections/{conn_id}", dependencies=[Depends(require_permission("servicenow.write")), _active_sub_guard], response_model=ServiceNowConnectionOut)
 async def update_connection(
     conn_id: uuid.UUID,
     payload: ServiceNowConnectionUpdate,
@@ -197,7 +197,7 @@ async def update_connection(
     return ServiceNowConnectionOut.model_validate(conn)
 
 
-@router.delete("/connections/{conn_id}", dependencies=[_active_sub_guard], status_code=204)
+@router.delete("/connections/{conn_id}", dependencies=[Depends(require_permission("servicenow.write")), _active_sub_guard], status_code=204)
 async def delete_connection(
     conn_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -215,7 +215,7 @@ async def delete_connection(
     await db.commit()
 
 
-@router.post("/connections/{conn_id}/test-connection", dependencies=[_active_sub_guard], response_model=ServiceNowConnectionTestOut)
+@router.post("/connections/{conn_id}/test-connection", dependencies=[Depends(require_permission("servicenow.write")), _active_sub_guard], response_model=ServiceNowConnectionTestOut)
 async def test_connection(
     conn_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -303,7 +303,7 @@ async def list_links(
     return [ServiceNowIncidentLinkOut.model_validate(l) for l in links]
 
 
-@router.post("/links/push", dependencies=[_active_sub_guard], response_model=ServiceNowSyncJobOut, status_code=201)
+@router.post("/links/push", dependencies=[Depends(require_permission("servicenow.write")), _active_sub_guard], response_model=ServiceNowSyncJobOut, status_code=201)
 async def push_incident(
     payload: ServiceNowIncidentPushRequest,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -327,7 +327,7 @@ async def push_incident(
     return ServiceNowSyncJobOut.model_validate(job)
 
 
-@router.post("/links/{link_id}/resolve-conflict", dependencies=[_active_sub_guard])
+@router.post("/links/{link_id}/resolve-conflict", dependencies=[Depends(require_permission("servicenow.write")), _active_sub_guard])
 async def resolve_conflict(
     link_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -364,7 +364,7 @@ async def list_jobs(
     return [ServiceNowSyncJobOut.model_validate(j) for j in jobs]
 
 
-@router.post("/jobs/{job_id}/retry", dependencies=[_active_sub_guard])
+@router.post("/jobs/{job_id}/retry", dependencies=[Depends(require_permission("servicenow.write")), _active_sub_guard])
 async def retry_job(
     job_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),

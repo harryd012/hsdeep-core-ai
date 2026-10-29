@@ -50,10 +50,15 @@ PERMISSION_CATALOG: Final[list[tuple[str, str]]] = [
     # SOP / runbook / workflow automation
     ("sops.read", "View SOPs"),
     ("sops.write", "Create/update/delete SOPs"),
+    ("sops.approve", "Approve SOP versions for use"),
     ("runbooks.read", "View runbooks and executions"),
+    ("runbooks.write", "Create runbooks"),
     ("runbooks.execute", "Execute runbooks"),
+    ("runbooks.approve", "Approve or reject runbook executions"),
     ("workflows.read", "View workflows"),
+    ("workflows.write", "Create/version/delete workflows"),
     ("workflows.execute", "Execute workflows"),
+    ("workflows.approve", "Approve workflow versions and executions"),
     ("remediation.execute", "Trigger auto-remediation actions"),
     # Device Action & Infrastructure Control Plane
     ("device_actions.read", "View device action catalog, requests and results"),
@@ -62,10 +67,22 @@ PERMISSION_CATALOG: Final[list[tuple[str, str]]] = [
     # ITSM
     ("servicenow.read", "View ServiceNow integration configuration/state"),
     ("servicenow.write", "Configure ServiceNow integration"),
+    ("itsm.write", "Configure ITSM connections"),
+    ("tickets.write", "Create/update/resolve/close tickets"),
+    ("tickets.execute", "Assign tickets and approve/execute agent task steps"),
+    ("integrations.write", "Create/update integrations"),
+    # Operational records
+    ("noc.write", "Create/update/acknowledge/resolve NOC and normalized events"),
+    ("topology.write", "Create/update/delete topology links and relationships"),
+    ("tasks.write", "Create and progress agent tasks"),
+    ("agents.write", "Register and update agents"),
+    ("changes.write", "Create/update change requests"),
     # Dashboard
     ("dashboard.read", "View dashboards and analytics"),
     # Usage metering & billing
     ("usage.read", "View tenant usage data and consumption metrics"),
+    ("billing.read", "View the tenant subscription, entitlements and onboarding status"),
+    ("billing.write", "Select, change or cancel the tenant subscription"),
     # Administration (tenant-local IAM)
     ("users.read", "View users"),
     ("users.create", "Create users"),
@@ -101,6 +118,8 @@ DEFAULT_ROLES: Final[dict[str, tuple[str, object]]] = {
             "workflows.read", "workflows.execute", "remediation.execute",
             "device_actions.read", "device_actions.execute",
             "servicenow.read", "dashboard.read",
+            "noc.write", "tasks.write", "changes.write",
+            "tickets.write", "tickets.execute",
         ],
     ),
     "Viewer": (

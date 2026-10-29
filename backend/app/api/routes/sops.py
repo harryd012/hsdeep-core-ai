@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from app.core.auth import get_tenant_id
+from app.core.auth import get_acting_user_id, get_tenant_id, require_permission
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -90,7 +90,7 @@ async def get_sop(
     return SOPDetailOut(**sop_out.model_dump(), versions=versions)
 
 
-@router.post("", dependencies=[_active_sub_guard], response_model=SOPOut, status_code=201)
+@router.post("", dependencies=[Depends(require_permission("sops.write")), _active_sub_guard], response_model=SOPOut, status_code=201)
 async def create_sop(
     payload: SOPCreate,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -114,7 +114,7 @@ async def list_sop_versions(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/{sop_id}/versions", dependencies=[_active_sub_guard], response_model=SOPVersionOut, status_code=201)
+@router.post("/{sop_id}/versions", dependencies=[Depends(require_permission("sops.write")), _active_sub_guard], response_model=SOPVersionOut, status_code=201)
 async def create_sop_version(
     sop_id: uuid.UUID,
     payload: SOPVersionCreate,
@@ -130,19 +130,20 @@ async def create_sop_version(
     return version
 
 
-@router.post("/{sop_id}/versions/{version_id}/approve", dependencies=[_active_sub_guard], response_model=SOPOut)
+@router.post("/{sop_id}/versions/{version_id}/approve", dependencies=[Depends(require_permission("sops.approve")), _active_sub_guard], response_model=SOPOut)
 async def approve_sop_version(
     sop_id: uuid.UUID,
     version_id: uuid.UUID,
     payload: SOPVersionApproveRequest,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
+    actor_id: uuid.UUID = Depends(get_acting_user_id),
     db: AsyncSession = Depends(get_db),
     service: SOPService = Depends(get_sop_service),
 ):
     """Manual approval workflow applied to SOP content: approves the
     version AND promotes it to the SOP's current_version_id."""
     try:
-        sop = await service.approve_and_promote(sop_id, version_id, tenant_id, approved_by=payload.approved_by)
+        sop = await service.approve_and_promote(sop_id, version_id, tenant_id, approved_by=actor_id)
     except (SOPNotFound, SOPVersionNotFound) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     await db.commit()

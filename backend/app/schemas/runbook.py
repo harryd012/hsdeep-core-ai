@@ -75,11 +75,11 @@ class RunbookExecutionRequest(BaseModel):
 
 
 class RunbookExecutionApproveRequest(BaseModel):
-    approved_by: uuid.UUID | None = None
+    approved_by: uuid.UUID | None = None  # ignored: attributed to the authenticated user
 
 
 class RunbookExecutionRejectRequest(BaseModel):
-    rejected_by: uuid.UUID | None = None
+    rejected_by: uuid.UUID | None = None  # ignored: attributed to the authenticated user
     reason: str
 
 

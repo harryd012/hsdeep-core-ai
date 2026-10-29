@@ -14,8 +14,9 @@ import {
   Incident, AlertIntelligenceMetrics, CollectorHealthList, IncidentSeverity,
   listIncidents, getAlertIntelligenceMetrics, getCollectorHealth,
   acknowledgeIncident, investigateIncident, monitorIncident,
-  recoverIncident, closeIncident, archiveIncident,
+  recoverIncident, closeIncident, archiveIncident, getIncidentRecoveryCheck,
 } from "@/lib/api";
+import { recoveryConfirmText } from "@/lib/incidents/recovery";
 import { formatAge } from "@/lib/commandCenter/format";
 import {
   Banner,
@@ -108,7 +109,13 @@ function IncidentIntelligenceContent() {
       if (action === "acknowledge") await acknowledgeIncident(incidentId, "00000000-0000-0000-0000-000000000000");
       else if (action === "investigate") await investigateIncident(incidentId);
       else if (action === "monitor") await monitorIncident(incidentId);
-      else if (action === "recover") await recoverIncident(incidentId);
+      else if (action === "recover") {
+        // Recovery is a claim about the estate: check fresh telemetry first
+        // and make the operator confirm when it does not support the claim.
+        const prompt = recoveryConfirmText(await getIncidentRecoveryCheck(incidentId));
+        if (prompt !== null && !window.confirm(prompt)) return;
+        await recoverIncident(incidentId);
+      }
       else if (action === "close") await closeIncident(incidentId);
       else if (action === "archive") await archiveIncident(incidentId);
       await load();

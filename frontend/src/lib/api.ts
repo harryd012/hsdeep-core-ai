@@ -23,6 +23,8 @@
  * - DEFAULT_TENANT_ID is kept only for transitional unauthenticated routes.
  */
 
+import type { RecoveryCheck } from "@/lib/incidents/recovery";
+
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 /**
@@ -2528,6 +2530,10 @@ export function monitorIncident(incidentId: string, tenantId: string = DEFAULT_T
     method: "POST",
     body: JSON.stringify({}),
   });
+}
+
+export function getIncidentRecoveryCheck(incidentId: string): Promise<RecoveryCheck> {
+  return apiFetch<RecoveryCheck>(`/api/incidents/${incidentId}/recovery-check`);
 }
 
 export function recoverIncident(incidentId: string, tenantId: string = DEFAULT_TENANT_ID): Promise<Incident> {
