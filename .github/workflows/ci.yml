@@ -16,7 +16,9 @@ on:
 
 jobs:
   gates:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moves to Ubuntu 26 from 2026-10-19
+    # (actions/runner-images#14748). Upgrade deliberately, not mid-run.
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16
@@ -50,13 +52,13 @@ jobs:
       SECRET_ENCRYPTION_KEY: ci-placeholder-key-not-a-real-secret
       LOG_LEVEL: INFO
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: "20"
 
@@ -89,7 +91,7 @@ jobs:
 
       - name: Upload playwright failure artifacts (if any)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: frontend-test-artifacts
           path: frontend/tests/_artifacts
