@@ -126,7 +126,8 @@ function LoginForm() {
         } else if (err.status === 401 || err.status === 400) {
           setError("Invalid email or password.");
         } else if (err.status === 403) {
-          setError("Your account is not permitted to sign in. Contact your administrator.");
+          // e.g. "Confirm your email address before signing in."
+          setError(err.message || "Your account is not permitted to sign in. Contact your administrator.");
         } else if (err.status === 429) {
           setError("Too many attempts. Please wait a moment and try again.");
         } else if (err.status >= 500) {
@@ -239,6 +240,10 @@ function LoginForm() {
             <button type="submit" disabled={submitting} className="login-card__submit">
               {submitting ? "Signing in…" : "Sign in"}
             </button>
+
+            <p className="login-card__enterprise">
+              <a href="/forgot-password">Forgot password?</a>
+            </p>
 
             <div className="login-card__divider">
               <span className="login-card__divider-text">or</span>

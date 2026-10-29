@@ -42,6 +42,10 @@ class InvalidCredentials(AuthError):
     pass
 
 
+class EmailNotVerified(AuthError):
+    """Correct password, but a self-service sign-up has not confirmed its email."""
+
+
 class InvalidRefreshToken(AuthError):
     pass
 
@@ -143,6 +147,9 @@ class AuthService:
                     lockout_minutes=cfg.login_lockout_minutes,
                 )
             raise InvalidCredentials("Invalid email or password")
+        # Only reached with the right password, so this reveals nothing new.
+        if user.requires_email_verification and user.email_verified_at is None:
+            raise EmailNotVerified("Confirm your email address before signing in. Check your inbox for the link.")
         await self.users.touch_last_login(user)
         access, refresh, expires_in = await self._issue_tokens(user)
         return access, refresh, expires_in, user.tenant_id
@@ -191,17 +198,19 @@ class AuthService:
         *,
         tenant_id: uuid.UUID,
         email: str,
-        password: str,
+        password: str | None,
         full_name: str | None,
         is_superuser: bool,
         role_ids: list[uuid.UUID],
     ) -> User:
+        """password=None creates the user without a password (they cannot sign
+        in until they accept an invitation and set one)."""
         if await self.users.get_by_email(tenant_id, email) is not None:
             raise Conflict(f"A user with email {email!r} already exists in this tenant")
         user = await self.users.create(
             tenant_id=tenant_id,
             email=email,
-            password_hash=auth.hash_password(password),
+            password_hash=auth.hash_password(password) if password else None,
             full_name=full_name,
             is_superuser=is_superuser,
         )

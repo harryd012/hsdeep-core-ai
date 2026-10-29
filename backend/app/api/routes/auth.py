@@ -29,7 +29,11 @@ from app.repositories.role_repository import RoleRepository
 from app.repositories.tenant_repository import TenantRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import (
+    AcceptInviteRequest,
     AssignRolesRequest,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
+    VerifyEmailRequest,
     LoginRequest,
     LogoutRequest,
     MeResponse,
@@ -44,12 +48,15 @@ from app.schemas.auth import (
     UserCreate,
     UserOut,
 )
+from app.services.account_service import AccountService, InvalidAccountToken
 from app.services.auth_service import (
     AuthError,
     AuthService,
     Conflict,
+    EmailNotVerified,
     NotFound,
 )
+from app.services.email.outbox import EmailDisabled
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -124,6 +131,8 @@ async def login(
         access, refresh, expires_in, _resolved_tenant_id = await service.login(
             tenant_id=payload.tenant_id, email=payload.email, password=payload.password
         )
+    except EmailNotVerified as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except AuthError as exc:
         # Security audit: every failed login attempt is recorded (best-effort
         # - auditing must never change the 401 response). AuditEvent rows are
@@ -145,6 +154,69 @@ async def login(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     await db.commit()
     return TokenResponse(access_token=access, refresh_token=refresh, expires_in=expires_in)
+
+
+# ---- Account self-service (public, rate limited per IP) --------------------
+
+_EMAIL_OFF = "Email is not configured on this deployment. Ask your administrator."
+_RESET_SENT = "If an account exists for that email, a reset link has been sent."
+
+
+@router.post("/password/forgot", status_code=status.HTTP_202_ACCEPTED)
+async def forgot_password(
+    payload: ForgotPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_check_auth_rate),
+) -> dict[str, str]:
+    """Always the same answer, whether or not the email has an account."""
+    try:
+        await AccountService(db).request_password_reset(payload.email)
+    except EmailDisabled as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=_EMAIL_OFF) from exc
+    await db.commit()
+    return {"detail": _RESET_SENT}
+
+
+@router.post("/password/reset")
+async def reset_password(
+    payload: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_check_auth_rate),
+) -> dict[str, str]:
+    try:
+        await AccountService(db).reset_password(payload.token, payload.password)
+    except InvalidAccountToken as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    await db.commit()
+    return {"detail": "Password updated. Sign in with your new password."}
+
+
+@router.post("/email/verify")
+async def verify_email(
+    payload: VerifyEmailRequest,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_check_auth_rate),
+) -> dict[str, str]:
+    try:
+        await AccountService(db).verify_email(payload.token)
+    except InvalidAccountToken as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    await db.commit()
+    return {"detail": "Email confirmed. You can sign in now."}
+
+
+@router.post("/invite/accept")
+async def accept_invite(
+    payload: AcceptInviteRequest,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_check_auth_rate),
+) -> dict[str, str]:
+    try:
+        await AccountService(db).accept_invite(payload.token, payload.password)
+    except InvalidAccountToken as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    await db.commit()
+    return {"detail": "Password set. Sign in to continue."}
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -332,8 +404,13 @@ async def create_user(
             is_superuser=payload.is_superuser,
             role_ids=payload.role_ids,
         )
+        if payload.send_invite:
+            await AccountService(db).send_invite(user)
     except Conflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except EmailDisabled as exc:
+        # Nothing is committed: no half-created user without a way in.
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=_EMAIL_OFF) from exc
     await db.commit()
     return user
 

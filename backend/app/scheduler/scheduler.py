@@ -15,6 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.core.config import get_settings
 from app.core.db import AsyncSessionLocal
 from app.repositories.collector_run_repository import CollectorRunRepository
+from app.scheduler.email_jobs import EMAIL_DELIVERY_INTERVAL_SECONDS, deliver_email_outbox_job
 from app.scheduler.incident_lifecycle import close_stale_incidents_job
 from app.scheduler.jobs import tick
 from app.scheduler.task_dispatch import dispatch_queued_tasks
@@ -95,6 +96,16 @@ def start_scheduler(app: "FastAPI") -> AsyncIOScheduler:
         "interval",
         seconds=get_settings().incident_stale_close_interval_seconds,
         id="incident_stale_close",
+        max_instances=1,
+        coalesce=True,
+    )
+    # Password reset, verification and invitation emails are queued by the
+    # API and sent here, so an SMTP outage never fails a request.
+    scheduler.add_job(
+        deliver_email_outbox_job,
+        "interval",
+        seconds=EMAIL_DELIVERY_INTERVAL_SECONDS,
+        id="email_outbox_delivery",
         max_instances=1,
         coalesce=True,
     )

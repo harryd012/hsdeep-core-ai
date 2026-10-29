@@ -258,10 +258,38 @@ Test fixture note: `dev_tenant` now also creates a real dev user
 (`DEV_USER_ID`), because acknowledgements are attributed to the token's user
 and `*_by` columns reference `users.id`.
 
+## Batch 9: email foundation (password reset, verification, invitations)
+
+Design: `docs/architecture/email-foundation.md` (approved; build-time
+differences listed there).
+
+- `app/services/email/`: SMTP / log / none transports; `email_outbox` table,
+  enqueued in the request transaction and delivered by the worker job
+  `email_outbox_delivery` every 30 s (`FOR UPDATE SKIP LOCKED`, backoff 1/5/15/60
+  min, `failed` after 5 attempts with the last error kept).
+- `account_tokens`: SHA-256 hashed, single use, reset 30 min / verify 24 h /
+  invite 7 days; a new token retires the user's earlier unused ones.
+- API (public, per-IP rate limited): `POST /api/auth/password/forgot` (same
+  202 for any email; max 3 per account per hour), `/password/reset` (also
+  revokes refresh tokens and clears lockout), `/email/verify`,
+  `/invite/accept`. `POST /api/auth/users` accepts `send_invite` instead of a
+  password. Unverified self-sign-ups get 403 on sign-in.
+- Audit events: `auth.password_reset_requested`, `auth.password_reset`,
+  `auth.email_verified`, `auth.invite_sent`, `auth.invite_accepted`.
+- Migration `f6c2d8a4b7e9` (existing users backfilled as verified; round trip
+  verified). Production refuses `EMAIL_TRANSPORT=log`; `render.yaml` ships
+  `none` plus `SMTP_*`, `EMAIL_FROM`, `APP_PUBLIC_URL`.
+- Frontend: `/forgot-password`, `/reset-password`, `/verify-email`,
+  `/accept-invite` (shared `AccountCard` / `SetPasswordForm`), "Forgot
+  password?" on `/login`, server message shown for 403 on sign-in.
+- Tests: `backend/tests/test_email_foundation.py` (9).
+
 ## Next
 
-1. Email foundation, once `docs/architecture/email-foundation.md` is approved.
+1. Alert/incident notifications through the outbox (the stored
+   email/Slack/PagerDuty notification settings still deliver nothing).
 2. Edge agent: commit and ship the uncommitted `backend/agent/hsdeep_edge_agent`
    (owner of the main checkout), required for customer-site collection.
 3. Decide whether to start the autonomous orchestrator in the worker runtime
    now that validation exists (material decision; off by default).
+4. Before public sign-up: CAPTCHA or equivalent abuse protection.

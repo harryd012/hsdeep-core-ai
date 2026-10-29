@@ -61,6 +61,12 @@ class User(Base, UUIDPKMixin, TimestampMixin, SoftDeleteMixin):
         Integer, default=0, server_default="0", nullable=False
     )
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Email ownership. Self-service sign-ups must verify before they can sign
+    # in again; operator-created and invited users do not need to.
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    requires_email_verification: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
 
     tenant: Mapped["Tenant"] = relationship(back_populates="users")
     roles: Mapped[list["Role"]] = relationship(secondary=user_roles, back_populates="users")

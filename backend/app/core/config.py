@@ -64,6 +64,19 @@ class Settings(BaseSettings):
     recovery_validation_attempts: int = 10
     recovery_validation_interval_seconds: float = 60.0
     recovery_validation_consecutive_passes: int = 2
+    # Outbound email (app/services/email). "smtp" sends through SMTP_*;
+    # "log" logs the message metadata instead of sending (development only,
+    # refused in production because reset links would silently vanish);
+    # "none" disables email: password reset and invitations then answer 503.
+    email_transport: str = "log"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_starttls: bool = True
+    email_from: str = ""
+    # Public web origin used to build links in emails (never the request Host).
+    app_public_url: str = "http://localhost:3000"
 
     # Server
     host: str = "0.0.0.0"
@@ -280,6 +293,15 @@ class Settings(BaseSettings):
             return problems
 
         # --- production-only contract (Phase 9A) --------------------------
+        if self.email_transport == "log":
+            problems.append(
+                "EMAIL_TRANSPORT=log only logs messages; in production password "
+                "reset and invitation links would never arrive. Use smtp, or "
+                "none to switch email off."
+            )
+        if self.email_transport == "smtp" and not (self.smtp_host and self.email_from):
+            problems.append("EMAIL_TRANSPORT=smtp needs SMTP_HOST and EMAIL_FROM.")
+
         if not self.force_https:
             problems.append(
                 "FORCE_HTTPS must be true in production - plaintext requests "

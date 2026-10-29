@@ -29,6 +29,12 @@ PUBLIC_WRITE_ROUTES = {
     ("POST", "/api/auth/login"),
     ("POST", "/api/auth/refresh"),
     ("POST", "/api/auth/logout"),
+    # Account self-service: authorised by a single-use emailed token, or
+    # (forgot) answered identically for any email; rate limited per IP.
+    ("POST", "/api/auth/password/forgot"),
+    ("POST", "/api/auth/password/reset"),
+    ("POST", "/api/auth/email/verify"),
+    ("POST", "/api/auth/invite/accept"),
     ("POST", "/api/billing/signup"),
     ("POST", "/api/billing/webhook"),
     ("POST", "/api/monitoring/collectors/register"),

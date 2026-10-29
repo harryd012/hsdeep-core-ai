@@ -158,6 +158,9 @@ class SignupResponse(BaseModel):
     access_token: str
     refresh_token: str
     expires_in: int
+    # True when a confirmation email was queued; the user must confirm before
+    # their next sign-in (this response's session works until it expires).
+    email_verification_sent: bool = False
 
 
 # ---- Stripe ---------------------------------------------------------------

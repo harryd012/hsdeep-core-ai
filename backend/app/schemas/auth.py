@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Annotated
 
 from email_validator import EmailSyntaxError, validate_email
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 
 # ---- Authentication ------------------------------------------------------
@@ -101,10 +101,37 @@ class TenantContext(BaseModel):
 
 class UserCreate(BaseModel):
     email: InternalEmail
-    password: str = Field(..., min_length=8, description="Argon2id-hashed before storage")
+    # Omit with send_invite=true: the user sets their own password from the
+    # emailed invitation link.
+    password: str | None = Field(default=None, min_length=8, description="Argon2id-hashed before storage")
     full_name: str | None = None
     is_superuser: bool = False
     role_ids: list[uuid.UUID] = Field(default_factory=list)
+    send_invite: bool = False
+
+    @model_validator(mode="after")
+    def _password_or_invite(self) -> "UserCreate":
+        if self.password is None and not self.send_invite:
+            raise ValueError("Provide a password, or set send_invite to email an invitation.")
+        return self
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: InternalEmail
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(..., min_length=20, max_length=200)
+    password: str = Field(..., min_length=8)
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str = Field(..., min_length=20, max_length=200)
+
+
+class AcceptInviteRequest(BaseModel):
+    token: str = Field(..., min_length=20, max_length=200)
+    password: str = Field(..., min_length=8)
 
 
 class UserUpdate(BaseModel):

@@ -510,6 +510,18 @@ async def signup(
     except PlanNotFound as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    # 4.5 Self-service accounts confirm their email before their next sign-in.
+    # Only when email can actually be delivered: otherwise the user could
+    # never confirm and would be locked out.
+    from app.services.account_service import AccountService
+    from app.services.email.outbox import email_enabled
+
+    verification_sent = False
+    if email_enabled():
+        user.requires_email_verification = True
+        await AccountService(db).send_verification(user)
+        verification_sent = True
+
     # 5. Issue tokens for the new user
     access, refresh, expires_in = await auth._issue_tokens(user)
 
@@ -525,6 +537,7 @@ async def signup(
         access_token=access,
         refresh_token=refresh,
         expires_in=expires_in,
+        email_verification_sent=verification_sent,
     )
 
 

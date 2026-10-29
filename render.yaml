@@ -52,6 +52,25 @@ envVarGroups:
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      # Outbound email (password reset, verification, invitations). "none"
+      # keeps email off (those flows answer 503) until SMTP is configured:
+      # set EMAIL_TRANSPORT=smtp plus SMTP_HOST / SMTP_USERNAME /
+      # SMTP_PASSWORD / EMAIL_FROM. "log" is refused in production.
+      - key: EMAIL_TRANSPORT
+        value: none
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      # Public web origin for links in emails, e.g. https://app.example.com
+      - key: APP_PUBLIC_URL
+        sync: false
 
 services:
   - type: web

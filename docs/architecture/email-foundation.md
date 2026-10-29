@@ -1,6 +1,19 @@
-# Email foundation (design, awaiting approval)
+# Email foundation
 
-Status: proposal. No code yet.
+Status: approved 2026-10-30 and implemented (batch 9, see
+docs/PLATFORM_LEDGER.md). Differences from the proposal, decided during the
+build:
+
+- Transport `none` added: production refuses `log`, and `render.yaml` ships
+  `EMAIL_TRANSPORT=none` so the pilot deploys before SMTP is configured; the
+  email flows then answer 503 instead of silently dropping links.
+- SMTP uses the standard library (`smtplib` in a worker thread) rather than
+  `aiosmtplib`, so no new dependency.
+- Verification is a separate flag, `users.requires_email_verification`, set
+  only for self-service sign-ups while email is on, so operator-created and
+  existing users are never locked out. Sign-up still returns a session (API
+  contract unchanged, `email_verification_sent` added); the next sign-in
+  needs the confirmed email (403 with a clear message).
 
 ## Problem
 
