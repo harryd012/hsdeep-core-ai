@@ -41,6 +41,9 @@ ALLOWANCE_TTL_SECONDS = 60.0
 
 _pending: dict[uuid.UUID, int] = defaultdict(int)
 _allowance_cache: dict[uuid.UUID, tuple[float, int, int, bool]] = {}
+# sha256(raw key) -> (expires_at_monotonic, tenant_id or None). Negative
+# results are cached too, so a garbage bearer cannot force a DB hit per request.
+_api_key_cache: dict[str, tuple[float, uuid.UUID | None]] = {}
 _lock = asyncio.Lock()
 
 
@@ -53,6 +56,7 @@ def reset_state() -> None:
     """Clear all in-process state. Test hook only."""
     _pending.clear()
     _allowance_cache.clear()
+    _api_key_cache.clear()
 
 
 async def record_api_call(tenant_id: uuid.UUID, increment: int = 1) -> None:
@@ -158,6 +162,76 @@ async def api_allowance(tenant_id: uuid.UUID) -> tuple[int | None, int, bool]:
 
 
 # ---------------------------------------------------------------------------
+# Who is metered
+# ---------------------------------------------------------------------------
+# The allowance sells programmatic API access, so only API-key traffic is
+# metered and enforced. HSDEEP's own web UI authenticates with a session JWT
+# and polls continuously (one Host page load is ~15 calls); metering it let a
+# single open dashboard tab exhaust a Starter tenant's 50_000/period allowance
+# in hours and lock the customer out of the product (live: 429 at 50_400
+# used). Before this rule the middleware only recognised JWTs, so it metered
+# exactly the UI and never the API keys it was meant for.
+#
+# Known gap: a user can script against their own session JWT (login +
+# refresh) unmetered. The per-minute burst limiter still applies; a session
+# fair-use cap is a separate change.
+
+
+async def api_key_tenant(raw_key: str) -> uuid.UUID | None:
+    """Tenant owning an active, unexpired API key, or None. Cached 60s.
+
+    Metering only: authentication (and the 401) stays in
+    ``app.core.auth.get_current_user``. Fails open to None, so a lookup
+    failure can never block a request.
+    """
+    import time
+    from datetime import datetime, timezone
+
+    from app.core.auth import hash_api_key
+
+    key_hash = hash_api_key(raw_key)
+    now = time.monotonic()
+    cached = _api_key_cache.get(key_hash)
+    if cached and cached[0] > now:
+        return cached[1]
+
+    tenant_id: uuid.UUID | None = None
+    try:
+        from sqlalchemy import select
+
+        from app.core.db import AsyncSessionLocal
+        from app.models.api_key import ApiKey
+
+        async with AsyncSessionLocal() as db:
+            row = (
+                await db.execute(
+                    select(ApiKey.tenant_id, ApiKey.expires_at).where(
+                        ApiKey.key_hash == key_hash,
+                        ApiKey.is_active.is_(True),
+                        ApiKey.is_deleted.is_(False),
+                    )
+                )
+            ).one_or_none()
+        if row is not None:
+            tenant_id = row.tenant_id
+            if row.expires_at:
+                try:
+                    expires = datetime.fromisoformat(row.expires_at.replace("Z", "+00:00"))
+                    if expires.tzinfo is None:
+                        expires = expires.replace(tzinfo=timezone.utc)
+                    if expires <= datetime.now(timezone.utc):
+                        tenant_id = None
+                except ValueError:
+                    tenant_id = None  # malformed expiry: auth rejects it too
+    except Exception:  # noqa: BLE001 - metering must never break a request
+        logger.warning("Failed to resolve API key for metering.", exc_info=True)
+        return None  # do not cache a transient failure
+
+    _api_key_cache[key_hash] = (now + ALLOWANCE_TTL_SECONDS, tenant_id)
+    return tenant_id
+
+
+# ---------------------------------------------------------------------------
 # Control-plane (session) endpoints
 # ---------------------------------------------------------------------------
 # These establish or maintain the authenticated session itself: login, token
@@ -176,7 +250,7 @@ async def api_allowance(tenant_id: uuid.UUID) -> tuple[int | None, int, bool]:
 #   * metering - counting session traffic would let /me and refresh polling
 #     burn the sellable allowance and conflate session establishment with
 #     application API usage in the Usage UI.
-# Every other tenant API is metered and blocked exactly as before. The
+# Every other API-key request is metered and blocked as usual. The
 # per-minute burst limiter and the per-IP auth rate limiter (5 rpm on
 # login/refresh) still apply to these paths, so the exemption does not open
 # an unauthenticated flood gate.

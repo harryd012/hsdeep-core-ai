@@ -388,8 +388,9 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
     (plan.api_rate_limit) for authenticated traffic and per IP otherwise.
 
     It additionally meters and enforces the tenant's PER-BILLING-PERIOD API
-    quota (``Plan.api_rate_limit``), which is what the plan actually sells and
-    what the Usage UI displays. See ``app/services/metering/api_quota.py``: the
+    quota (``Plan.api_rate_limit``) for API-key requests only - session JWT
+    (web UI) traffic and control-plane paths are never counted. That quota is
+    what the plan actually sells and what the Usage UI displays. See ``app/services/metering/api_quota.py``: the
     same plan field used to be applied only as a per-minute burst ceiling, so a
     50_000/month allowance never blocked anything, and the ``api.call`` meter
     had no callers so usage always read 0.
@@ -408,20 +409,25 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
         rpm = await self._limiter.rpm_for(key)
         await self._limiter.acquire(key, rpm)
 
-        if key.startswith("tenant:"):
-            import uuid as _uuid
+        from app.services.metering.api_quota import (
+            api_allowance,
+            api_key_tenant,
+            is_control_plane_path,
+            pending_for,
+            record_api_call,
+        )
 
-            from app.services.metering.api_quota import (
-                api_allowance,
-                pending_for,
-                record_api_call,
-            )
-
-            try:
-                tenant_id = _uuid.UUID(key.split(":", 1)[1])
-            except ValueError:
-                return await call_next(request)
-
+        # Only API-key traffic is metered (see api_quota "Who is metered"):
+        # a session JWT - HSDEEP's own web UI - already got a ``tenant:`` key
+        # above and is never counted. Session endpoints stay reachable for
+        # everyone so a locked-out tenant can still log in to /usage.
+        if key.startswith("tenant:") or is_control_plane_path(request.url.path):
+            return await call_next(request)
+        auth = request.headers.get("authorization", "")
+        if not auth.lower().startswith("bearer ") or not auth[7:].strip():
+            return await call_next(request)
+        tenant_id = await api_key_tenant(auth[7:].strip())
+        if tenant_id is not None:
             # Meter the request, then enforce the period allowance. Metering
             # failures are swallowed inside the meter and never break a request.
             await record_api_call(tenant_id)
