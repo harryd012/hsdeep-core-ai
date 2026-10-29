@@ -67,6 +67,7 @@ export const NAV_CONFIG: NavGroup[] = [
     description: "Devices, resources, topology and discovery",
     children: [
       { label: "Overview", route: "/infrastructure" },
+      { label: "Hosts", route: "/infrastructure/hosts", keywords: "servers devices health facets" },
       { label: "Universal Resources", route: "/infrastructure/universal", keywords: "cloud firewall router switch" },
       { label: "Asset Inventory", route: "/infrastructure/assets", keywords: "cmdb devices" },
       { label: "Explorer", route: "/explorer", keywords: "hosts sites sensors" },

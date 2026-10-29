@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { AlertTriangle, Clock, Database, FileWarning, LayoutDashboard, Server, ShieldCheck, Siren, Timer } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCommandCenterBrief } from "@/hooks/useCommandCenterBrief";
 import { useIncidentAnalytics } from "@/hooks/useIncidentAnalytics";
 import { useSiteHealth } from "@/hooks/useSiteHealth";
@@ -35,6 +35,9 @@ import {
 import { CardShell, DonutRing, KpiTile, Legend, type CardState } from "./primitives";
 import SiteHoneycomb from "./SiteHoneycomb";
 import AppearanceMenu from "@/components/AppearanceMenu";
+import SituationBriefing from "./SituationBriefing";
+import { getAlertSummary } from "@/lib/api";
+import type { BriefingInput } from "@/lib/commandCenter/briefing";
 
 /**
  * ExecutiveCommandCenter — the one-screen /dashboard (ECC-1).
@@ -496,6 +499,28 @@ export default function ExecutiveCommandCenter() {
   const analytics = useIncidentAnalytics(filters.days, { siteId: filters.siteId, severity: filters.severity });
   const siteHealth = useSiteHealth();
   const recent = useRecentIncidents({ siteId: filters.siteId, severity: filters.severity });
+  // Same query key as the sidebar's Alerts badge, so this reuses that cache.
+  const alertSummary = useQuery({
+    queryKey: ["nav", "alert-summary"],
+    queryFn: () => getAlertSummary(),
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  const briefingInput = useMemo<BriefingInput>(() => {
+    const b = brief.data;
+    return {
+      devices: b?.infrastructure_health.devices ?? null,
+      collectors: b?.infrastructure_health.collectors ?? null,
+      sourceErrors: b?.collection_health.sources.map((src) => ({ name: src.name, error: src.error })) ?? null,
+      incidents: b
+        ? { open: b.kpis.open_incidents, critical: b.kpis.critical_open_incidents, opened24h: b.kpis.incident_volume_24h, resolved24h: b.kpis.resolved_incidents_24h }
+        : null,
+      sites: siteHealth.data ? { total: siteHealth.data.sites.length, unassignedDevices: siteHealth.data.unassigned_devices } : null,
+      alerts: alertSummary.data ? { open: alertSummary.data.by_status.open, critical: alertSummary.data.by_severity.critical } : null,
+    };
+  }, [brief.data, siteHealth.data, alertSummary.data]);
 
   const sites = useMemo(() => siteHealth.data?.sites ?? [], [siteHealth.data]);
   const siteById = useMemo(() => new Map(sites.map((s) => [s.site_id, s])), [sites]);
@@ -534,6 +559,8 @@ export default function ExecutiveCommandCenter() {
         onChange={update}
         onRefresh={() => queryClient.invalidateQueries({ queryKey: ["dashboard"] })}
       />
+
+      <SituationBriefing input={briefingInput} loading={brief.isLoading && !brief.data} />
 
       <KpiStrip brief={brief.data} loading={brief.isLoading && !brief.data} error={!!brief.error} />
 
