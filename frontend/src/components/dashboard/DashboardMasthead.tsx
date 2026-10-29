@@ -28,7 +28,20 @@ function apiHost(): string {
   }
 }
 
-export default function DashboardMasthead({ header }: { header?: DashboardHeaderData }) {
+/** GET /health result: null while the probe has not answered yet. */
+function apiStatusLabel(apiHealthy: boolean | null | undefined): string {
+  if (apiHealthy === true) return "REACHABLE";
+  if (apiHealthy === false) return "UNREACHABLE";
+  return "CHECKING";
+}
+
+export default function DashboardMasthead({
+  header,
+  apiHealthy,
+}: {
+  header?: DashboardHeaderData;
+  apiHealthy?: boolean | null;
+}) {
   const tenantId = header?.tenantId ?? getTenantId();
   const user = header?.user ?? null;
   const { logout, isAuthenticated } = useAuth();
@@ -74,7 +87,9 @@ export default function DashboardMasthead({ header }: { header?: DashboardHeader
         </div>
         <div>
           <dt>API</dt>
-          <dd title={API_BASE_URL}>{apiHost()}</dd>
+          <dd title={API_BASE_URL}>
+            {apiHost()} · {apiStatusLabel(apiHealthy)}
+          </dd>
         </div>
         <div>
           <dt>AUTO REFRESH</dt>
