@@ -480,6 +480,13 @@ def get_tenant_id(principal: Principal = Depends(get_current_user)) -> uuid.UUID
 _NO_USER_ID = uuid.UUID(int=0)
 
 
+def get_actor_user_id(principal: Principal = Depends(get_current_user)) -> uuid.UUID | None:
+    """The signed-in user an action (acknowledge, assign) is attributed to,
+    or None for an API key, which has no user identity. Never taken from the
+    request body."""
+    return None if principal.user_id == _NO_USER_ID else principal.user_id
+
+
 def get_acting_user_id(principal: Principal = Depends(get_current_user)) -> uuid.UUID:
     """The signed-in user an approval or rejection is attributed to.
 

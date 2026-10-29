@@ -106,7 +106,7 @@ function IncidentIntelligenceContent() {
     setActionLoading(`${incidentId}:${action}`);
     setActionError(null);
     try {
-      if (action === "acknowledge") await acknowledgeIncident(incidentId, "00000000-0000-0000-0000-000000000000");
+      if (action === "acknowledge") await acknowledgeIncident(incidentId);
       else if (action === "investigate") await investigateIncident(incidentId);
       else if (action === "monitor") await monitorIncident(incidentId);
       else if (action === "recover") {

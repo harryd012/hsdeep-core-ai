@@ -1365,14 +1365,11 @@ export function getAlertStatistics(tenantId: string = DEFAULT_TENANT_ID): Promis
   return apiFetch<AlertSummary>(`/api/alerts/statistics?${withTenant(tenantId).toString()}`);
 }
 
-export function acknowledgeAlert(
-  alertId: string,
-  acknowledgedBy: string,
-  tenantId: string = DEFAULT_TENANT_ID,
-): Promise<Alert> {
+/** The acknowledgement is attributed to the signed-in user by the server. */
+export function acknowledgeAlert(alertId: string, tenantId: string = DEFAULT_TENANT_ID): Promise<Alert> {
   return apiFetch<Alert>(`/api/alerts/${alertId}/acknowledge?${withTenant(tenantId).toString()}`, {
     method: "POST",
-    body: JSON.stringify({ acknowledged_by: acknowledgedBy }),
+    body: JSON.stringify({}),
   });
 }
 
@@ -2511,10 +2508,11 @@ export function getCollectorHealth(
   return apiFetch<CollectorHealthList>(`/api/incidents/collector-health?${qs.toString()}`);
 }
 
-export function acknowledgeIncident(incidentId: string, acknowledgedBy: string, tenantId: string = DEFAULT_TENANT_ID): Promise<Incident> {
+/** The acknowledgement is attributed to the signed-in user by the server. */
+export function acknowledgeIncident(incidentId: string, tenantId: string = DEFAULT_TENANT_ID): Promise<Incident> {
   return apiFetch<Incident>(`/api/incidents/${incidentId}/acknowledge?${withTenant(tenantId).toString()}`, {
     method: "POST",
-    body: JSON.stringify({ acknowledged_by: acknowledgedBy }),
+    body: JSON.stringify({}),
   });
 }
 

@@ -904,8 +904,8 @@ function InvestigationBody({
           </tbody>
         </table>
         <Msg tone="info">
-          Acknowledge requires an actor id (acknowledged_by). Because this workspace has no authenticated operator
-          identity, that transition is never sent from here rather than being attributed to an invented user.
+          Transitions are attributed by the server to the signed-in user; no actor id is sent. Run them from the
+          Incidents page, which acts on behalf of the signed-in operator.
         </Msg>
       </Panel>
 

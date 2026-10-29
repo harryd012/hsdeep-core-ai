@@ -42,8 +42,11 @@ DEV_TENANT_ID = uuid.UUID("54dd0ca8-873f-4b8e-bb54-c4f45f64d0b3")
 # ---------------------------------------------------------------------------
 
 def _auth_headers(tenant_id: uuid.UUID) -> dict:
+    from tests.conftest import DEV_USER_ID
+
     token = create_access_token(
-        user_id=uuid.uuid4(),
+        # The dev tenant's real user, so acknowledgements can be attributed.
+        user_id=DEV_USER_ID if tenant_id == DEV_TENANT_ID else uuid.uuid4(),
         tenant_id=tenant_id,
         email="test@hsdeep.local",
         is_superuser=True,

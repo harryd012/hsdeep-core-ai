@@ -12,7 +12,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from app.core.auth import get_tenant_id, require_permission
+from app.core.auth import get_actor_user_id, get_tenant_id, require_permission
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -308,6 +308,8 @@ async def get_recovery_check(
 # ---------------------------------------------------------------------------
 
 class AcknowledgeBody(BaseModel):
+    # Ignored: attributed to the authenticated user (still accepted for
+    # existing clients).
     acknowledged_by: uuid.UUID | None = None
 
 
@@ -316,11 +318,12 @@ async def acknowledge_incident(
     incident_id: uuid.UUID,
     body: AcknowledgeBody = AcknowledgeBody(),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
+    actor_id: uuid.UUID | None = Depends(get_actor_user_id),
     db: AsyncSession = Depends(get_db),
     service: IncidentService = Depends(get_incident_service),
 ):
     try:
-        incident = await service.acknowledge(incident_id, tenant_id, body.acknowledged_by)
+        incident = await service.acknowledge(incident_id, tenant_id, actor_id)
     except IncidentNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     await db.commit()
