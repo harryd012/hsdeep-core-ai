@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { AlertTriangle, Clock, Database, FileWarning, LayoutDashboard, Server, ShieldCheck, Siren, Timer } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCommandCenterBrief } from "@/hooks/useCommandCenterBrief";
@@ -120,7 +121,7 @@ function Header({
   return (
     <header className="ecc-header">
       <div>
-        <h1 className="ecc-header__title">Executive Command Center</h1>
+        <h1 className="ecc-header__title"><span className="ecc-header__icon" aria-hidden="true"><LayoutDashboard size={18} /></span>Executive Command Center</h1>
         <p className="ecc-header__subtitle">Infrastructure health, incident intelligence and response performance</p>
       </div>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
@@ -199,7 +200,7 @@ function KpiStrip({ brief, loading, error }: { brief: CommandCenterBrief | undef
   return (
     <div className="ecc-kpis" role="region" aria-label="Key performance indicators">
       <KpiTile
-        label="Monitored Devices"
+        label="Monitored Devices" icon={Server} tone="info"
         value={v(() => formatKpiCount(devices!.total))}
         info="All registered devices in the estate (current state)."
         href="/explorer"
@@ -209,7 +210,7 @@ function KpiStrip({ brief, loading, error }: { brief: CommandCenterBrief | undef
         unavailableReason={missing ? reason : undefined}
       />
       <KpiTile
-        label="Healthy Devices"
+        label="Healthy Devices" icon={ShieldCheck} tone="good"
         value={v(() => formatKpiCount(devices!.healthy))}
         info="Devices whose latest status is up."
         href="/explorer"
@@ -219,7 +220,7 @@ function KpiStrip({ brief, loading, error }: { brief: CommandCenterBrief | undef
         unavailableReason={reason}
       />
       <KpiTile
-        label="Critical / Down"
+        label="Critical / Down" icon={AlertTriangle}
         value={v(() => formatKpiCount(atRisk))}
         info="Devices whose latest status is critical, down or offline. Sparkline: devices reported down per hour, last 24h."
         href="/explorer"
@@ -231,7 +232,7 @@ function KpiStrip({ brief, loading, error }: { brief: CommandCenterBrief | undef
         unavailableReason={reason}
       />
       <KpiTile
-        label="Active Incidents"
+        label="Active Incidents" icon={FileWarning} tone="warn"
         value={v(() => formatKpiCount(kpis!.open_incidents))}
         info={`${kpis ? formatCount(kpis.open_incidents) + " incidents" : "Incidents"} open, acknowledged or investigating now. Delta compares incidents opened in the last 24h with the 24h before.`}
         href="/incidents"
@@ -243,7 +244,7 @@ function KpiStrip({ brief, loading, error }: { brief: CommandCenterBrief | undef
         unavailableReason={reason}
       />
       <KpiTile
-        label="Critical Incidents"
+        label="Critical Incidents" icon={Siren}
         value={v(() => formatKpiCount(kpis!.critical_open_incidents))}
         info={`${kpis ? formatCount(kpis.critical_open_incidents) : "Active"} active incidents with critical severity.`}
         href="/incidents?severity=critical"
@@ -254,7 +255,7 @@ function KpiStrip({ brief, loading, error }: { brief: CommandCenterBrief | undef
         unavailableReason={reason}
       />
       <KpiTile
-        label="Collector Health"
+        label="Collector Health" icon={Database} tone="info"
         value={collectors ? formatPct(collectorPct) : NOT_MEASURED}
         info="Share of configured collectors whose last 24h of runs were healthy. Sparkline: failed collection runs per hour."
         href="/monitoring"
@@ -265,7 +266,7 @@ function KpiStrip({ brief, loading, error }: { brief: CommandCenterBrief | undef
         unavailableReason={collectors && !collectors.total ? "No collectors configured" : reason}
       />
       <KpiTile
-        label="MTTA"
+        label="MTTA" icon={Timer} tone="info"
         value={v(() => formatMinutes(kpis!.mtta_minutes))}
         info="Mean time to acknowledge incidents opened in the last 24h. Delta vs the previous 24h."
         href="/incidents"
@@ -277,7 +278,7 @@ function KpiStrip({ brief, loading, error }: { brief: CommandCenterBrief | undef
         unavailableReason={brief ? "No incident was acknowledged in the last 24h" : reason}
       />
       <KpiTile
-        label="MTTR"
+        label="MTTR" icon={Clock} tone="info"
         value={v(() => formatMinutes(kpis!.mttr_minutes))}
         info="Mean time to resolve incidents resolved in the last 24h. Delta vs the previous 24h."
         href="/reports"

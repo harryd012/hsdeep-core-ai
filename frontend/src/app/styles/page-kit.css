@@ -25,7 +25,7 @@
 .pk-meta { font-size: 12px; color: var(--ecc-text-muted); }
 
 /* -- stat strip -------------------------------------------------------- */
-.pk-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.pk-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 
 /* -- grid of panels ------------------------------------------------------ */
 .pk-grid { display: grid; gap: 16px; grid-template-columns: repeat(12, minmax(0, 1fr)); }

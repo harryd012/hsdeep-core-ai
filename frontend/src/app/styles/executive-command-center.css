@@ -231,3 +231,37 @@ a.ecc-legend__row:hover { background: var(--ecc-surface-raised); }
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
+
+/* -- depth & polish (shared by every page through the page kit) ---------- */
+.ecc-card, .ecc-kpi {
+  background: linear-gradient(180deg, var(--ecc-surface-raised) 0%, var(--ecc-surface) 38%);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 6px 18px -12px rgba(0, 0, 0, 0.7);
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+a.ecc-kpi:hover { transform: translateY(-1px); box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 10px 24px -14px rgba(59, 130, 246, 0.55); }
+.ecc-kpi { overflow: hidden; }
+.ecc-kpi--alarm { border-color: color-mix(in srgb, var(--ecc-bad) 45%, var(--ecc-border)); }
+.ecc-kpi--alarm::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--ecc-bad);
+}
+.ecc-kpi__valuerow { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.ecc-kpi__valuerow .ecc-kpi__value { min-width: 0; font-size: clamp(18px, 1.4vw, 26px); }
+.ecc-kpi__icon {
+  width: 26px; height: 26px; border-radius: 7px; display: inline-grid; place-items: center; flex-shrink: 0;
+  color: var(--ecc-accent); background: color-mix(in srgb, currentColor 14%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+}
+.ecc-kpi__icon--good { color: var(--ecc-good); }
+.ecc-kpi__icon--warn { color: var(--ecc-warn); }
+.ecc-kpi__icon--bad { color: var(--ecc-bad); }
+.ecc-kpi__icon--info { color: var(--ecc-accent); }
+.ecc-kpi__icon--neutral { color: var(--ecc-text-muted); }
+.ecc-card__title { letter-spacing: -0.005em; }
+.ecc-header__title, .pk-title { display: flex; align-items: center; gap: 10px; }
+.pk-title__icon, .ecc-header__icon {
+  width: 34px; height: 34px; border-radius: 9px; display: inline-grid; place-items: center; flex-shrink: 0;
+  color: var(--ecc-accent);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--ecc-accent) 30%, transparent), color-mix(in srgb, #8b5cf6 22%, transparent));
+  border: 1px solid color-mix(in srgb, var(--ecc-accent) 40%, transparent);
+}
+@media (prefers-reduced-motion: reduce) { .ecc-card, .ecc-kpi { transition: none; } a.ecc-kpi:hover { transform: none; } }

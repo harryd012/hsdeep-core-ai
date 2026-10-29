@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import type { ReactNode } from "react";
+import type { ComponentType, ReactNode } from "react";
 import type { Delta } from "@/lib/commandCenter/format";
 import { NOT_MEASURED } from "@/lib/commandCenter/format";
 
@@ -125,6 +125,10 @@ export interface KpiTileProps {
   unavailableReason?: string;
   /** Caption under a "—" value: "Not measured" (no sample) or "Unavailable" (read failed). */
   naText?: string;
+  /** Icon shown in a tinted badge, top-right. */
+  icon?: ComponentType<{ size?: number; "aria-hidden"?: boolean }>;
+  /** Badge tint; defaults to "bad" when `alarm`, else "info". */
+  tone?: "good" | "warn" | "bad" | "info" | "neutral";
 }
 
 export function KpiTile({
@@ -141,19 +145,29 @@ export function KpiTile({
   loading,
   unavailableReason,
   naText = "Not measured",
+  icon: Icon,
+  tone,
 }: KpiTileProps) {
   const na = value === NOT_MEASURED;
+  const tint = tone ?? (alarm ? "bad" : "info");
   const body = (
     <>
       <div className="ecc-kpi__label">
         <span>{label}</span>
         {badge && <span className="ecc-kpi__badge">{badge}</span>}
       </div>
-      {loading ? (
-        <div className="ecc-skeleton" style={{ height: 30, width: "60%" }} />
-      ) : (
-        <div className={`ecc-kpi__value${na ? " ecc-kpi__value--na" : alarm ? " ecc-kpi__value--bad" : ""}`}>{value}</div>
-      )}
+      <div className="ecc-kpi__valuerow">
+        {loading ? (
+          <div className="ecc-skeleton" style={{ height: 30, width: "60%" }} />
+        ) : (
+          <div className={`ecc-kpi__value${na ? " ecc-kpi__value--na" : alarm ? " ecc-kpi__value--bad" : ""}`}>{value}</div>
+        )}
+        {Icon && (
+          <span className={`ecc-kpi__icon ecc-kpi__icon--${tint}`}>
+            <Icon size={15} aria-hidden={true} />
+          </span>
+        )}
+      </div>
       <div className="ecc-kpi__foot">
         <div className="ecc-kpi__sub">
           {loading ? null : na ? (
@@ -172,11 +186,11 @@ export function KpiTile({
   );
   const aria = `${label}: ${na ? "not measured" : value}. ${info}`;
   return href ? (
-    <Link href={href} className="ecc-kpi" aria-label={aria} title={info}>
+    <Link href={href} className={`ecc-kpi${alarm ? " ecc-kpi--alarm" : ""}`} aria-label={aria} title={info}>
       {body}
     </Link>
   ) : (
-    <div className="ecc-kpi" aria-label={aria} title={info}>
+    <div className={`ecc-kpi${alarm ? " ecc-kpi--alarm" : ""}`} aria-label={aria} title={info}>
       {body}
     </div>
   );

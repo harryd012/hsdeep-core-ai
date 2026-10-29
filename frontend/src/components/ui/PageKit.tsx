@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ComponentType, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { Search } from "lucide-react";
 import "@/app/styles/executive-command-center.css";
@@ -26,9 +26,12 @@ export function PageShell({
   crumbs,
   actions,
   meta,
+  icon: Icon,
   children,
 }: {
   title: string;
+  /** Icon shown in a gradient badge beside the title. */
+  icon?: ComponentType<{ size?: number }>;
   subtitle?: string;
   crumbs?: { label: string; href?: string }[];
   actions?: ReactNode;
@@ -49,7 +52,14 @@ export function PageShell({
               ))}
             </nav>
           )}
-          <h1 className="pk-title">{title}</h1>
+          <h1 className="pk-title">
+            {Icon && (
+              <span className="pk-title__icon" aria-hidden="true">
+                <Icon size={18} />
+              </span>
+            )}
+            {title}
+          </h1>
           {subtitle && <p className="pk-subtitle">{subtitle}</p>}
         </div>
         {(actions || meta) && (
