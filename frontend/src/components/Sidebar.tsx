@@ -3,7 +3,7 @@
 import {
   LayoutDashboard, Server, Activity, Bell, TriangleAlert, Ticket, ArrowLeftRight, BookOpen,
   Bot, Workflow, Database, CreditCard, Settings, ChevronRight, ChevronDown, Check,
-    Building2, type LucideIcon,
+  Building2, Shield, LayoutGrid, type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -12,6 +12,12 @@ import {
   clearActiveTenantOverride, getActiveTenantOverride, getTenantId, setActiveTenantOverride,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { useAiCtoStatus } from "@/hooks/useAiCtoStatus";
+import { dependencyStatusLine } from "@/lib/health";
+import ThemeToggle from "@/components/ThemeToggle";
+
+// The per-dependency system status line is derived in lib/health.ts
+// (dependencyStatusLine) so the sidebar and the status tests share one source.
 
 interface NavChild {
   label: string;
@@ -49,10 +55,18 @@ interface NavGroup {
  */
 const navConfig: NavGroup[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, route: "/dashboard", permission: "dashboard.read" },
+  // Command Center (Portal V1). No `permission` gate on purpose - same as the
+  // Tickets entry - so the new portal is always reachable. The /portal pages
+  // enforce authorization server-side; hiding the link is convenience, not
+  // security. Leave the legacy Dashboard entry above untouched.
+  { id: "command-center", label: "Command Center", icon: LayoutGrid, route: "/portal" },
   { id: "infrastructure", label: "Infrastructure", icon: Server, route: "/infrastructure", permission: "sites.read", children: [
     { label: "Overview", route: "/infrastructure" },
+    { label: "Universal Resources", route: "/infrastructure/universal" },
     { label: "Asset Inventory", route: "/infrastructure/assets" },
+    { label: "Explorer", route: "/explorer" },
     { label: "Topology", route: "/infrastructure-topology/live" },
+    { label: "Discovery", route: "/infrastructure/discovery" },
   ] },
   { id: "org", label: "Organization", icon: Building2, route: "/organization", children: [
     { label: "Hierarchy", route: "/organization" },
@@ -69,6 +83,16 @@ const navConfig: NavGroup[] = [
   { id: "sop", label: "SOP Engine", icon: BookOpen, route: "/sop-engine", permission: "sops.read" },
   { id: "ai", label: "AI Copilot", icon: Bot, route: "/ai-copilot" },
   { id: "automation", label: "Automation", icon: Workflow, route: "/automation", permission: "workflows.read" },
+  {
+    id: "soc",
+    label: "SOC Analysis",
+    icon: Shield,
+    route: "/soc-analysis",
+    children: [
+      { label: "SOC Dashboard", route: "/soc-analysis" },
+      { label: "Analyst Roster", route: "/soc-analyst-roster" },
+    ],
+  },
   {
     id: "reports", label: "Reports", icon: Database, route: "/reports", permission: "dashboard.read", children: [
       { label: "Reports Overview", route: "/reports" },
@@ -95,6 +119,11 @@ export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { user } = useAuth();
+  // Real dependency state for the SYSTEM STATUS block. This block previously
+  // read a hardcoded "All Systems Operational", which meant the platform could
+  // report a healthy system while the database or Redis was down. It now
+  // derives from the same real probe the rest of the portal uses.
+  const { data: aiCto } = useAiCtoStatus();
   // Per-group explicit toggle. Absent = derive from the active route, so the
   // group containing the current page auto-expands without an effect.
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
@@ -259,11 +288,15 @@ export default function Sidebar() {
           );
         })}
       </nav>
+      <ThemeToggle />
       <div className="system-status">
         <b>HSDEEP CORE AI<br />SYSTEM STATUS</b>
         <div className="pulse-icon"><Activity /></div>
-        <small><i /> All Systems Operational</small>
+        <small>
+          <i /> {dependencyStatusLine(aiCto?.services)}
+        </small>
       </div>
     </aside>
   );
 }
+// NAV: Firewall Diagnostic -> /(dashboard)/firewall-diagnostic
