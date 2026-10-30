@@ -135,6 +135,11 @@ class SaveResult:
     #: Dynamic routes dropped by ``l3_max_dynamic_routes_per_device``.
     routes_capped: int = 0
     l3_status: dict[str, str] = field(default_factory=dict)
+    # -- Firewall gateway -------------------------------------------------------
+    firewalls_updated: int = 0
+    vpn_tunnels_upserted: int = 0
+    vpn_tunnels_retired: int = 0
+    firewall_status: dict[str, str] = field(default_factory=dict)
     # -- Universal infrastructure layer (spec: canonical telemetry) -----------
     #: Availability observations written for this bundle (one per device, from
     #: the device's own reported status).
@@ -504,11 +509,34 @@ class BundleSaver:
             interface_id_by_name[(ni.device_external_id, ni.name)] = interface.id
             result.interfaces_upserted += 1
 
+        # -- 2b. Firewall state, VPN tunnels and licences --------------------
+        # Stored in their own tables; what the device reported also becomes
+        # sensor readings below, so firewall alerts open and auto-resolve
+        # through the same sensor path as every other threshold.
+        firewall_readings: list = []
+        if bundle.firewall_status:
+            from app.services.monitoring.firewall_saver import save_firewall
+
+            fw_result = await save_firewall(
+                self.device_repo.db,
+                tenant_id=source.tenant_id,
+                source_id=source.id,
+                bundle=bundle,
+                device_id_by_external=device_id_by_external,
+                now=collected_at,
+            )
+            firewall_readings = fw_result.readings
+            result.firewalls_updated = fw_result.firewalls_updated
+            result.vpn_tunnels_upserted = fw_result.tunnels_upserted
+            result.vpn_tunnels_retired = fw_result.tunnels_retired
+            result.firewall_status = dict(bundle.firewall_status)
+        firewall_reading_ids = {r.external_id for r in firewall_readings}
+
         # -- 3. Sensors ------------------------------------------------------
         # external_id -> Sensor.id, for metric sensor_id resolution in step 4.
         sensor_id_by_external: dict[str, object] = {}
 
-        for reading in bundle.sensors:
+        for reading in [*bundle.sensors, *firewall_readings]:
             interface_id = None
             if reading.device_external_id is not None and reading.interface_external_id is not None:
                 interface_id = interface_id_by_key.get(
@@ -550,6 +578,13 @@ class BundleSaver:
                 interface_id=interface_id,
             )
             sensor_id_by_external[reading.external_id] = sensor.id
+            # Firewall readings always name their device, so their alerts
+            # carry it for correlation and health (KNOWN GAP #2 is about the
+            # repository signature; the link is set on the row directly).
+            if reading.external_id in firewall_reading_ids:
+                fw_device_id = device_id_by_external.get(reading.device_external_id)
+                if fw_device_id is not None and sensor.device_id != fw_device_id:
+                    sensor.device_id = fw_device_id
 
             if created:
                 result.sensors_created += 1

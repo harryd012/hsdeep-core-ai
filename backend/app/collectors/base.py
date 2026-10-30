@@ -196,6 +196,60 @@ class NormalizedRoute:
 
 
 @dataclass
+class NormalizedFirewallStatus:
+    """Firewall state reported by the device itself (one per firewall).
+
+    Every field the device did not report stays None: "HA not reported" is not
+    "standalone", and a missing session count is not 0.
+    """
+
+    device_external_id: str
+    #: standalone | active-passive | active-active
+    ha_mode: str | None = None
+    #: active | passive | primary | secondary
+    ha_role: str | None = None
+    #: in_sync | out_of_sync
+    ha_sync: str | None = None
+    ha_peer_serial: str | None = None
+    session_count: int | None = None
+    session_limit: int | None = None
+    cpu_percent: float | None = None
+    memory_percent: float | None = None
+    firmware_version: str | None = None
+
+
+@dataclass
+class NormalizedVpnTunnel:
+    device_external_id: str
+    name: str
+    #: up | down
+    status: str
+    #: ipsec | ssl
+    tunnel_type: str = "ipsec"
+    remote_gateway: str | None = None
+    phase2_up: int | None = None
+    phase2_total: int | None = None
+    bytes_in: float | None = None
+    bytes_out: float | None = None
+
+
+@dataclass
+class NormalizedLicence:
+    device_external_id: str
+    #: Vendor's own feature name ("Threat Prevention", "antivirus", ...).
+    feature: str
+    #: None when the licence never expires or the device gave no date.
+    expires_at: datetime | None = None
+    #: The device's own verdict when it gives one; otherwise derived from
+    #: expires_at by the saver.
+    expired: bool | None = None
+
+
+#: Firewall tables a collector can read; keys of NormalizedBundle.firewall_status.
+FIREWALL_TABLES = ("status", "vpn", "licences")
+
+
+@dataclass
 class NormalizedBundle:
     devices: list[NormalizedDevice] = field(default_factory=list)
     interfaces: list[NormalizedInterface] = field(default_factory=list)
@@ -218,6 +272,14 @@ class NormalizedBundle:
     #: never wipes what an earlier poll stored. A missing key means the
     #: collector does not read that table at all.
     l3_status: dict[str, str] = field(default_factory=dict)
+    #: Firewall state, VPN tunnels and licences (firewall gateway).
+    firewalls: list[NormalizedFirewallStatus] = field(default_factory=list)
+    vpn_tunnels: list[NormalizedVpnTunnel] = field(default_factory=list)
+    licences: list[NormalizedLicence] = field(default_factory=list)
+    #: Outcome per firewall table ("status", "vpn", "licences"), same values
+    #: and retirement rule as ``l3_status``. A missing key means the
+    #: collector does not read that table.
+    firewall_status: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -292,6 +354,11 @@ class BaseCollector(abc.ABC):
     source_type: ClassVar[str]
     display_name: ClassVar[str]
     implemented: ClassVar[bool] = True
+    #: Gateway grouping: firewall | network | server | cloud | monitoring.
+    category: ClassVar[str] = "other"
+    #: Firewall tables (FIREWALL_TABLES) this collector reads, so the UI can
+    #: say "not supported by this adapter" instead of "no data".
+    firewall_capabilities: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, source: "MonitoringSourceConnectionInfo"):
         """`source` exposes the typed columns (hostname, ip_address, port,

@@ -17,6 +17,7 @@ from app.models.interface_address import InterfaceAddress
 from app.models.email_outbox import EmailOutbox
 from app.models.account_token import AccountToken
 from app.models.incident_notification import IncidentNotification
+from app.models.firewall import FirewallStatus, VpnTunnel
 from app.models.sensor import Sensor
 from app.models.event import Event
 from app.models.metric import Metric
@@ -126,6 +127,8 @@ ___all__ = [
     "EmailOutbox",
     "AccountToken",
     "IncidentNotification",
+    "FirewallStatus",
+    "VpnTunnel",
     "BgpNeighbor",
     "OperationalSLAPolicy",
     "FailoverEvent",

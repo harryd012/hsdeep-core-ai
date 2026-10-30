@@ -128,6 +128,14 @@ class Settings(BaseSettings):
     # L3 topology: dynamic (BGP/OSPF/other) routes kept per device per poll.
     # Connected and static routes are always kept; a full BGP table is not.
     l3_max_dynamic_routes_per_device: int = 500
+    # Firewall gateway alert thresholds (percent, and days before licence
+    # expiry). Applied to what the device itself reports; a value the device
+    # did not report never alerts.
+    firewall_session_warning_pct: float = 80.0
+    firewall_session_critical_pct: float = 95.0
+    firewall_resource_warning_pct: float = 85.0
+    firewall_resource_critical_pct: float = 95.0
+    firewall_licence_warning_days: int = 30
 
     # Correlation: how long an open incident may be quiet before a new alert
     # starts a fresh incident instead of reopening it. Replaces the hardcoded
