@@ -55,7 +55,7 @@ Starting cost on the plans in the file is roughly US$60-120 per month; change
    ```bash
    SEED_TENANT_ID=$(python -c "import uuid; print(uuid.uuid4())") \
    SEED_TENANT_NAME="Your MSP" SEED_PLAN_TIER=enterprise \
-   SEED_ADMIN_EMAIL=you@example.com SEED_ADMIN_PASSWORD='choose-a-strong-one' \
+   SEED_ADMIN_EMAIL=you@example.com SEED_ADMIN_PASSWORD='<choose-a-strong-password>' \
    python scripts/seed_admin.py
    ```
    Re-running it is safe: existing tenants, users and subscriptions are left alone.

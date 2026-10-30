@@ -32,16 +32,24 @@ function Native([string]$label, [scriptblock]$command) {
 
 Step '1/6 security + dependency gates'
 Native 'secret scan self-test' { python ci/secret_scan.py --self-test }
+Native 'secret scan tests' { python -m pytest ci/test_secret_scan.py -q -p no:cacheprovider }
 Native 'secret scan' { python ci/secret_scan.py }
 Native 'runtime dependency completeness' { python ci/requirements_check.py }
 
-Step '2/6 frontend type-check, lint ratchet, production build'
+Step '2/6 frontend type-check, lint ratchet, unit tests, production build'
 Set-Location frontend
 Native 'tsc --noEmit' { npx tsc --noEmit }
 Set-Location $root
 Native 'lint ratchet' { python ci/lint_ratchet.py }
 Set-Location frontend
+Native 'frontend unit tests' { npm test }
 Native 'next build' { npm run build }
+Set-Location $root
+
+Step '2b/6 database migrations: exactly one alembic head'
+Set-Location backend
+$heads = (python -m alembic heads 2>$null | Select-String '\(head\)').Count
+if ($heads -ne 1) { Write-Output "GATE FAILED: expected one alembic head, found $heads"; exit 1 }
 Set-Location $root
 
 Step '3/6 backend focused suites (blockers + contracts)'

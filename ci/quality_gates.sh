@@ -55,6 +55,7 @@ step() { printf '\n=== %s ===\n' "$1"; }
 
 step "1/6 security + dependency gates"
 "$PYTHON" ci/secret_scan.py --self-test
+"$PYTHON" -m pytest ci/test_secret_scan.py -q -p no:cacheprovider
 "$PYTHON" ci/secret_scan.py
 "$PYTHON" ci/requirements_check.py
 
