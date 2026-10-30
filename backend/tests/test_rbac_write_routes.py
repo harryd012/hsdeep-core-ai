@@ -29,6 +29,8 @@ PUBLIC_WRITE_ROUTES = {
     ("POST", "/api/auth/login"),
     ("POST", "/api/auth/refresh"),
     ("POST", "/api/auth/logout"),
+    # Signed-in self-service: ends only the caller's own sessions.
+    ("POST", "/api/auth/logout-all"),
     # Account self-service: authorised by a single-use emailed token, or
     # (forgot) answered identically for any email; rate limited per IP.
     ("POST", "/api/auth/password/forgot"),
