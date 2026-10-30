@@ -295,3 +295,10 @@ a.ecc-kpi:hover { transform: translateY(-1px); box-shadow: 0 1px 0 rgba(255, 255
 .sb__more { grid-column: 2; justify-self: start; font-size: 12px; padding: 0; }
 @media (max-width: 1023px) { .sb { grid-template-columns: minmax(0, 1fr); } .sb__more { grid-column: 1; } }
 @media (max-width: 767px) { .sb__finding { grid-template-columns: 28px minmax(0, 1fr); } .sb__action { grid-column: 2; justify-self: start; } }
+
+/* -- quiet window: an empty range explains itself and offers a wider one -- */
+.ecc-quiet { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 6px; min-height: 120px; padding: 8px 4px; }
+.ecc-quiet__title { margin: 0; font-size: 13px; font-weight: 600; color: var(--ecc-text); }
+.ecc-quiet__detail { margin: 0; font-size: 12px; color: var(--ecc-text-muted); max-width: 46ch; }
+.ecc-quiet__action { margin-top: 4px; padding: 5px 10px; font: inherit; font-size: 12px; font-weight: 600; color: var(--ecc-accent); background: transparent; border: 1px solid var(--ecc-border-strong); border-radius: 8px; cursor: pointer; text-decoration: none; }
+.ecc-quiet__action:hover { border-color: var(--ecc-accent); background: var(--ecc-surface-raised); }
