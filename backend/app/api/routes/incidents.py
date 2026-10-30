@@ -101,6 +101,7 @@ class CollectorHealthItem(BaseModel):
     last_success_at: str | None
     last_failure_at: str | None
     last_error: str | None
+    failure_category: str | None = None
 
 
 class CollectorHealthList(BaseModel):
@@ -159,6 +160,10 @@ async def get_alert_intelligence_metrics(
 async def get_collector_health(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     window_hours: int = Query(default=24, ge=1, le=168),
+    exclude_test_sources: bool = Query(
+        default=True,
+        description="Exclude synthetic/test sources (source_type='test_fake_concurrency') from the rollup",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """Collector health summary for the Incidents dashboard.
@@ -177,7 +182,7 @@ async def get_collector_health(
     `get_health_for_tenant()` both filter `tenant_id` + not soft-deleted.
     """
     health = await CollectorHealthService(db).get_health_for_tenant(
-        tenant_id, window_hours=window_hours
+        tenant_id, window_hours=window_hours, exclude_test_sources=exclude_test_sources
     )
 
     items = [
@@ -194,6 +199,7 @@ async def get_collector_health(
             last_success_at=h.last_success_at.isoformat() if h.last_success_at else None,
             last_failure_at=h.last_failure_at.isoformat() if h.last_failure_at else None,
             last_error=h.last_error,
+            failure_category=h.failure_category,
         )
         for h in health
     ]

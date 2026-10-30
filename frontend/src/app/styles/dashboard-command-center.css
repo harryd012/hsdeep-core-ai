@@ -1,5 +1,5 @@
 ﻿/* ============================================================================
- * HSDEEP CORE AI — UNIFIED COMMAND CENTER
+ * HSDEEP CORE AI � UNIFIED COMMAND CENTER
  * Compact enterprise NOC + SOC presentation layer.
  *
  * This stylesheet is an ADDITIVE polish layer. It is imported from
@@ -11,15 +11,46 @@
  * with fallbacks that match the current palette.
  * =========================================================================== */
 
+/* ---- Density tokens (scoped under .hs-dashboard) -------------------------- */
+.hs-dashboard {
+  --dashboard-gap: 8px;
+  --section-gap: 10px;
+  --card-padding-x: 10px;
+  --card-padding-y: 8px;
+  --compact-card-height: 72px;
+}
+
+/* ---- Typography hierarchy ------------------------------------------------- */
+.hs-dashboard .op-health__label,
+.hs-dashboard .soc-kpi__label {
+  .hs-dashboard .op-health__label, .hs-dashboard .soc-kpi__label { font-size: 11px; font-weight: 600; letter-spacing: 0.035em; line-height: 1.2; text-transform: uppercase; color: var(--muted, #8ea3bf); }
+  text-transform: uppercase; color: var(--muted, #8ea3bf);
+}
+.hs-dashboard .op-health__value,
+.hs-dashboard .soc-kpi__value,
+.hs-dashboard .ai-ops__summary__value,
+.hs-dashboard .infra-noc__value {
+  font-size: 22px; line-height: 1; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.hs-dashboard .op-health__context,
+.hs-dashboard .soc-kpi__delta,
+.hs-dashboard .ai-ops__updated {
+  font-size: 10px; font-weight: 500; line-height: 1.25; color: var(--muted, #8ea3bf);
+}
+.hs-dashboard .ai-ops__metrics dt,
+.hs-dashboard .ai-ops__summary__label {
+  font-size: 9px; line-height: 1.25; color: var(--muted, #8ea3bf);
+}
+
 /* ---------------------------------------------------------------------------
- * 1. PAGE FRAME — minimal vertical padding, full available width
+ * 1. PAGE FRAME � minimal vertical padding, full available width
  * ------------------------------------------------------------------------- */
 
 .hs-main .hs-dashboard {
   width: 100%;
   max-width: none;
   margin: 0;
-  padding: 10px 14px 14px;
+  padding: 8px 10px 10px;
 }
 
 /* Prevent grid/flex children from forcing horizontal overflow. */
@@ -29,7 +60,7 @@
 }
 
 /* Reset the base .hs-dashboard flex gap (base sets 1.25rem) so zone
-   margins are the only inter-zone spacing — no double gaps. */
+   margins are the only inter-zone spacing � no double gaps. */
 .hs-main .hs-dashboard {
   gap: 0;
 }
@@ -38,18 +69,28 @@
    more compact, less oversized panel look. */
 .hs-main .hs-dashboard .hs-zone {
   padding: 6px 8px;
-  border-radius: 10px;
+  padding: 5px 7px;
 }
 
 /* ---------------------------------------------------------------------------
- * 2. SECTION ZONES — compact, explicit vertical rhythm
+ * 2. SECTION ZONES � compact, explicit vertical rhythm
  * ------------------------------------------------------------------------- */
 
 .hs-dashboard .hs-zone {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin: 0 0 8px;
+  gap: 2px;
+  min-height: 0;
+}
+
+/* Reconcile old section-gap embedding so sections don't add another band of
+   whitespace on top of the zone margin. */
+.hs-dashboard .alert-soc-row,
+.hs-dashboard .unified-health-row,
+.hs-dashboard .unified-ai-row,
+.hs-dashboard .unified-infra-row {
+  margin: 0;
 }
 
 .hs-dashboard .hs-zone:last-child {
@@ -60,10 +101,10 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  min-height: 22px;
+  gap: 8px;
+  min-height: 18px;
   margin: 0;
-  padding: 0 2px;
+  padding: 0;
 }
 
 .hs-dashboard .hs-zone__title {
@@ -71,67 +112,72 @@
   align-items: center;
   gap: 8px;
   margin: 0;
-  font-size: 0.8125rem;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text, #e6f1ff);
 }
 
 .hs-dashboard .hs-zone__subtitle {
   margin: 0;
-  font-size: 0.6875rem;
+  font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.02em;
   color: var(--muted, #8ea3bf);
 }
 
-/* ---------------------------------------------------------------------------
- * 3. NOC OPERATIONAL HEALTH STRIP — one compact row, 78 / 22 with summary
- * ------------------------------------------------------------------------- */
+/* ------------------------------------------------------------------------- */
+/* 3. NOC OPERATIONAL HEALTH GRID � compact 3-column � 3-row KPI grid       */
+/*    (7 real KPIs auto-flow 3/3/1; no filler cards are created)             */
+/* ------------------------------------------------------------------------- */
 
 .hs-dashboard .op-health__strip {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 6px;
-  align-items: stretch;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  align-items: start;
+  width: 100%;
+  max-width: 960px;
 }
 
 .hs-dashboard .op-health__kpi {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 2px;
-  min-height: 56px;
-  padding: 6px 8px;
-  border-radius: 10px;
+  gap: 1px;
+  min-height: 72px;
+  padding: 8px 10px;
+  border-radius: 8px;
   border: 1px solid var(--border, rgba(94, 158, 214, 0.18));
   background: var(--panel, rgba(12, 24, 40, 0.72));
 }
 
 .hs-dashboard .op-health__value {
-  font-size: 1.5rem;
-  line-height: 1.1;
-  font-weight: 800;
+  font-size: 22px;
+  line-height: 1;
+  font-weight: 700;
   letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
 }
 
 .hs-dashboard .op-health__label {
-  font-size: 0.6875rem;
-  letter-spacing: 0.08em;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.035em;
+  line-height: 1.2;
   text-transform: uppercase;
   color: var(--muted, #8ea3bf);
 }
 
 .hs-dashboard .op-health__status {
-  font-size: 0.625rem;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   color: var(--muted, #8ea3bf);
 }
 
@@ -153,19 +199,22 @@
 .hs-dashboard .op-health__kpi--neutral .op-health__value { color: var(--cyan, #35c7f0); }
 
 /* ---------------------------------------------------------------------------
- * 4. SOC KPI CARDS — compact tile strip
+ * 4. SOC KPI CARDS � compact tile strip
  * ------------------------------------------------------------------------- */
 
 .hs-dashboard .soc-kpis {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 6px;
-  align-items: stretch;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(2, auto);
+  gap: 8px;
+  align-items: start;
+  width: 100%;
+  max-width: 960px;
 }
 
 .hs-dashboard .soc-kpis .soc-kpi {
-  min-height: 56px;
-  padding: 6px 8px;
+  min-height: 72px;
+  padding: 8px 10px;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -176,40 +225,35 @@
   border-radius: 10px;
 }
 
-.hs-dashboard .soc-kpi__label {
-  font-size: 0.625rem;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--muted, #8ea3bf);
-}
+
 
 .hs-dashboard .soc-kpis .soc-kpi__label {
-  font-size: 0.625rem;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.035em;
+  line-height: 1.2;
   text-transform: uppercase;
   color: var(--muted, #8ea3bf);
 }
 
 .hs-dashboard .soc-kpi__value {
-  font-size: 1.5rem;
-  line-height: 1.1;
-  font-weight: 800;
+  font-size: 22px;
+  line-height: 1;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--text, #e6f1ff);
 }
 
-.hs-dashboard .soc-kpi__delta { font-size: 0.625rem; color: var(--muted, #8ea3bf); }
+.hs-dashboard .soc-kpi__delta { font-size: 10px; color: var(--muted, #8ea3bf); }
 
 /* ---------------------------------------------------------------------------
- * 5. AI OPERATIONS — AI CTO topology left 62% / Copilot right 38%
+ * 5. AI OPERATIONS � AI CTO topology left 62% / Copilot right 38%
  * ------------------------------------------------------------------------- */
 
 .hs-dashboard .ai-ops__grid {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
-  gap: 8px;
+  gap: 6px;
   align-items: stretch;
 }
 
@@ -218,7 +262,7 @@
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: .625rem;
+  padding: 6px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -227,7 +271,7 @@
 
 /* AiOperations renders its own sub-cards (.ai-ops__summary / .ai-ops__copilot)
    inside the LEFT cell (.ai-ops__cto). Since the cell already has card chrome,
-   the inner sub-cards must be transparent — no nested card borders. */
+   the inner sub-cards must be transparent � no nested card borders. */
 .hs-dashboard .ai-ops__summary,
 .hs-dashboard .ai-ops__copilot {
   background: transparent;
@@ -242,14 +286,14 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 0 2px;
+  gap: 4px;
+  padding: 0;
   margin: 0;
 }
 
 .hs-dashboard .ai-ops__header h2 {
   margin: 0;
-  font-size: 0.8125rem;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -257,13 +301,13 @@
 }
 
 .hs-dashboard .ai-ops__status {
-  font-size: 0.625rem;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   color: var(--muted, #8ea3bf);
 }
 
@@ -279,12 +323,12 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: .5rem;
-  margin-bottom: .625rem;
+  gap: 4px;
+  margin-bottom: 4px;
 }
 
 .hs-dashboard .ai-ops__cto-title {
-  font-size: 0.8125rem;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -294,22 +338,22 @@
 
 .hs-dashboard .ai-ops__metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: .5rem;
-  margin: 0 0 .75rem;
+  grid-template-columns: repeat(auto-fit, minmax(60px, 100px));
+  gap: 4px;
+  margin: 0 0 4px;
 }
 
 .hs-dashboard .ai-ops__metrics dt {
-  font-size: 0.5625rem;
+  font-size: 9px;
   font-weight: 600;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted, #8ea3bf);
   margin: 0;
 }
 
 .hs-dashboard .ai-ops__metrics dd {
-  font-size: 1.125rem;
+  font-size: 22px;
   font-weight: 700;
   color: var(--text, #e6f1ff);
   margin: 2px 0 0;
@@ -319,19 +363,18 @@
 .hs-dashboard .ai-ops__focus h3,
 .hs-dashboard .ai-ops__recommendations h3,
 .hs-dashboard .ai-ops__copilot h3 {
-  font-size: 0.6875rem;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--muted, #8ea3bf);
-  margin: 0 0 .375rem;
+  margin: 0 0 4px;
 }
 
 .hs-dashboard .ai-ops__focus ul {
-  margin: 0 0 .75rem;
-  padding-left: 1.1rem;
-  font-size: 0.8125rem;
-  color: var(--text-dim, #8aa6b2);
+  margin: 0 0 4px;
+  padding-left: 1rem;
+  font-size: 10px; color: var(--text-dim, #8aa6b2);
   list-style: disc;
 }
 
@@ -339,10 +382,11 @@
   border-left: 2px solid var(--muted, #8ea3bf);
   background: #94c8e60d;
   border-radius: 6px;
-  padding: .4375rem .625rem;
-  font-size: 0.8125rem;
+  padding: 3px 6px;
+  font-size: 10px;
+  line-height: 1.35;
   color: var(--text-dim, #8aa6b2);
-  margin: 0 0 .375rem;
+  margin: 0 0 4px;
 }
 
 .hs-dashboard .ai-ops__rec--critical { border-left-color: var(--red, #ff5c5c); color: #fca5a5; }
@@ -350,40 +394,40 @@
 .hs-dashboard .ai-ops__rec--info { border-left-color: var(--information, #38bdf8); }
 
 .hs-dashboard .ai-ops__updated {
-  font-size: 0.6875rem;
+  font-size: 9px;
   color: var(--muted, #8ea3bf);
   display: block;
-  margin-top: .5rem;
+  margin-top: 4px;
 }
 
 .hs-dashboard .ai-ops__actions {
   display: flex;
   flex-wrap: wrap;
-  gap: .375rem;
+  gap: 4px;
   margin-bottom: .625rem;
 }
 
 .hs-dashboard .ai-ops__action {
   display: inline-block;
-  font-size: 0.75rem;
+  font-size: 10px;
   color: var(--cyan, #17d9ed);
   background: #17d9ed14;
   border: 1px solid #17d9ed4d;
   border-radius: 999px;
-  padding: .3125rem .625rem;
+  padding: 3px 8px;
   text-decoration: none;
   cursor: pointer;
 }
 
 .hs-dashboard .ai-ops__action:hover { background: #17d9ed2e; }
 
-.hs-dashboard .ai-ops__chat { display: flex; gap: .5rem; }
+.hs-dashboard .ai-ops__chat { display: flex; gap: 4px; }
 
 .hs-dashboard .ai-ops__chat input {
   flex: 1;
   min-width: 0;
-  padding: .5rem .75rem;
-  font-size: 0.8125rem;
+  padding: 6px 8px;
+  font-size: 10px;
   color: var(--text, #e6f1ff);
   background: #010a11d9;
   border: 1px solid var(--line);
@@ -393,9 +437,9 @@
 .hs-dashboard .ai-ops__chat button {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: .5rem .75rem;
-  font-size: 0.8125rem;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 10px;
   color: var(--green, #2ecc71);
   background: #2ecc7124;
   border: 1px solid #2ecc7173;
@@ -406,46 +450,50 @@
 .hs-dashboard .ai-ops__chat button:disabled { opacity: .5; cursor: not-allowed; }
 
 .hs-dashboard .ai-ops__answer {
-  font-size: 0.8125rem;
+  font-size: 10px;
   color: var(--text, #e6f1ff);
   background: #2ecc710f;
   border: 1px solid #2ecc7140;
   border-radius: 8px;
   padding: .5rem .625rem;
-  margin: .5rem 0 0;
+  margin: 4px 0 0;
 }
 
+/* Pin the workspace link to the bottom of the (stretched) Copilot panel so
+   the extra height reads as intentional panel breathing room. */
 .hs-dashboard .ai-ops__workspace-link {
   display: inline-block;
-  font-size: 0.75rem;
+  font-size: 10px;
   color: var(--cyan, #17d9ed);
-  margin-top: .625rem;
+  margin-top: auto;
+  padding-top: 4px;
   text-decoration: none;
 }
 
 .hs-dashboard .ai-ops__workspace-link:hover { text-decoration: underline; }
 
 /* ---------------------------------------------------------------------------
- * 6. INFRASTRUCTURE OVERVIEW — left NOC summary / right cloud status
+ * 6. INFRASTRUCTURE OVERVIEW � left NOC summary / right cloud status
  * ------------------------------------------------------------------------- */
 
 .hs-dashboard .infra-overview__grid {
   display: grid;
   grid-template-columns: minmax(0, 78fr) minmax(0, 22fr);
-  gap: 6px;
+  gap: 4px;
   align-items: stretch;
 }
 
 .hs-dashboard .infra-overview__noccards {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 4px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
   overflow: hidden;
+  max-width: 960px;
 }
 
 .hs-dashboard .infra-noc__item {
   min-width: 0;
-  padding: 6px 8px;
+  padding: 8px 10px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -456,7 +504,7 @@
 }
 
 .hs-dashboard .infra-noc__label {
-  font-size: 0.5625rem;
+  font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -464,16 +512,16 @@
 }
 
 .hs-dashboard .infra-noc__value {
-  font-size: 1rem;
+  font-size: 22px;
   font-weight: 700;
   color: var(--text, #e6f1ff);
   font-variant-numeric: tabular-nums;
 }
 
-.hs-dashboard .infra-noc__delta { font-size: 0.5625rem; color: var(--muted, #8ea3bf); }
+.hs-dashboard .infra-noc__delta { font-size: 9px; color: var(--muted, #8ea3bf); }
 
 .hs-dashboard .cloud-status__panel {
-  padding: 10px 12px;
+  padding: 8px 10px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -485,7 +533,7 @@
 }
 
 .hs-dashboard .cloud-status__title {
-  font-size: 0.6875rem;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -501,7 +549,7 @@
   font-size: 0.75rem;
 }
 
-.hs-dashboard .cloud-status__label { color: var(--muted, #8ea3bf); }
+.hs-dashboard .cloud-status__label { font-size: 10px; color: var(--muted, #8ea3bf); }
 .hs-dashboard .cloud-status__value {
   font-weight: 700;
   color: var(--text, #e6f1ff);
@@ -526,7 +574,7 @@
 }
 
 /* ---------------------------------------------------------------------------
- * 7. SOC ANALYTICS — 3 tiles wide
+ * 7. SOC ANALYTICS � 3 tiles wide
  * ------------------------------------------------------------------------- */
 
 .hs-dashboard .soc-analytics-grid {
@@ -549,7 +597,7 @@
 }
 
 .hs-dashboard .soc-analytics__title {
-  font-size: 0.6875rem;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -564,10 +612,10 @@
   gap: 8px;
 }
 
-.hs-dashboard .soc-analytics__metric-label { font-size: 0.75rem; color: var(--muted, #8ea3bf); }
+.hs-dashboard .soc-analytics__metric-label { font-size: 10px; color: var(--muted, #8ea3bf); }
 
 .hs-dashboard .soc-analytics__metric-value {
-  font-size: 1.125rem;
+  font-size: 22px;
   font-weight: 700;
   color: var(--text, #e6f1ff);
   font-variant-numeric: tabular-nums;
@@ -583,7 +631,7 @@
 .hs-dashboard .soc-analytics__mini-fill { height: 100%; border-radius: 2px; }
 
 /* ---------------------------------------------------------------------------
- * 8. SOC OPERATIONS — SOC-1 full-width header, SOC-2 / SOC-3 side-by-side
+ * 8. SOC OPERATIONS � SOC-1 full-width header, SOC-2 / SOC-3 side-by-side
  * ------------------------------------------------------------------------- */
 
 .hs-dashboard .soc-ops-grid {
@@ -594,7 +642,7 @@
 }
 
 .hs-dashboard .soc-ops-card {
-  padding: 10px 12px;
+  padding: 8px 10px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -606,7 +654,7 @@
 }
 
 .hs-dashboard .soc-ops-card__title {
-  font-size: 0.6875rem;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -618,7 +666,7 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   overflow: hidden;
   min-width: 0;
 }
@@ -627,8 +675,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  font-size: 0.75rem;
+  gap: 6px;
+  font-size: 10px;
 }
 
 .hs-dashboard .soc-ops-card__label { color: var(--muted, #8ea3bf); }
@@ -653,7 +701,7 @@
 .hs-dashboard .soc-ops-card__progress-fill { height: 100%; border-radius: 2px; }
 
 /* ---------------------------------------------------------------------------
- * 9. SOC WORKFLOW — left alerts history / right case timeline
+ * 9. SOC WORKFLOW � left alerts history / right case timeline
  * ------------------------------------------------------------------------- */
 
 .hs-dashboard .soc-workflow-grid {
@@ -664,7 +712,7 @@
 }
 
 .hs-dashboard .soc-workflow-card {
-  padding: 10px 12px;
+  padding: 8px 10px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -676,7 +724,7 @@
 }
 
 .hs-dashboard .soc-workflow-card__title {
-  font-size: 0.6875rem;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -688,7 +736,7 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   overflow: hidden;
   min-width: 0;
 }
@@ -697,7 +745,7 @@
   display: flex;
   gap: 6px;
   align-items: flex-start;
-  font-size: 0.75rem;
+  font-size: 10px;
 }
 
 .hs-dashboard .soc-workflow-item__time {
@@ -715,7 +763,7 @@
 }
 
 .hs-dashboard .soc-workflow-item__tag {
-  font-size: 0.5625rem;
+  font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -725,7 +773,7 @@
 }
 
 /* ---------------------------------------------------------------------------
- * 10. ANALYTICS — Charts 62 / Activity feed 38
+ * 10. ANALYTICS � Charts 62 / Activity feed 38
  * ------------------------------------------------------------------------- */
 
 .hs-dashboard .hs-zone__trends-grid {
@@ -738,7 +786,7 @@
 .hs-dashboard .unified-analytics-card { min-width: 0; }
 
 /* ---------------------------------------------------------------------------
- * 11. SUMMARY CARD — inline unified summary tiles
+ * 11. SUMMARY CARD � inline unified summary tiles
  * ------------------------------------------------------------------------- */
 
 .hs-dashboard .ai-ops__summary {
@@ -754,7 +802,7 @@
 }
 
 .hs-dashboard .ai-ops__summary__label {
-  font-size: 0.5625rem;
+  font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.09em;
   text-transform: uppercase;
@@ -762,7 +810,7 @@
 }
 
 .hs-dashboard .ai-ops__summary__value {
-  font-size: 1.5rem;
+  font-size: 22px;
   line-height: 1.1;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
@@ -770,10 +818,10 @@
 }
 
 /* ---------------------------------------------------------------------------
- * 12. RESPONSIVE — desktop / laptop / tablet / mobile without dead space
+ * 12. RESPONSIVE � desktop / laptop / tablet / mobile without dead space
  * ------------------------------------------------------------------------- */
 
-/* Responsive — reduce grid gaps across all layouts */
+/* Responsive � reduce grid gaps across all layouts */
 @media (max-width: 1440px) {
   .hs-dashboard .infra-overview__grid {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
@@ -792,9 +840,6 @@
   .hs-dashboard .soc-analytics-grid {
     gap: 6px;
   }
-  .hs-dashboard .soc-kpis .soc-kpis {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
   .hs-dashboard .soc-analytics-grid {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
@@ -806,9 +851,6 @@
   }
   .hs-dashboard .soc-ops-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-  .hs-dashboard .op-health__strip {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
@@ -831,9 +873,8 @@
   .hs-main .hs-dashboard {
     padding: 10px 10px 14px;
   }
-  .hs-dashboard .op-health__strip,
-  .hs-dashboard .soc-kpis .soc-kpis {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .hs-dashboard .op-health__strip {
+    grid-template-columns: minmax(0, 1fr);
   }
   .hs-dashboard .op-health__kpi,
   .hs-dashboard .soc-kpi,
@@ -846,7 +887,7 @@
   .hs-dashboard .ai-ops__summary__value {
     font-size: 1.25rem;
   }
-  /* AI CTO metric dl: 4 columns overlap below 540px — collapse to 2x2. */
+  /* AI CTO metric dl: 4 columns overlap below 540px � collapse to 2x2. */
   .hs-dashboard .ai-ops__metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px 10px;
@@ -868,17 +909,19 @@
   min-width: 0;
   min-height: 0;
   margin: 0;
-  padding: 12px;
+  padding: 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
   overflow: visible;
 }
 
+/* Summary (AI CTO recs) + Copilot are the same logical row: stretch so the
+   Copilot panel fills to match instead of leaving zone-level dead space. */
 .hs-dashboard .hs-zone--ai .ai-ops > .ai-ops__grid {
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
   gap: 12px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .hs-dashboard .hs-zone--ai .ai-ops > .ai-ops__grid > * {
@@ -886,8 +929,8 @@
   flex-direction: column;
   justify-content: flex-start;
   min-height: 0;
-  padding: 12px;
-  gap: 8px;
+  padding: 8px;
+  gap: 5px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface-2);
@@ -949,7 +992,7 @@
   .hs-app:has(.hs-dashboard) > .hs-sidebar nav {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 4px;
+    gap: 6px;
   }
   .hs-app:has(.hs-dashboard) .hs-sidebar__ctx {
     grid-column: 1 / -1;
@@ -966,3 +1009,1807 @@
   max-width: 100%;
   overflow-x: auto;
 }
+
+/* SOC cards: layout is owned by the canonical .soc-kpis grid rules
+   (section 4 above) and the .alert-soc-row panel scope � no flex fallback. */
+
+/* ===========================================================================
+ * FULL-DASHBOARD REDESIGN (additive): section navigation, zone headers,
+ * and structured AI CTO recommendation cards. Scoped under .hs-dashboard.
+ * ======================================================================== */
+
+/* Section navigation � compact pill row under the masthead. */
+.hs-dashboard .dashboard-section-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 0 6px;
+}
+
+.hs-dashboard .dashboard-section-nav a {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted, #8ea3bf);
+  text-decoration: none;
+  padding: 4px 10px;
+  border: 1px solid var(--line, rgba(94, 158, 214, 0.25));
+  border-radius: 999px;
+  background: var(--surface, rgba(12, 24, 40, 0.6));
+}
+
+.hs-dashboard .dashboard-section-nav a:hover,
+.hs-dashboard .dashboard-section-nav a:focus-visible {
+  color: var(--cyan, #17d9ed);
+  border-color: var(--cyan, #17d9ed);
+}
+
+/* Anchored zones: keep the zone header visible below any fixed chrome. */
+.hs-dashboard .hs-zone[id] {
+  scroll-margin-top: 16px;
+}
+
+/* Zone subtitles are contextual chrome; hide them gracefully on narrow
+   viewports instead of wrapping into multi-line rows. */
+@media (max-width: 900px) {
+  .hs-dashboard .hs-zone__subtitle {
+    display: none;
+  }
+}
+
+/* AI CTO recommendation cards � structured severity / category / scope chips
+   above the message. The category is no longer tooltip-only information. */
+.hs-dashboard .ai-ops__rec-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.hs-dashboard .ai-ops__rec-sev {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+
+.hs-dashboard .ai-ops__rec-sev--critical,
+.hs-dashboard .ai-ops__rec-sev--high {
+  color: var(--red, #ff5470);
+}
+
+.hs-dashboard .ai-ops__rec-sev--warning,
+.hs-dashboard .ai-ops__rec-sev--medium {
+  color: var(--amber, #ffb020);
+}
+
+.hs-dashboard .ai-ops__rec-sev--low,
+.hs-dashboard .ai-ops__rec-sev--info {
+  color: var(--muted, #8ea3bf);
+}
+
+.hs-dashboard .ai-ops__rec-kind,
+.hs-dashboard .ai-ops__rec-scope {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted, #8ea3bf);
+}
+
+.hs-dashboard .ai-ops__rec-message {
+  display: block;
+  font-size: 10px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+/* Composition wrappers must not inherit metric-row or side-column layouts. */
+.hs-dashboard .unified-health-stack,
+.hs-dashboard .unified-infrastructure-stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+.hs-dashboard .unified-infrastructure-stack > .infra-health__row {
+  display: block;
+}
+
+.hs-dashboard .unified-infrastructure-stack > .infra-health__row > .infra-overview {
+  width: 100%;
+}
+
+.hs-dashboard .unified-infrastructure-stack .infra-overview__grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.hs-dashboard .unified-infrastructure-stack .infra-overview__grid > :last-child {
+  grid-column: auto;
+}
+
+@media (max-width: 1000px) {
+  .hs-dashboard .unified-infrastructure-stack .infra-overview__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+
+/* ===========================================================================
+ * REFERENCE LAYOUT (AI COMMAND CENTER) - appended layout layer
+ * Rows replace the old stacked-zone IA. Scoped under .hs-dashboard.
+ * ========================================================================== */
+
+/* ---- Row 2: combined band - Alert Summary (left) + Security Overview (right) */
+.hs-dashboard .alert-soc-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(600px, 1.3fr);
+  gap: 6px;
+  align-items: stretch;
+  width: 100%;
+  margin-top: 6px;
+}
+
+/* If SOC data has not arrived yet, the band collapses to the summary only. */
+.hs-dashboard .alert-soc-row:has(> :only-child) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.hs-dashboard .alert-soc-row__summary,
+.hs-dashboard .alert-soc-row__soc {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: auto;
+  min-height: 0;
+}
+
+/* Security Workflow inside the narrow SOC side column: 2 x 3 grid instead of
+   6-across so the stage labels never overlap. Steps are compact rows. */
+.hs-dashboard .unified-soc-row .soc-workflow__steps {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hs-dashboard .unified-soc-row .soc-workflow__step {
+  padding: 6px 7px;
+  gap: 2px;
+  border-radius: 8px;
+}
+
+.hs-dashboard .unified-soc-row .soc-workflow__step b {
+  font-size: 0.6875rem;
+}
+
+.hs-dashboard .unified-soc-row .soc-workflow__step small {
+  font-size: 9px;
+  line-height: 1.25;
+}
+
+.hs-dashboard .unified-soc-row .soc-workflow__arrow {
+  display: none;
+}
+
+/* Side column compaction: the map, workflow and quick-actions stay small so
+   the analytics/ops columns (align-items: start) are not out-grown by a tall
+   side column � that was creating a large blank band inside the SOC zone. */
+.hs-dashboard .unified-soc-row__side .soc-map__svg {
+  max-height: 190px;
+}
+
+.hs-dashboard .unified-soc-row__side .soc-quick__grid {
+  gap: 5px;
+}
+
+.hs-dashboard .unified-soc-row__side .soc-quick__btn {
+  padding: 6px 8px;
+  font-size: 11px;
+}
+
+/* Stretched topology cell: let the column fill its row height and pin the
+   Recent Activity strip to the bottom so the extra height is absorbed
+   instead of leaving dead space under the department cards. */
+.hs-dashboard .unified-ai-row__topology > .org-compact {
+  height: 100%;
+}
+
+.hs-dashboard .unified-ai-row__topology > .org-compact > .org-activity {
+  margin-top: auto;
+}
+
+/* Alert Summary panel: compact, content-driven height. */
+.hs-dashboard .alert-soc-row .alert-summary {
+  height: auto;
+  min-height: 220px;
+  max-height: 280px;
+}
+
+.hs-dashboard .alert-soc-row .alert-summary__row {
+  padding: 1px 4px;
+}
+
+.hs-dashboard .alert-soc-row .alert-summary__donut {
+  flex: 0 0 auto;
+}
+
+.hs-dashboard .alert-soc-row__soc .soc-kpis {
+  flex: 0 1 auto;
+  align-content: start;
+  padding: 0;
+  width: 100%;
+  max-width: 960px;
+}
+
+.hs-dashboard .alert-soc-row__soc .soc-kpi__head small {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hs-dashboard .alert-soc-row__soc .soc-kpi__foot small {
+  font-size: 9px;
+  line-height: 1.25;
+}
+
+/* ---- Row 3: AI Operations + topology (58 / 42) --------------------------- */
+.hs-dashboard .unified-ai-row {
+  display: grid;
+  grid-template-columns: minmax(0, 58fr) minmax(0, 42fr);
+  gap: 6px;
+  /* Same logical row: equal-height cells, no zone-level dead space. */
+  align-items: stretch;
+}
+
+.hs-dashboard .unified-ai-row__ai,
+.hs-dashboard .unified-ai-row__topology {
+  min-width: 0;
+}
+
+/* ---- Row 4: Infrastructure Operations - single full-width column ------------
+ * AssetsSummary moved up to Row 1; the tabbed infrastructure view now owns the
+ * full row width (Class C visualization container). */
+.hs-dashboard .unified-infra-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  align-items: start;
+}
+
+.hs-dashboard .unified-infra-row__overview,
+.hs-dashboard .unified-infra-row__assets {
+  min-width: 0;
+}
+
+/* Fix the squeezed infra grid: force the 3-panel row back to 3 columns and
+   give each panel a sensible min height so they never collapse to slivers. */
+.hs-dashboard .unified-infra-row .infra-overview__grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.hs-dashboard .unified-infra-row .infra-overview__grid > .hud-panel {
+  min-height: 80px;
+}
+
+.hs-dashboard .unified-infra-row .infra-overview__grid > .recent-events {
+  min-height: 80px;
+}
+
+/* ---- Row 5: Security Analytics | Security Operations | Map/Workflow ------ */
+/* Analytics | Ops | Side are the same logical row: stretch gives all three
+   equal height, so the zone ends exactly at the row bottom with no blank
+   band under the shorter columns. */
+.hs-dashboard .unified-soc-row {
+  display: grid;
+  grid-template-columns: minmax(0, 50fr) minmax(0, 28fr) minmax(0, 22fr);
+  gap: 6px;
+  align-items: stretch;
+}
+
+/* Stretched columns: tab wrapper -> body -> inner panel chain must flex so
+   the chart and the events list actually use the shared height. */
+.hs-dashboard .unified-soc-row > .soc-analytics-tabs,
+.hs-dashboard .unified-soc-row > .soc-ops-tabs {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.hs-dashboard .unified-soc-row .soc-analytics-tabs__body,
+.hs-dashboard .unified-soc-row .soc-ops-tabs__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.hs-dashboard .unified-soc-row .soc-analytics-tabs__body > .soc-panel,
+.hs-dashboard .unified-soc-row .soc-ops-tabs__body > .soc-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Chart fills the stretched analytics panel. */
+.hs-dashboard .unified-soc-row .soc-trend__svg {
+  flex: 1;
+  min-height: 280px;
+}
+
+/* Events list fills the stretched ops panel; the link pins to the bottom. */
+.hs-dashboard .unified-soc-row .soc-events__list {
+  flex: 1;
+}
+
+.hs-dashboard .unified-soc-row .soc-panel__link {
+  margin-top: auto;
+}
+
+.hs-dashboard .unified-soc-row > * {
+  min-width: 0;
+}
+
+.hs-dashboard .unified-soc-row .unified-soc-row__side {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ---- Assets Summary panel ------------------------------------------------ */
+.hs-dashboard .assets-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--line, rgba(94, 158, 214, 0.2));
+  border-radius: 10px;
+  background: var(--panel, rgba(12, 24, 40, 0.72));
+}
+
+.hs-dashboard .assets-summary__tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 180px));
+  gap: 4px;
+}
+
+.hs-dashboard .assets-summary__tile {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line, rgba(94, 158, 214, 0.16));
+  border-radius: 8px;
+  background: var(--surface, rgba(255, 255, 255, 0.03));
+}
+
+.hs-dashboard .assets-summary__tile-icon {
+  display: inline-flex;
+  color: var(--cyan, #17d9ed);
+  flex: none;
+}
+
+.hs-dashboard .assets-summary__tile-value {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--text, #e6f1ff);
+  font-variant-numeric: tabular-nums;
+}
+
+.hs-dashboard .assets-summary__tile-label {
+  margin-left: auto;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted, #8ea3bf);
+}
+
+.hs-dashboard .assets-summary__types-title {
+  margin: 0 0 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted, #8ea3bf);
+}
+
+.hs-dashboard .assets-summary__bars {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hs-dashboard .assets-summary__bar-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 4px;
+}
+
+.hs-dashboard .assets-summary__bar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px; color: var(--text-dim, #8aa6b2);
+}
+
+.hs-dashboard .assets-summary__bar-track {
+  display: block;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.hs-dashboard .assets-summary__bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--cyan, #17d9ed), var(--information, #38bdf8));
+}
+
+.hs-dashboard .assets-summary__bar-value {
+  font-size: 10px;
+  font-weight: 700;
+  text-align: right;
+  color: var(--text, #e6f1ff);
+  font-variant-numeric: tabular-nums;
+}
+
+.hs-dashboard .assets-summary__empty {
+  margin: 0;
+  font-size: 10px;
+  color: var(--muted, #8ea3bf);
+}
+
+/* ---- Tabbed SOC columns -------------------------------------------------- */
+/* No height:100% � each tab column is as tall as its own content. */
+.hs-dashboard .soc-analytics-tabs,
+.hs-dashboard .soc-ops-tabs {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line, rgba(94, 158, 214, 0.2));
+  border-radius: 10px;
+  background: var(--panel, rgba(12, 24, 40, 0.72));
+}
+
+.hs-dashboard .soc-analytics-tabs .soc-tabs,
+.hs-dashboard .soc-ops-tabs .soc-tabs {
+  flex: none;
+  margin-bottom: 6px;
+}
+
+.hs-dashboard .soc-analytics-tabs__body,
+.hs-dashboard .soc-ops-tabs__body {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---- Masthead: status cluster (clock + health pill) ---------------------- */
+.hs-dashboard .hs-noc__status-cluster,
+.hs-main .hs-noc__masthead .hs-noc__status-cluster {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.hs-main .hs-noc__masthead .hs-noc__clock {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text, #e6f1ff);
+}
+
+.hs-main .hs-noc__masthead .hs-noc__status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  border: 1px solid transparent;
+}
+
+.hs-main .hs-noc__masthead .hs-noc__status-pill i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.hs-main .hs-noc__masthead .hs-noc__status-pill--ok {
+  color: var(--green, #2ecc71);
+  background: #2ecc7114;
+  border-color: #2ecc7155;
+}
+
+.hs-main .hs-noc__masthead .hs-noc__status-pill--down {
+  color: var(--red, #ff5c5c);
+  background: #ff5c5c14;
+  border-color: #ff5c5c55;
+}
+
+.hs-main .hs-noc__masthead .hs-noc__status-pill--degraded {
+  color: var(--amber, #f5a623);
+  background: #f5a62314;
+  border-color: #f5a62355;
+}
+
+.hs-main .hs-noc__masthead .hs-noc__status-pill--pending {
+  color: var(--muted, #8ea3bf);
+  background: #8ea3bf14;
+  border-color: #8ea3bf44;
+}
+
+/* ---- Section nav: pill style like the reference -------------------------- */
+.hs-dashboard .dashboard-section-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.hs-dashboard .dashboard-section-nav a {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line, rgba(94, 158, 214, 0.25));
+  background: var(--panel, rgba(12, 24, 40, 0.6));
+  font-size: 10px; color: var(--text-dim, #8aa6b2);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+}
+
+.hs-dashboard .dashboard-section-nav a:hover {
+  color: var(--cyan, #17d9ed);
+  border-color: var(--cyan, #17d9ed);
+}
+
+/* ---- Responsive: collapse the reference rows gracefully ------------------ */
+@media (max-width: 1280px) {
+  .hs-dashboard .unified-soc-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .hs-dashboard .unified-soc-row__side {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 1024px) {
+  .hs-dashboard .unified-ai-row,
+  .hs-dashboard .unified-infra-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hs-dashboard .unified-infra-row .infra-overview__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .hs-dashboard .unified-soc-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hs-dashboard .unified-soc-row__side {
+    grid-column: auto;
+  }
+
+  .hs-dashboard .alert-soc-row__soc .soc-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hs-dashboard .unified-infra-row .infra-overview__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hs-dashboard .assets-summary__tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+
+
+
+/* ---- NOC KPI grid: exact responsive breakpoints (3 / 2 / 1) -------------- */
+/* Desktop >= 1200px: exactly 3 equal columns (re-affirmed after the legacy
+   1280px tablet block above so the 1200-1280 range stays 3-up). */
+@media (min-width: 1200px) {
+  .hs-dashboard .op-health__strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Mobile <= 720px: single column (covers 541-720px left by the 540px block). */
+@media (max-width: 767px) {
+  .hs-dashboard .op-health__strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Guard against any card content (labels, values, N/A) forcing overflow. */
+.hs-dashboard .op-health__kpi {
+  min-width: 0;
+  overflow: hidden;
+}
+
+
+/* ---- Density pass: responsive + micro typography ------------------------- */
+/* Secondary/status text on KPI cards. */
+.hs-dashboard .op-health__context {
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
+/* ---- Alert Summary + SOC band responsive ---------------------------------- */
+/* 1200-1399px: keep side-by-side with a slightly narrower SOC column. */
+@media (max-width: 1399px) and (min-width: 1200px) {
+  .hs-dashboard .alert-soc-row {
+    grid-template-columns: minmax(0, 1fr) minmax(620px, 0.9fr);
+  }
+}
+
+/* 900-1199px: stack the band; NOC 2 KPI columns; SOC 3 cols full-width. */
+@media (max-width: 1199px) {
+  .hs-dashboard .alert-soc-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .hs-dashboard .op-health__strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 600-899px: SOC 2 x 3. */
+@media (max-width: 899px) {
+  .hs-dashboard .alert-soc-row__soc .soc-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* < 600px: SOC 1 column. */
+@media (max-width: 599px) {
+  .hs-dashboard .alert-soc-row__soc .soc-kpis {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ===========================================================================
+ * ROW 1 HORIZONTAL UTILIZATION - NOC KPI grid + Assets Summary (moved up)
+ * ==========================================================================
+ * Fills the previously empty right side of the Operational Health zone with
+ * the EXISTING AssetsSummary component (estate totals: devices, sensors,
+ * collectors, sites + real device-type distribution). The component instance
+ * was MOVED from the Infrastructure row (old placement removed there), so
+ * there is exactly one data source and one render - no duplication.
+ *
+ * Column contract:
+ *   left  minmax(760px, 960px)  -> the compact 3/3/1 NOC KPI grid (unchanged)
+ *   right minmax(280px, 1fr)    -> estate assets summary, content-driven height
+ *
+ * Minimum row width = 760 + 8 + 280 = 1048px; below 1310px viewport the row
+ * stacks to a single column so the KPI minimum can never force horizontal
+ * overflow. */
+.hs-dashboard .unified-health-row {
+  display: grid;
+  grid-template-columns: minmax(760px, 960px) minmax(280px, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.hs-dashboard .unified-health-row__kpi,
+.hs-dashboard .unified-health-row__assets {
+  min-width: 0;
+}
+
+/* Assets panel inside the health row keeps its content-driven height and its
+   compact tiles (auto-fill 120-180px) - it never stretches to fill width. */
+.hs-dashboard .unified-health-row__assets .assets-summary {
+  height: auto;
+  min-height: 0;
+}
+
+/* ===========================================================================
+   NETWORK INTELLIGENCE (SD-WAN + SASE)
+   ---------------------------------------------------------------------------
+   Shared by the /infrastructure operator panel (.ni-*) and the compact main
+   dashboard widget (.ni-widget*). Uses only the existing dashboard tokens
+   (--cyan / --green / --amber / --red / --line / --muted) - no new design
+   system. Every colour encodes a status the API actually returned.
+   =========================================================================== */
+
+.ni-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ni-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.ni-header__sub {
+  margin: 2px 0 0;
+  font-size: 12px;
+  letter-spacing: .14em;
+  color: var(--muted);
+}
+
+.ni-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ni-controls__label {
+  font-size: 11px;
+  letter-spacing: .1em;
+  color: var(--muted);
+}
+
+.ni-select {
+  background: var(--bg, #06121a);
+  color: var(--text, #dff6ff);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.ni-button {
+  background: var(--cyan);
+  color: #04222b;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ni-button:disabled {
+  opacity: .6;
+  cursor: wait;
+}
+
+/* --- decision flow strip -------------------------------------------------- */
+
+.ni-flow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  list-style: none;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.ni-flow__step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ni-flow__label {
+  font-size: 10px;
+  letter-spacing: .1em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.ni-flow__arrow {
+  color: var(--cyan);
+  opacity: .6;
+  font-size: 11px;
+}
+
+/* --- executive status header --------------------------------------------- */
+
+.ni-status {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.ni-status__tile {
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ni-status__label {
+  font-size: 10px;
+  letter-spacing: .12em;
+  color: var(--muted);
+}
+
+.ni-status__tile strong {
+  font-size: 15px;
+  letter-spacing: .02em;
+}
+
+.ni-status__tile--ok { border-left-color: var(--green); }
+.ni-status__tile--ok strong { color: var(--green); }
+.ni-status__tile--warn { border-left-color: var(--amber); }
+.ni-status__tile--warn strong { color: var(--amber); }
+.ni-status__tile--bad { border-left-color: var(--red); }
+.ni-status__tile--bad strong { color: var(--red); }
+.ni-status__tile--neutral { border-left-color: var(--line); }
+.ni-status__tile--neutral strong { color: var(--muted); }
+
+/* --- network decision ----------------------------------------------------- */
+
+.ni-decision {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.ni-decision__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+
+.ni-decision__flow {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.ni-decision__body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.ni-decision__body p {
+  margin: 3px 0 0;
+  font-size: 13px;
+}
+
+.ni-decision__reason p {
+  color: var(--muted);
+}
+
+/* --- card grid ------------------------------------------------------------ */
+
+/* Desktop: the three primary cards (SD-WAN | SASE | RECOMMENDATION) share the
+   available width evenly. An auto-fit track list would create 4-5 columns at
+   1366-1920px and leave the surplus ones empty (the .ni-card--wide rows force
+   the explicit track count to be honoured rather than collapsed), which is what
+   produced the large unused area to the right of the three cards. */
+.ni-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+/* Medium viewports: two up, then stacked - no orphan column. */
+@media (max-width: 1280px) {
+  .ni-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.ni-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  min-width: 0;
+}
+
+/* Audit + flow context read better full width. */
+.ni-card--wide {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 900px) {
+  .ni-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.ni-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ni-card__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  color: var(--cyan);
+}
+
+.ni-subhead {
+  display: block;
+  font-size: 10px;
+  letter-spacing: .12em;
+  color: var(--muted);
+  margin-top: 10px;
+}
+
+.ni-reason {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 10px 0 0;
+}
+
+.ni-empty {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ni-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--amber);
+}
+
+/* Operator-facing failure state (API UNAVAILABLE / ACCESS DENIED / …). */
+.ni-problem {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--amber);
+  border-left-width: 3px;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--amber);
+}
+
+.ni-problem > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ni-problem__label {
+  display: block;
+  font-size: 12px;
+  letter-spacing: .1em;
+}
+
+.ni-problem__detail {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* --- pills / tones -------------------------------------------------------- */
+
+.ni-pill {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.ni-pill--ok { color: var(--green); }
+.ni-pill--warn { color: var(--amber); }
+.ni-pill--bad { color: var(--red); }
+.ni-pill--neutral { color: var(--muted); }
+
+.ni-text--ok { color: var(--green); }
+.ni-text--warn { color: var(--amber); }
+.ni-text--bad { color: var(--red); }
+.ni-text--neutral { color: var(--muted); }
+
+/* --- key/value grids ------------------------------------------------------ */
+
+.ni-kv {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.ni-kv--tight {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.ni-kv dt {
+  font-size: 10px;
+  letter-spacing: .1em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.ni-kv dd {
+  margin: 3px 0 0;
+  font-size: 13px;
+}
+
+/* --- path comparison table ------------------------------------------------ */
+
+.ni-compare {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.ni-compare th {
+  text-align: left;
+  padding: 6px 6px;
+  font-size: 10px;
+  letter-spacing: .1em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+}
+
+.ni-compare td {
+  padding: 6px 6px;
+  border-bottom: 1px solid rgba(0, 217, 255, .08);
+}
+
+/* --- SASE pipeline -------------------------------------------------------- */
+
+.ni-pipeline {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ni-pipeline__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border-left: 3px solid var(--line);
+  background: rgba(0, 217, 255, .03);
+}
+
+.ni-pipeline__row--ok { border-left-color: var(--green); }
+.ni-pipeline__row--warn { border-left-color: var(--amber); }
+.ni-pipeline__row--bad { border-left-color: var(--red); }
+.ni-pipeline__row--neutral { border-left-color: var(--line); opacity: .72; }
+
+.ni-pipeline__stage {
+  flex: 1 1 110px;
+  font-size: 12px;
+}
+
+.ni-pipeline__decision {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .06em;
+}
+
+.ni-pipeline__row--ok .ni-pipeline__decision { color: var(--green); }
+.ni-pipeline__row--bad .ni-pipeline__decision { color: var(--red); }
+.ni-pipeline__row--warn .ni-pipeline__decision { color: var(--amber); }
+.ni-pipeline__row--neutral .ni-pipeline__decision { color: var(--muted); }
+
+.ni-pipeline__reason {
+  flex: 1 1 100%;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.ni-final {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
+.ni-final span {
+  font-size: 10px;
+  letter-spacing: .12em;
+  color: var(--muted);
+}
+
+.ni-final strong {
+  font-size: 15px;
+  letter-spacing: .04em;
+}
+
+.ni-final--ok { border-color: var(--green); }
+.ni-final--ok strong { color: var(--green); }
+.ni-final--bad { border-color: var(--red); background: rgba(255, 74, 74, .06); }
+.ni-final--bad strong { color: var(--red); }
+.ni-final--warn { border-color: var(--amber); }
+.ni-final--warn strong { color: var(--amber); }
+.ni-final--neutral strong { color: var(--muted); }
+
+/* --- why / recommendation ------------------------------------------------- */
+
+.ni-why p {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
+.ni-rec__title {
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.ni-safety {
+  margin: 12px 0 0;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+  font-size: 10px;
+  letter-spacing: .1em;
+  color: var(--muted);
+}
+
+/* --- audit trail ---------------------------------------------------------- */
+
+.ni-audit {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ni-audit__row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: rgba(0, 217, 255, .03);
+  font-size: 11px;
+}
+
+.ni-audit__engine {
+  flex: 0 0 70px;
+  color: var(--muted);
+  letter-spacing: .06em;
+}
+
+.ni-audit__stage {
+  flex: 1 1 150px;
+  letter-spacing: .06em;
+}
+
+.ni-audit__decision { font-weight: 700; letter-spacing: .06em; }
+.ni-audit__decision--ok { color: var(--green); }
+.ni-audit__decision--warn { color: var(--amber); }
+.ni-audit__decision--bad { color: var(--red); }
+.ni-audit__decision--neutral { color: var(--muted); }
+
+.ni-audit__meta {
+  flex: 1 1 100%;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.ni-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+/* ===========================================================================
+   Compact main-dashboard widget
+   =========================================================================== */
+
+.hs-dashboard .unified-infra-row__ni {
+  margin-bottom: 14px;
+}
+
+.hs-dashboard .ni-widget {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hs-dashboard .ni-widget__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.hs-dashboard .ni-widget__title {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: .12em;
+  color: var(--cyan);
+}
+
+.hs-dashboard .ni-widget__sub {
+  font-size: 11px;
+  letter-spacing: .12em;
+  color: var(--muted);
+}
+
+.hs-dashboard .ni-widget__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.hs-dashboard .ni-widget__tile {
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.hs-dashboard .ni-widget__label {
+  display: block;
+  font-size: 10px;
+  letter-spacing: .12em;
+  color: var(--muted);
+}
+
+.hs-dashboard .ni-widget__tile strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 14px;
+}
+
+.hs-dashboard .ni-widget__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.hs-dashboard .ni-widget__tile--ok { border-left-color: var(--green); }
+.hs-dashboard .ni-widget__tile--ok strong { color: var(--green); }
+.hs-dashboard .ni-widget__tile--warn { border-left-color: var(--amber); }
+.hs-dashboard .ni-widget__tile--warn strong { color: var(--amber); }
+.hs-dashboard .ni-widget__tile--bad { border-left-color: var(--red); }
+.hs-dashboard .ni-widget__tile--bad strong { color: var(--red); }
+.hs-dashboard .ni-widget__tile--neutral { border-left-color: var(--line); }
+.hs-dashboard .ni-widget__tile--neutral strong { color: var(--muted); }
+
+.hs-dashboard .ni-widget__foot {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Provenance chip: makes it explicit this is the last real evaluation, not a
+   live feed (the widget never polls). */
+.hs-dashboard .ni-widget__provenance {
+  letter-spacing: .1em;
+  color: var(--cyan);
+  opacity: .8;
+}
+
+.hs-dashboard .ni-widget__ready strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.hs-dashboard .ni-widget__ready p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.hs-dashboard .ni-widget__link {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  letter-spacing: .08em;
+  color: var(--cyan);
+  text-decoration: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 10px;
+}
+
+.hs-dashboard .ni-widget__link:hover {
+  border-color: var(--cyan);
+}
+
+/* --- universal discovery console ----------------------------------------- */
+
+.disc-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.disc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10px;
+  letter-spacing: .12em;
+  color: var(--muted);
+}
+
+.disc-input {
+  width: 100%;
+}
+
+.disc-protocols {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.disc-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  letter-spacing: .08em;
+  color: var(--muted);
+}
+
+.disc-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.disc-detail {
+  color: var(--muted);
+  font-size: 11px;
+  max-width: 420px;
+  overflow-wrap: anywhere;
+}
+
+/* Medium/small viewports: stack the health row (assets below the KPI grid). */
+@media (max-width: 1310px) {
+  .hs-dashboard .unified-health-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ===========================================================================
+ * PHASE 6A — ATTENTION SPLIT: KPI strip + OPERATIONAL INTELLIGENCE.
+ * ===========================================================================
+ * Fills the previously unused right side of the Levels 1-3 zone with the
+ * backend-aggregated Operational Intelligence cards. Reuses the EXISTING
+ * CommandKpiCards chrome (op-health__strip / op-health__kpi classes) — the
+ * only new CSS is the two-column split contract:
+ *
+ *   left  minmax(0, 1.35fr) -> the PHASE 1 KPI strip (unchanged cards)
+ *   right minmax(280px, 1fr) -> the OI zone (currently 10 cards, same chrome)
+ *
+ * The OI strip keeps the card grid's own responsive rules (3/2/1 columns);
+ * on narrow viewports the split stacks so cards never force horizontal
+ * overflow. No new design tokens: status colours and typography come from
+ * the existing card classes.
+ */
+.hs-dashboard .attention-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 1fr);
+  gap: 16px;
+  align-items: start;
+  margin-top: 12px;
+}
+
+.hs-dashboard .attention-split__strip,
+.hs-dashboard .attention-split__oi {
+  min-width: 0;
+}
+
+.hs-dashboard .attention-split__oi-title {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* OI cards share the strip's density but may run 2-up where the full-width
+   strip runs 3-up, because the zone is narrower. */
+@media (min-width: 1200px) {
+  .hs-dashboard .attention-split__oi .op-health__strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Stack the split (strip above, OI below) before cards can squeeze. */
+@media (max-width: 1310px) {
+  .hs-dashboard .attention-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ==================================================================== */
+/* Command Center Brief (PHASE 6A / SPRINT P1)                          */
+/*                                                                      */
+/* Scoped to its OWN root class, deliberately NOT to .hs-dashboard: on  */
+/* /dashboard the panel is a SIBLING of UnifiedCommandCenter, and that  */
+/* component owns the .hs-dashboard root - so this panel sits outside   */
+/* that scope and cannot inherit any of its rules. Every class the      */
+/* component renders is defined here, including the op-health__status   */
+/* state messages it reuses.                                            */
+/* ==================================================================== */
+
+.command-center-brief {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.command-center-brief__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.command-center-brief__header h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text);
+}
+
+.command-center-brief__subtitle {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.command-center-brief__counts {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brief-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.brief-count__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.brief-section {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.brief-section__header h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.brief-section__subtitle {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.brief-section__body {
+  margin-top: 10px;
+}
+
+/* Honest states. These are the ENTIRE content of a section when there is
+   nothing to show, so they read as sentences, not as broken layout. */
+.command-center-brief .op-health__status {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.command-center-brief .op-health__status--error { color: var(--red); }
+.command-center-brief .op-health__status--stale { color: var(--amber); }
+.command-center-brief .op-health__status--success { color: var(--green); }
+
+/* Loading skeleton: shimmering placeholder bars instead of a bare ellipsis. */
+.brief-section__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.brief-section__skeleton span {
+  display: block;
+  height: 10px;
+  width: 100%;
+  border-radius: 3px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.06) 25%,
+    rgba(255, 255, 255, 0.14) 50%,
+    rgba(255, 255, 255, 0.06) 75%
+  );
+  background-size: 200% 100%;
+  animation: brief-shimmer 1.2s ease-in-out infinite;
+}
+.brief-section__skeleton span:nth-child(2) { width: 80%; }
+.brief-section__skeleton span:nth-child(3) { width: 60%; }
+
+@keyframes brief-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Manual retry affordance for the error/empty state. */
+.brief-retry {
+  margin-left: 10px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--information, #2f7bd9);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.brief-retry:hover { filter: brightness(1.1); }
+
+.brief-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.brief-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  text-decoration: none;
+}
+
+a.brief-item:hover { border-color: var(--line-strong); }
+
+.brief-item__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.brief-item__severity {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--bg-raised);
+}
+
+.brief-item__type {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.brief-item__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.brief-item__resource {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.brief-item__reason {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.brief-item__foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.brief-item__when,
+.brief-item__note {
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.brief-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.brief-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.brief-row:last-child { border-bottom: 0; }
+
+.brief-row > span:first-child {
+  min-width: 92px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.brief-row strong {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.brief-row__note {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.brief-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.brief-trends {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.brief-trend__header {
+  margin-bottom: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.brief-trend__buckets {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  min-height: 40px;
+}
+
+.brief-trend__bucket {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* Height is set inline from the bucket count; a zero count draws no bar. */
+.brief-trend__bar {
+  width: 100%;
+  min-height: 1px;
+  border-radius: 2px 2px 0 0;
+  background: var(--cyan);
+}
+
+.brief-trend__count {
+  font-size: 9px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 720px) {
+  .brief-row {
+    flex-wrap: wrap;
+  }
+
+  .brief-row__note {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+

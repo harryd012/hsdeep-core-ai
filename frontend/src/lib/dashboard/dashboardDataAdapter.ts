@@ -30,6 +30,14 @@ import type {
   CommandCenterOverview,
 } from "@/lib/api";
 import { computeDeduplicatedSummary, groupAlertsByFingerprint, timeAgo } from "@/lib/alert-dedup";
+import { sortActivityItems } from "./activitySort";
+import {
+  classifyDevice,
+  collectorRuns24h,
+  collectorSuccessPct,
+  countDeviceStates,
+} from "./metrics";
+import type { DeviceStateCounts } from "./metrics";
 import type {
   AttentionDeviceRow,
   AttentionEvidence,
@@ -56,11 +64,13 @@ export function buildOperationalHealth(input: {
   alerts: Alert[] | undefined;
   summary: AlertSummary | undefined;
   devices: Device[] | undefined;
+  /** Canonical full-estate device counts (backend counts_by_state). */
+  canonicalDeviceStates?: DeviceStateCounts | undefined;
   sensors: SensorOut[] | undefined;
   automation: AutomationStatus | undefined;
   network: NetworkStatus | undefined;
 }): OperationalHealthData {
-  const { alerts, summary, devices, sensors, automation, network } = input;
+  const { alerts, summary, devices, canonicalDeviceStates, sensors, automation, network } = input;
 
   // Alerts: deduplicated fingerprint counts (existing shared logic). Falls
   // back to the backend AlertSummary when the list endpoint is unavailable.
@@ -68,14 +78,18 @@ export function buildOperationalHealth(input: {
   const activeAlerts = dedup ? dedup.total : summary?.total ?? null;
   const criticalAlerts = dedup ? dedup.by_severity.critical : summary?.by_severity.critical ?? null;
 
-  const online = devices ? devices.filter((d) => d.status === "up").length : null;
-  const offline = devices
-    ? devices.filter((d) => d.status === "down" || d.status === "warning").length
-    : null;
+  // ONE device-state rollup feeds every "devices X" tile (see metrics.ts), so
+  // online/offline/stale/unknown are mutually consistent everywhere. The backend
+  // canonical aggregate (counts_by_state) is the full-estate source of truth;
+  // the (capped) device list is only the fallback.
+  const deviceCounts = canonicalDeviceStates ?? (devices ? countDeviceStates(devices) : null);
+  const online = deviceCounts?.up ?? null;
+  const offline = deviceCounts?.down ?? null;
+  const stale = deviceCounts?.stale ?? null;
+  const unknownDevices = deviceCounts?.unknown ?? null;
   const healthySensors = sensors ? sensors.filter((s) => s.status === "up").length : null;
   // Zero collector runs in the window = "unknown", not 0% (backend convention).
-  const collectorPct =
-    automation && automation.runs_last_24h > 0 ? Math.round(automation.success_rate_pct) : null;
+  const collectorPct = collectorSuccessPct(automation);
 
   const alertStatus = (n: number | null, critical: number | null): OperationalHealthData["activeAlerts"]["status"] =>
     n === null ? "neutral" : critical && critical > 0 ? "critical" : n > 0 ? "warning" : "healthy";
@@ -99,15 +113,30 @@ export function buildOperationalHealth(input: {
     devicesOnline: {
       label: "Devices Online",
       value: online,
-      status: upStatus(online, devices?.length ?? null),
-      context: devices?.length ? `of ${devices.length}` : undefined,
+      status: upStatus(online, deviceCounts?.total ?? null),
+      context: deviceCounts?.total ? `of ${deviceCounts.total}` : undefined,
       href: "/infrastructure?status=online",
     },
     devicesOffline: {
       label: "Devices Offline",
       value: offline,
       status: offline === null ? "neutral" : offline > 0 ? "warning" : "healthy",
+      context: offline !== null ? "confirmed by a recent failed probe" : undefined,
       href: "/infrastructure?status=offline",
+    },
+    devicesStale: {
+      label: "Devices Stale",
+      value: stale,
+      status: stale === null ? "neutral" : stale > 0 ? "warning" : "healthy",
+      context: stale !== null ? "no recent telemetry" : undefined,
+      href: "/infrastructure?status=stale",
+    },
+    devicesUnknown: {
+      label: "Devices Unknown",
+      value: unknownDevices,
+      status: "neutral",
+      context: unknownDevices !== null ? "no evidence to classify" : undefined,
+      href: "/infrastructure",
     },
     sensorsHealthy: {
       label: "Sensors Healthy",
@@ -127,7 +156,9 @@ export function buildOperationalHealth(input: {
             : collectorPct < 90
               ? "warning"
               : "healthy",
-      context: automation?.runs_last_24h ? `${automation.runs_last_24h} runs / 24h` : undefined,
+      context: collectorRuns24h(automation) !== null
+        ? `${collectorRuns24h(automation)} runs / 24h`
+        : undefined,
       href: "/monitoring?view=collectors",
     },
     sites: {
@@ -221,9 +252,11 @@ export function buildAiOperations(
 
   const aiStatus: AiOperationsData["aiStatus"] = !overview
     ? "offline"
-    : overview.system_online && overview.health?.ai_ready !== false
-      ? "online"
-      : "degraded";
+    : overview.health?.status === "unavailable"
+      ? "offline"
+      : overview.health?.status === "ok" && overview.health?.ai_ready !== false
+        ? "online"
+        : "degraded";
 
   return {
     aiStatus,
@@ -289,11 +322,26 @@ export function buildInfrastructureOverview(input: {
   const cloudPct = cloudVendors > 0
     ? Math.round((cloud!.vendors.filter((v) => v.status === "operational").length / cloudVendors) * 100)
     : null;
-  const collectorPct = automation && automation.runs_last_24h > 0 ? automation.success_rate_pct : null;
-  const upDevices = devices ? devices.filter((d) => d.status === "up").length : 0;
-  const devicesPct = devices && devices.length ? Math.round((upDevices / devices.length) * 100) : null;
+  const collectorPct = collectorSuccessPct(automation);
+  // Same shared device-state rollup as the KPI strip (see metrics.ts).
+  const deviceCounts = devices ? countDeviceStates(devices) : null;
+  const upDevices = deviceCounts?.up ?? 0;
+  const devicesPct =
+    deviceCounts && deviceCounts.total ? Math.round((upDevices / deviceCounts.total) * 100) : null;
   const healthySensors = sensors ? sensors.filter((s) => s.status === "up").length : 0;
   const sensorsPct = sensors && sensors.length ? Math.round((healthySensors / sensors.length) * 100) : null;
+
+  // DATABASE row liveness is the presence of the authenticated DB-backed reads
+  // above — it is NOT hardcoded to 100. Until at least one such read resolves it
+  // stays undefined and the row reports "No database response" (same honest-null
+  // convention the API row uses via `apiUp`). Mirrors `apiUp ? 100 : null`.
+  const dbUp =
+    dashboardSummary !== undefined ||
+    devices !== undefined ||
+    sensors !== undefined ||
+    automation !== undefined ||
+    network !== undefined ||
+    cloud !== undefined;
 
   const rows = [
     makeHealthRow("NETWORK", networkPct, `${network?.sites_online ?? 0}/${network?.sites_total ?? 0} Sites`, "No sites configured"),
@@ -302,8 +350,10 @@ export function buildInfrastructureOverview(input: {
     makeHealthRow("DEVICES", devicesPct, `${upDevices}/${devices?.length ?? 0} up`, "No devices registered"),
     makeHealthRow("SENSORS", sensorsPct, `${healthySensors}/${sensors?.length ?? 0} healthy`, "No sensors registered"),
     // DATABASE row: successful authenticated DB-backed reads above ARE the
-    // database liveness signal (kept from the original implementation).
-    makeHealthRow("DATABASE", 100, "Operational", "No database response"),
+    // database liveness signal. Derived from `dbUp` (never a hardcoded 100), so
+    // if every DB-backed read is absent the row reports the honest empty state
+    // instead of claiming "Operational" — same convention as the API row.
+    makeHealthRow("DATABASE", dbUp ? 100 : null, "Operational", "No database response"),
     makeHealthRow("API", apiUp ? 100 : null, "Operational", "UNAVAILABLE"),
   ];
 
@@ -487,7 +537,9 @@ export function buildActivity(
     });
   });
 
-  return items.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  // Sort by PARSED date value, dropping any item whose timestamp is missing or
+  // invalid (an unorderable item must not crash the whole feed).
+  return sortActivityItems(items);
 }
 
 /* ---------------------------------------------------------------------------
@@ -519,18 +571,6 @@ export function buildHeader(input: {
  *   value === null  -> unknown: the API did not answer (never shown as 0)
  * ------------------------------------------------------------------------- */
 
-/**
- * Device statuses that mean "this device is not healthy", per the collectors'
- * vocabulary. Deliberately a fixed list: a status we do not recognise is NOT
- * counted as degraded (that would invent an outage).
- */
-const DEGRADED_DEVICE_STATUS = new Set([
-  "degraded", "warning", "down", "offline", "critical", "error", "unreachable",
-]);
-
-/** Statuses that carry no health opinion at all (backend default is "unknown"). */
-const UNCLASSIFIED_DEVICE_STATUS = new Set(["", "unknown"]);
-
 /** Incident statuses that no longer need an operator. */
 const CLOSED_INCIDENT_STATUS = new Set(["resolved", "closed", "archived", "recovered"]);
 
@@ -560,8 +600,10 @@ export function buildAttentionRequired(input: {
   const highPriorityIncidents = openIncidents.filter((i) => severityOf(i) === "warning");
 
   const statusOf = (d: Device) => (d.status || "").toLowerCase();
-  const degradedDevices = (devices ?? []).filter((d) => DEGRADED_DEVICE_STATUS.has(statusOf(d)));
-  const unclassifiedDevices = (devices ?? []).filter((d) => UNCLASSIFIED_DEVICE_STATUS.has(statusOf(d)));
+  // Single shared classification (metrics.ts): only a CONFIRMED down device is
+  // "degraded"; unclassified = no evidence (never invented as an outage).
+  const degradedDevices = (devices ?? []).filter((d) => classifyDevice(d) === "down");
+  const unclassifiedDevices = (devices ?? []).filter((d) => classifyDevice(d) === "unknown");
 
   // AlertStatus "open" means "raised and not acknowledged" in this API; the
   // timestamp is checked as well so the count cannot drift from the field it

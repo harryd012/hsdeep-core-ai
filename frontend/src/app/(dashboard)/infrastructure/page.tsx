@@ -7,6 +7,10 @@ import {
   getDashboardSummary, listDevices,
   getTopology, TopologyOut,
 } from "@/lib/api";
+import NetworkIntelligencePanel from "@/components/network-intelligence/NetworkIntelligencePanel";
+import UniversalCollectionPanel from "@/components/universal-collection/UniversalCollectionPanel";
+import InfrastructureKpiRow from "@/components/infrastructure/InfrastructureKpiRow";
+import CanonicalTopologyPanel from "@/components/infrastructure/CanonicalTopologyPanel";
 
 /** A total the backend did not report is not a measured 0 - it is unknown. */
 function tileValue(value: number | null | undefined): string {
@@ -49,6 +53,9 @@ export default function InfrastructurePage() {
   return (
     <div className="dashboard" style={{ paddingTop: "clamp(84px,8.5vh,104px)" }}>
       <div className="overview" style={{ gridTemplateColumns: "1fr", gap: 16 }}>
+        {/* Top KPI row — every figure computed from real rows by the backend. */}
+        <InfrastructureKpiRow />
+
         <section className="hud-panel">
           <h2>INFRASTRUCTURE OVERVIEW</h2>
           {error && <p style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--amber)", fontSize: 12 }}><AlertTriangle size={14} /> {error}</p>}
@@ -104,9 +111,9 @@ export default function InfrastructurePage() {
               </tbody>
             </table>
           </div>
-          {/* Topology summary */}
-          <div style={{ marginTop: 16 }}>
-            <h3>TOPOLOGY</h3>
+            {/* Topology summary */}
+            <div style={{ marginTop: 16 }}>
+              <h3>TOPOLOGY</h3>
             {!topology && <p style={{ color: "var(--muted)" }}>Topology not loaded.</p>}
             {topology && (
               <div>
@@ -131,6 +138,16 @@ export default function InfrastructurePage() {
             )}
           </div>
         </section>
+
+        {/* Universal Collection: source -> readiness -> collect. Read-only
+            diagnostics plus the existing collection trigger. */}
+        <UniversalCollectionPanel />
+
+        {/* Canonical topology: nodes + edges from resource_relationships only. */}
+        <CanonicalTopologyPanel />
+
+        {/* Network intelligence: SD-WAN + SASE (read-only evaluation). */}
+        <NetworkIntelligencePanel />
       </div>
     </div>
   );

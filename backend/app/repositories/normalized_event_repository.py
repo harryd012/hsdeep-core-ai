@@ -6,13 +6,23 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, literal_column, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.normalized_event import NormalizedEvent
 from app.models.site import Site
 from app.models.device import Device
 from app.models.integration import Integration
+
+# Verbatim from app/models/normalized_event.py NormalizedEvent.__table_args__
+# (postgresql_where) and migration f3a9c1e7b2d5. The ON CONFLICT arbiter in
+# upsert_occurrence() must resolve against the partial unique index carrying
+# this exact predicate, or PostgreSQL raises "no unique or exclusion constraint
+# matching the ON CONFLICT specification". Keep the three sources in lockstep.
+_ACTIVE_PER_SIGNATURE_PREDICATE = (
+    "is_suppressed = false AND event_signature IS NOT NULL AND is_deleted = false"
+)
 
 
 class NormalizedEventRepository:
@@ -42,6 +52,152 @@ class NormalizedEventRepository:
         event.last_occurred_at = datetime.now(timezone.utc)
         await self.db.flush()
         return event
+
+    async def find_active_by_signature(
+        self,
+        tenant_id: uuid.UUID,
+        integration_id: uuid.UUID,
+        event_signature: str,
+    ) -> NormalizedEvent | None:
+        """Return the single active event for (tenant, integration, signature).
+
+        Replaces the previous limit-10 "list recent + filter in Python" scan.
+        One indexed, tenant-scoped SELECT matching the same predicate as the
+        partial unique index (is_suppressed=false AND is_deleted=false), so the
+        DB — not Python — resolves the dedup key. tenant_id is part of the
+        predicate at SQL level: a signature in another tenant can never be
+        returned here (tenant isolation preserved).
+        """
+        stmt = (
+            select(NormalizedEvent)
+            .where(
+                NormalizedEvent.tenant_id == tenant_id,
+                NormalizedEvent.integration_id == integration_id,
+                NormalizedEvent.event_signature == event_signature,
+                NormalizedEvent.is_suppressed.is_(False),
+                NormalizedEvent.is_deleted.is_(False),
+            )
+            .order_by(NormalizedEvent.event_timestamp.desc())
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def upsert_occurrence(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        integration_id: uuid.UUID,
+        event_signature: str,
+        event_category: str,
+        event_type: str,
+        severity: str,
+        title: str,
+        telemetry_type: str,
+        event_timestamp: datetime,
+        site_id: uuid.UUID | None = None,
+        device_id: uuid.UUID | None = None,
+        source_event_id: str | None = None,
+        description: str | None = None,
+        attributes: dict | None = None,
+        confidence_score: float | None = None,
+        raw_reference: str | None = None,
+    ) -> tuple[NormalizedEvent, bool]:
+        """Atomically insert a new active event OR bump an existing one.
+
+        Uses PostgreSQL ``INSERT ... ON CONFLICT DO UPDATE`` against the partial
+        unique index ``uq_normalized_events_active_per_signature``
+        (integration_id, event_signature) WHERE the active-only predicate holds.
+        The ``index_where`` MUST match that predicate verbatim or Postgres cannot
+        resolve the arbiter index.
+
+        Concurrency: a genuine racing insert (two writers, same signature) can no
+        longer raise an uncaught UniqueViolation — the race loser takes the DO
+        UPDATE branch. Returns ``(event, created)``: created is True for a new
+        row, False when an existing active event had its occurrence_count /
+        last_occurred_at bumped.
+
+        Tenant isolation: integration_id is a tenant-scoped FK and part of the
+        conflict target, so two tenants never share an upsert key; the explicit
+        tenant_id column is written on insert and never matched across tenants.
+        A re-fire after suppression/soft-delete correctly creates a NEW active
+        row because the partial index only constrains active rows.
+        """
+        now = datetime.now(timezone.utc)
+        insert_values = {
+            "tenant_id": tenant_id,
+            "integration_id": integration_id,
+            "site_id": site_id,
+            "device_id": device_id,
+            "source_event_id": source_event_id,
+            "event_signature": event_signature,
+            "event_category": event_category,
+            "event_type": event_type,
+            "severity": severity,
+            "title": title,
+            "description": description,
+            "attributes": attributes or {},
+            "event_timestamp": event_timestamp,
+            "telemetry_type": telemetry_type,
+            "confidence_score": confidence_score,
+            "raw_reference": raw_reference,
+            "occurrence_count": 1,
+            "last_occurred_at": event_timestamp,
+        }
+        stmt = (
+            pg_insert(NormalizedEvent)
+            .values(**insert_values)
+            .on_conflict_do_update(
+                index_elements=["integration_id", "event_signature"],
+                index_where=text(_ACTIVE_PER_SIGNATURE_PREDICATE),
+                set_={
+                    # Bump occurrence on the existing active row.
+                    "occurrence_count": NormalizedEvent.__table__.c.occurrence_count
+                    + 1,
+                    "last_occurred_at": func.greatest(
+                        NormalizedEvent.__table__.c.last_occurred_at, now
+                    ),
+                    # Reflect the freshest observed time without erasing the
+                    # original classification of the still-active event.
+                    "event_timestamp": func.greatest(
+                        NormalizedEvent.__table__.c.event_timestamp, event_timestamp
+                    ),
+                },
+            )
+            .returning(
+                NormalizedEvent.__table__.c.id,
+                # xmax = 0 means this transaction inserted the row; nonzero means
+                # the DO UPDATE branch fired — the standard ON CONFLICT idiom for
+                # distinguishing insert vs update without a second roundtrip.
+                literal_column("(xmax = 0)").label("created"),
+            )
+        )
+        result = await self.db.execute(stmt)
+        row = result.one()
+        event_id, created = row[0], bool(row[1])
+        # Reload through the ORM so the caller gets a fully-hydrated mapped
+        # instance, consistent with create()/update().
+        #
+        # populate_existing=True is REQUIRED, not cosmetic: the statement above is
+        # a Core INSERT, so the DO UPDATE branch mutates the row in PostgreSQL
+        # without the ORM unit of work knowing. With expire_on_commit=False (see
+        # app/core/db.py) a plain SELECT returns the identity-mapped instance with
+        # its previously-loaded attributes untouched — i.e. occurrence_count would
+        # read back as 1 forever. populate_existing forces the DB's post-bump
+        # values onto the instance.
+        reload_stmt = (
+            select(NormalizedEvent)
+            .where(
+                NormalizedEvent.id == event_id,
+                NormalizedEvent.tenant_id == tenant_id,
+                NormalizedEvent.is_deleted.is_(False),
+            )
+            .execution_options(populate_existing=True)
+        )
+        event = (await self.db.execute(reload_stmt)).scalar_one_or_none()
+        if event is None:  # pragma: no cover - defensive; row was just written
+            raise RuntimeError("upsert_occurrence wrote a row that cannot be read back")
+        return event, created
 
     async def suppress(self, event: NormalizedEvent) -> NormalizedEvent:
         """Mark event as suppressed (symptom of a root cause)."""

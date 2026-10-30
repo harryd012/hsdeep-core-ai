@@ -1,0 +1,269 @@
+/* ============================================================================
+ * HSDEEP CORE AI — DEPLOYMENT READINESS (Command Center zone)
+ *
+ * Additive layout for the Deployment Readiness zone. It introduces NO new
+ * palette and NO new design language: every colour, radius, gap and border
+ * is an existing HSDEEP token (see dashboard.css :root), and the panel chrome
+ * comes from the already-loaded Panel / hs-zone classes.
+ *
+ * Scoped under .hs-dashboard to match the sibling stylesheets and to avoid
+ * any global leakage. Imported by the zone component (same pattern as
+ * live-infrastructure-intelligence.css).
+ * ========================================================================== */
+
+.hs-dashboard .hs-zone--readiness {
+  /* Reuse the shared zone rhythm; only widen the internal gap a touch. */
+  gap: 8px;
+}
+
+/* ---- Overall readiness panel --------------------------------------------- */
+
+.hs-dashboard .readiness-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hs-dashboard .readiness-overview__badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line, #94c8e647);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim, #8aa6b2);
+  background: var(--surface, #071622);
+  white-space: nowrap;
+}
+.hs-dashboard .readiness-overview__badge--ready {
+  color: var(--green, #2ecc71);
+  border-color: var(--green, #2ecc71);
+}
+.hs-dashboard .readiness-overview__badge--degraded {
+  color: var(--amber, #f5a623);
+  border-color: var(--amber, #f5a623);
+}
+.hs-dashboard .readiness-overview__badge--blocked {
+  color: var(--red, #ff5c5c);
+  border-color: var(--red, #ff5c5c);
+}
+.hs-dashboard .readiness-overview__badge--unknown {
+  color: var(--text-dim, #8aa6b2);
+}
+
+.hs-dashboard .readiness-overview__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hs-dashboard .readiness-overview__label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted, #6b8494);
+}
+
+.hs-dashboard .readiness-overview__value {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
+}
+.hs-dashboard .readiness-overview__value--ready {
+  color: var(--green, #2ecc71);
+}
+.hs-dashboard .readiness-overview__value--degraded {
+  color: var(--amber, #f5a623);
+}
+.hs-dashboard .readiness-overview__value--blocked {
+  color: var(--red, #ff5c5c);
+}
+.hs-dashboard .readiness-overview__value--unknown {
+  color: var(--text-dim, #8aa6b2);
+}
+
+.hs-dashboard .readiness-overview__note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim, #8aa6b2);
+}
+
+.hs-dashboard .readiness-overview__summary {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted, #6b8494);
+  cursor: pointer;
+}
+
+.hs-dashboard .readiness-overview__rules {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim, #8aa6b2);
+}
+
+/* ---- Individual check cards ---------------------------------------------- */
+
+.hs-dashboard .readiness-checks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+}
+
+.hs-dashboard .readiness-check {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hs-dashboard .readiness-check__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hs-dashboard .readiness-check__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--muted, #6b8494);
+}
+.hs-dashboard .readiness-check__dot--healthy {
+  background: var(--green, #2ecc71);
+}
+.hs-dashboard .readiness-check__dot--warning {
+  background: var(--amber, #f5a623);
+}
+.hs-dashboard .readiness-check__dot--critical {
+  background: var(--red, #ff5c5c);
+}
+.hs-dashboard .readiness-check__dot--info {
+  background: var(--information, #38bdf8);
+}
+
+.hs-dashboard .readiness-check__icon {
+  flex: none;
+  color: var(--text-dim, #8aa6b2);
+}
+
+.hs-dashboard .readiness-check__title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text, #d7e4ec);
+}
+
+.hs-dashboard .readiness-check__badge {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line, #94c8e647);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--text-dim, #8aa6b2);
+}
+.hs-dashboard .readiness-check__badge--healthy {
+  color: var(--green, #2ecc71);
+  border-color: var(--green, #2ecc71);
+}
+.hs-dashboard .readiness-check__badge--warning {
+  color: var(--amber, #f5a623);
+  border-color: var(--amber, #f5a623);
+}
+.hs-dashboard .readiness-check__badge--critical {
+  color: var(--red, #ff5c5c);
+  border-color: var(--red, #ff5c5c);
+}
+.hs-dashboard .readiness-check__badge--info {
+  color: var(--information, #38bdf8);
+  border-color: var(--information, #38bdf8);
+}
+
+.hs-dashboard .readiness-check__detail {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim, #8aa6b2);
+}
+
+/* ---- Expandable diagnostics (<details>/<summary>) -------------------------- */
+
+.hs-dashboard .readiness-check__diagnostics {
+  margin-top: 2px;
+}
+.hs-dashboard .readiness-check__summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted, #6b8494);
+  list-style: none;
+}
+.hs-dashboard .readiness-check__summary::-webkit-details-marker {
+  display: none;
+}
+.hs-dashboard .readiness-check__summary-chevron {
+  transition: transform 0.15s ease;
+}
+.hs-dashboard .readiness-check__diagnostics[open] .readiness-check__summary-chevron {
+  transform: rotate(90deg);
+}
+
+.hs-dashboard .readiness-check__diag {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+.hs-dashboard .readiness-check__diag-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--muted, #6b8494);
+}
+.hs-dashboard .readiness-check__diag-row > :last-child {
+  color: var(--text-dim, #8aa6b2);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.hs-dashboard .readiness-check__diag-row code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+.hs-dashboard .readiness-check__provenance {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.hs-dashboard .readiness-section__note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted, #6b8494);
+}
+
+/* ---- Responsive ---------------------------------------------------------- */
+
+@media (max-width: 700px) {
+  .hs-dashboard .readiness-checks {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

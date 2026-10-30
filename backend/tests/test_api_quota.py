@@ -343,3 +343,71 @@ class TestWhoIsMetered:
         assert api_quota.is_control_plane_path("/api/auth/me")
         assert api_quota.is_control_plane_path("/api/auth/refresh/")
         assert not api_quota.is_control_plane_path("/api/tasks/counts")
+
+
+class TestCorsOnQuotaResponses:
+    """A quota 429 must still carry CORS headers for an allowed origin, or the
+    browser reports a CORS failure instead of the quota error. CORS is
+    registered outside the rate limiter for exactly this reason."""
+
+    async def _over_quota_tenant(self):
+        tenant, plan_ids = await _seed_tenant_with_plan(api_rate_limit=1)
+        await api_quota.record_api_call(tenant.id, 3)
+        await api_quota.flush_api_calls(tenant.id)
+        api_quota.reset_state()
+        return tenant, plan_ids
+
+    async def test_cors_preflight_not_blocked_when_over_quota(self):
+        """OPTIONS preflight carries no credentials: never metered or blocked."""
+        from app.main import _cors_origins
+
+        tenant, plan_ids = await self._over_quota_tenant()
+        try:
+            origin = _cors_origins[0] if _cors_origins else "http://localhost:3000"
+            async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+                resp = await client.options(
+                    "/api/tasks/counts",
+                    headers={"Origin": origin, "Access-Control-Request-Method": "GET"},
+                )
+
+            assert resp.status_code == 200, resp.text
+            assert api_quota.pending_for(tenant.id) == 0
+        finally:
+            await _cleanup(tenant.id, plan_ids)
+
+    async def test_over_quota_429_includes_allow_origin_for_allowed_origin(self):
+        from app.main import _cors_origins
+
+        tenant, plan_ids = await self._over_quota_tenant()
+        try:
+            raw_key = await _api_key(tenant.id)
+            origin = _cors_origins[0] if _cors_origins else "http://localhost:3000"
+            async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+                resp = await client.get(
+                    "/api/tasks/counts",
+                    headers={"Authorization": f"Bearer {raw_key}", "Origin": origin},
+                )
+
+            assert resp.status_code == 429, resp.text
+            assert resp.headers.get("access-control-allow-origin") == origin
+            assert resp.headers.get("access-control-allow-credentials") == "true"
+        finally:
+            await _cleanup(tenant.id, plan_ids)
+
+    async def test_disallowed_origin_gets_no_allow_origin(self):
+        tenant, plan_ids = await self._over_quota_tenant()
+        try:
+            raw_key = await _api_key(tenant.id)
+            async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+                resp = await client.get(
+                    "/api/tasks/counts",
+                    headers={
+                        "Authorization": f"Bearer {raw_key}",
+                        "Origin": "https://evil.example.com",
+                    },
+                )
+
+            assert resp.status_code == 429, resp.text
+            assert "access-control-allow-origin" not in resp.headers
+        finally:
+            await _cleanup(tenant.id, plan_ids)

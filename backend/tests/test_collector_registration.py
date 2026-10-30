@@ -100,7 +100,7 @@ class TestPreviouslyDeadCollectorsAreReachable:
 
     @pytest.mark.parametrize(
         "source_type",
-        ["azure", "vmware", "fortigate", "fortimanager", "meraki",
+        ["azure", "datadog", "vmware", "fortigate", "fortimanager", "meraki",
          "zabbix", "linux_ssh", "windows_winrm"],
     )
     def test_collector_resolves_through_registry(self, source_type):

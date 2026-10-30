@@ -40,12 +40,15 @@ function Section({
   title,
   subtitle,
   emptyMessage,
+  action,
   children,
 }: {
   state: SectionState;
   title: string;
   subtitle?: string;
   emptyMessage: string;
+  /** Optional next action (e.g. a Retry button) rendered in the error/empty state. */
+  action?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   return (
@@ -56,10 +59,15 @@ function Section({
       </div>
       <div className="brief-section__body">
         {state === "loading" ? (
-          <div className="op-health__status">Loading {title.toLowerCase()}.</div>
+          <div className="brief-section__skeleton" aria-label={`Loading ${title}`}>
+            <span />
+            <span />
+            <span />
+          </div>
         ) : state === "error" ? (
           <div className="op-health__status op-health__status--error">
             {title.toLowerCase()} unavailable.
+            {action}
           </div>
         ) : state === "stale" ? (
           <div className="op-health__status op-health__status--stale">
@@ -82,11 +90,14 @@ export default memo(function CommandCenterBrief({
   loading,
   error,
   stale,
+  onRetry,
 }: {
   data: CommandCenterBrief | undefined;
   loading: boolean;
   error: Error | null;
   stale: boolean;
+  /** Manual retry for the error/empty state (never auto-retries endlessly). */
+  onRetry?: () => void;
 }) {
   if (loading && data === undefined) {
     return (
@@ -103,6 +114,13 @@ export default memo(function CommandCenterBrief({
         state="error"
         title="Command Center Brief"
         emptyMessage="The brief could not be read. Check your connection and try again."
+        action={
+          onRetry ? (
+            <button type="button" className="brief-retry" onClick={onRetry}>
+              Retry
+            </button>
+          ) : undefined
+        }
       />
     );
   }

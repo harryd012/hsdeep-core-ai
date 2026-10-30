@@ -4,7 +4,6 @@ import { useQuery } from "@tanstack/react-query";
 import {
   getAlertSummary,
   getAutomationStatus,
-  getBackendHealth,
   getCloudStatus,
   getCollectorRuns,
   getDashboardSummary,
@@ -12,6 +11,7 @@ import {
   getEvents,
   getMe,
   getNetworkStatus,
+  getOperationalIntelligence,
   getAIInsights,
   getAlertIntelligenceMetrics,
   getCollectorHealth,
@@ -22,6 +22,7 @@ import {
   getTenantId,
 } from "@/lib/api";
 import { useCommandCenterOverview } from "@/hooks/useAiQueries";
+import { useSystemHealth } from "@/hooks/useSystemHealth";
 import {
   buildActivity,
   buildAiOperations,
@@ -65,18 +66,23 @@ export function useDashboardData(): DashboardData {
   const automation = useQuery({ queryKey: ["dashboard", "automation-status"], queryFn: () => getAutomationStatus(), refetchInterval: 60_000 });
   const network = useQuery({ queryKey: ["dashboard", "network-status"], queryFn: () => getNetworkStatus(), refetchInterval: 60_000 });
   const cloud = useQuery({ queryKey: ["dashboard", "cloud-status"], queryFn: () => getCloudStatus(), refetchInterval: 60_000 });
-  const apiUp = useQuery({ queryKey: ["dashboard", "backend-health"], queryFn: () => getBackendHealth(), refetchInterval: 60_000 });
+  const systemHealth = useSystemHealth();
   const summary = useQuery({ queryKey: ["dashboard", "summary"], queryFn: () => getDashboardSummary(), refetchInterval: 60_000 });
   const events = useQuery({ queryKey: ["dashboard", "events"], queryFn: () => getEvents({ limit: 100 }), refetchInterval: 60_000 });
   const runs = useQuery({ queryKey: ["dashboard", "collector-runs"], queryFn: () => getCollectorRuns({ limit: 20 }), refetchInterval: 60_000 });
   const me = useQuery({ queryKey: ["dashboard", "me"], queryFn: () => getMe(), staleTime: 5 * 60_000 });
   const aiInsights = useQuery({ queryKey: ["dashboard", "ai-insights"], queryFn: () => getAIInsights(), refetchInterval: 60_000 });
-  // Open incidents for the attention band.
+  // Open incidents for the attention band. The key/params MATCH useSocData's
+  // query so both surfaces share one cache entry instead of polling twice.
   const incidents = useQuery({ queryKey: ["soc", "incidents-open"], queryFn: () => listIncidents({ limit: 50 }), refetchInterval: 30_000 });
   // Authoritative EVIDENCE sources the backend already aggregates: alert
   // correlation/noise-reduction counts and per-source collection health.
   const incidentIntelligence = useQuery({ queryKey: ["dashboard", "incident-intelligence"], queryFn: () => getAlertIntelligenceMetrics(), refetchInterval: 60_000 });
   const collectorHealth = useQuery({ queryKey: ["dashboard", "collector-health"], queryFn: () => getCollectorHealth(), refetchInterval: 60_000 });
+  // Canonical full-estate device-state counts (backend counts_by_state) — the
+  // single source of truth for the device tiles. Same query key as the
+  // Operational Intelligence panel so both surfaces share one cache entry.
+  const oi = useQuery({ queryKey: ["dashboard", "operational-intelligence"], queryFn: () => getOperationalIntelligence(), refetchInterval: 60_000 });
 
   const { data: alertsData } = alerts;
   const { data: devicesData } = devices;
@@ -87,11 +93,12 @@ export function useDashboardData(): DashboardData {
 
   const operationalHealth = buildOperationalHealth({
     alerts: alertsData, summary: alertSummary.data, devices: devicesData,
+    canonicalDeviceStates: oi.data?.devices?.canonical,
     sensors: sensorsData, automation: automationData, network: network.data,
   });
   const infrastructure = buildInfrastructureOverview({
     devices: devicesData, sensors: sensorsData, automation: automationData,
-    network: network.data, cloud: cloud.data, apiUp: apiUp.data,
+    network: network.data, cloud: cloud.data, apiUp: systemHealth.data ? systemHealth.data.status !== "unavailable" : undefined,
     dashboardSummary: summary.data, events: eventsData,
   });
   const trends = buildTrends(eventsData, runsData);
@@ -101,6 +108,11 @@ export function useDashboardData(): DashboardData {
 
   // Availability, not emptiness: a query that has not settled (or failed) must
   // yield "N/A" in the attention band rather than a reassuring 0.
+  const attentionAvailable = {
+    alerts: !alerts.isLoading && !alerts.error,
+    devices: !devices.isLoading && !devices.error,
+    incidents: !incidents.isLoading && !incidents.error,
+  };
   const attention = buildAttentionRequired({
     alerts: alertsData,
     devices: devicesData,
@@ -108,21 +120,20 @@ export function useDashboardData(): DashboardData {
     intelligence: incidentIntelligence.data,
     collectors: collectorHealth.data,
     available: {
-      alerts: !alerts.isLoading && !alerts.error,
-      devices: !devices.isLoading && !devices.error,
-      incidents: !incidents.isLoading && !incidents.error,
+      ...attentionAvailable,
       intelligence: !incidentIntelligence.isLoading && !incidentIntelligence.error,
       collectors: !collectorHealth.isLoading && !collectorHealth.error,
     },
   });
 
-  // One normalized KPI view model for the command-centre strip. It reuses the
-  // derivations above: no second aggregation, no extra request.
+  // PHASE 1 — one normalized KPI view model for the command-centre strip. It
+  // reuses the derivations above: no second aggregation, no extra request.
   const commandKpis = buildCommandKpis({
     operationalHealth,
     incidents: incidents.data,
     alerts: alertsData,
     devices: devicesData,
+    canonicalDeviceStates: oi.data?.devices?.canonical,
     aiTasks: {
       active: aiOperations.activeTasks,
       queued: aiOperations.queuedTasks,
@@ -143,8 +154,10 @@ export function useDashboardData(): DashboardData {
 
   return {
     header: buildHeader({ tenantId: getTenantId(), user: me.data, apiHost: API_BASE_URL }),
-    // null until GET /health has answered: "not checked yet" is not "down".
-    apiHealthy: apiUp.data ?? null,
+    // null until the system-health check has answered: "not checked yet"
+    // is not "down". Both fields come from the one health query.
+    apiHealthy: systemHealth.data ? systemHealth.data.status !== "unavailable" : null,
+    apiHealth: systemHealth.data?.status ?? null,
     attention,
     commandKpis,
     operationalHealth,
