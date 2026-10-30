@@ -54,6 +54,17 @@ Classified failures during the run:
   tenant: firewall, topology-link and SOP counts matched; SOP Engine showed
   only the tenant's SOPs.
 
+## 2026-10-30 - R1 batch 1 (R1.1, R1.4, R1.7)
+
+| Command | Result |
+| --- | --- |
+| `pytest tests/test_session_revocation.py` | 8 passed |
+| `pytest test_session_revocation test_auth_core test_auth_service test_auth_tenants test_email_foundation test_pilot_safety test_security_boundary` | 64 passed |
+| `pytest tests/test_signup_rate_limit.py test_pilot_safety test_billing_hardening` | 13 passed |
+| `alembic upgrade head; downgrade -1; upgrade head` on `hsdeep_test` | `c7f1a9d3e5b2` OK both ways |
+| Full backend suite (`pytest -q`) at `9e979cbc4` | 2,542 passed, 1 skipped, 1 failed: `test_every_mutating_route_requires_a_permission` flagged the new `/api/auth/logout-all` (new regression in the guard list, not in auth). Fixed in `fe7af585f`; file re-run 15 passed. |
+| Frontend `tsc --noEmit`, `npm test` | clean; 121 passed |
+
 ## Remote CI
 
 | Run | Branch | Revision | Result |

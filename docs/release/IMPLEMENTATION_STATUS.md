@@ -52,11 +52,23 @@ on any branch; they need the owner's commit before they can be released.
 | Frontend components | 118 |
 | Frontend unit test files | 15 (121 tests) |
 
-## R1 to R5
+## R1: security and multi-tenant foundation
 
-All NOT_STARTED except where noted; verified starting findings are in
-`SECURITY_GAP_REGISTER.md` and `RELEASE_BLOCKERS.md`, the phase plan in
-`ROADMAP.md`.
+| ID | Task | Status | Evidence |
+| --- | --- | --- | --- |
+| R1.1 | Tenant identity: no frontend fallback tenant | VERIFIED | `9e979cbc4`. Backend reads no tenant from the query (0 matches for `tenant_id ... Query(` in routes). `tsc` clean; 121 frontend tests pass. Not yet checked in a signed-in browser session. |
+| R1.2 | Scoped, time-bound, audited support access | BLOCKED | Needs an owner decision on the grant model (see `RELEASE_BLOCKERS.md` BLK-R1-02). |
+| R1.3 | Cross-tenant isolation suite | NOT_STARTED | |
+| R1.4 | Server-side session revocation | VERIFIED | `431b85c85`, `fe7af585f`; migration `c7f1a9d3e5b2` round-tripped; `tests/test_session_revocation.py` 8 passed; auth/email/pilot/security suites 64 passed; full backend suite 2,542 passed + RBAC guard fixed (15 passed). |
+| R1.5 | RBAC per-role tests | NOT_STARTED | Write routes already guarded (`test_rbac_write_routes`). Role changes now end the user's sessions (R1.4). |
+| R1.6 | Unified security audit | NOT_STARTED | |
+| R1.7 | Signup rate limit fails closed | VERIFIED | `e5cc42668`; `tests/test_signup_rate_limit.py` 2 passed; billing/pilot suites pass. |
+| R1.8 | API key expiry/last-used as timestamps, enforcement tests | NOT_STARTED | |
+| R1.9 | Security configuration review | NOT_STARTED | |
+
+## R2 to R5
+
+NOT_STARTED; plan in `ROADMAP.md`.
 
 ## Module status
 
