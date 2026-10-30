@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.core.auth import get_tenant_id
+from app.core.auth import get_tenant_id, require_permission
 from app.core.db import get_db
 from app.schemas.paloalto import (
     CLIDiagnosticCommand,
@@ -74,7 +74,11 @@ async def list_runbooks(q: str | None = None):
     return _registry.all()
 
 
-@router.post("/runbooks/match", response_model=list[RunbookMatch])
+@router.post(
+    "/runbooks/match",
+    response_model=list[RunbookMatch],
+    dependencies=[Depends(require_permission("devices.read"))],
+)
 async def match_runbooks(body: MatchRunbooksIn):
     return _registry.match(body.symptoms)
 
@@ -86,11 +90,15 @@ async def list_cli_commands(backend_safe: bool | None = None):
     return _cli.all()
 
 
-@router.post("/executions", response_model=DiagnosticExecution, status_code=201)
+@router.post(
+    "/executions",
+    response_model=DiagnosticExecution,
+    status_code=201,
+    dependencies=[Depends(require_permission("runbooks.execute"))],
+)
 async def create_execution(
     req: DiagnosticExecutionCreate,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
-    actor: str = "engineer",
 ):
     ex = _engine.new_execution(tenant_id, req)
     _EXECUTIONS[_key(tenant_id, ex.id)] = ex
@@ -105,12 +113,15 @@ async def get_execution(ex_id: uuid.UUID, tenant_id: uuid.UUID = Depends(get_ten
     return ex
 
 
-@router.post("/executions/{ex_id}/steps/{step_id}/run", response_model=DiagnosticExecution)
+@router.post(
+    "/executions/{ex_id}/steps/{step_id}/run",
+    response_model=DiagnosticExecution,
+    dependencies=[Depends(require_permission("runbooks.execute"))],
+)
 async def run_step(
     ex_id: uuid.UUID,
     step_id: str,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
-    actor: str = "engineer",
 ):
     ex = _EXECUTIONS.get(_key(tenant_id, ex_id))
     if ex is None:
@@ -118,12 +129,20 @@ async def run_step(
     if ex.tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="cross-tenant access denied")
     try:
-        return await _engine.run_step(ex, step_id, action=None, actor_role=actor)
+        # The safety role is fixed server-side, never taken from the request:
+        # a client-chosen "admin" would bypass the approval required for
+        # MEDIUM+ risk steps. Approval comes only from the /approve route,
+        # which requires runbooks.approve.
+        return await _engine.run_step(ex, step_id, action=None, actor_role="engineer")
     except KeyError:
         raise HTTPException(status_code=404, detail=f"unknown step: {step_id}")
 
 
-@router.post("/executions/{ex_id}/steps/{step_id}/skip", response_model=DiagnosticExecution)
+@router.post(
+    "/executions/{ex_id}/steps/{step_id}/skip",
+    response_model=DiagnosticExecution,
+    dependencies=[Depends(require_permission("runbooks.execute"))],
+)
 async def skip_step(
     ex_id: uuid.UUID,
     step_id: str,
@@ -141,7 +160,11 @@ async def skip_step(
         raise HTTPException(status_code=404, detail=f"unknown step: {step_id}")
 
 
-@router.post("/executions/{ex_id}/approve", status_code=204)
+@router.post(
+    "/executions/{ex_id}/approve",
+    status_code=204,
+    dependencies=[Depends(require_permission("runbooks.approve"))],
+)
 async def grant_approval(
     ex_id: uuid.UUID,
     body: GrantApprovalIn,
@@ -154,7 +177,11 @@ async def grant_approval(
     return None
 
 
-@router.post("/rca/assess", response_model=RCAAssessment)
+@router.post(
+    "/rca/assess",
+    response_model=RCAAssessment,
+    dependencies=[Depends(require_permission("devices.read"))],
+)
 async def assess_rca(body: AssessIn):
     return _rca.assess(body.incident_id, body.evidence)
 
