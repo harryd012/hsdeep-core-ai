@@ -22,7 +22,10 @@ cd "$ROOT"
 # carrying a stale pytest-asyncio (see backend/tests/conftest.py's version guard).
 # CI installs backend/requirements-dev.txt into a clean interpreter and has no
 # venv, so it falls back to `python`.
-if [ -x "$ROOT/backend/.venv/bin/python" ]; then
+# An explicit PYTHON=... (e.g. a shared virtualenv used by a git worktree) wins.
+if [ -n "${PYTHON:-}" ]; then
+  :
+elif [ -x "$ROOT/backend/.venv/bin/python" ]; then
   PYTHON="$ROOT/backend/.venv/bin/python"
 elif [ -x "$ROOT/backend/.venv/Scripts/python.exe" ]; then
   PYTHON="$ROOT/backend/.venv/Scripts/python.exe"
