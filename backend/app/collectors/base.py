@@ -250,6 +250,69 @@ FIREWALL_TABLES = ("status", "vpn", "licences")
 
 
 @dataclass
+class NormalizedBackupVault:
+    """A backup vault (Azure Recovery Services vault) and its security posture.
+
+    The vault itself is also reported as a `NormalizedDevice` (cloud_resource)
+    with the same external_id, so it appears in inventory and alerts link to it.
+    Settings the provider did not report stay None.
+    """
+
+    external_id: str
+    name: str
+    provider: str = "azure"
+    location: str | None = None
+    resource_group: str | None = None
+    subscription_id: str | None = None
+    #: enabled | disabled | always_on
+    soft_delete_state: str | None = None
+    #: unlocked | locked | disabled
+    immutability_state: str | None = None
+    #: locally_redundant | geo_redundant | zone_redundant
+    storage_redundancy: str | None = None
+
+
+@dataclass
+class NormalizedBackupItem:
+    """One protected item (VM, SQL database, file share ...) in a vault."""
+
+    external_id: str
+    vault_external_id: str
+    name: str
+    workload_type: str | None = None
+    #: protected | protection_stopped | protection_paused | protection_error | ir_pending | other
+    protection_state: str | None = None
+    #: completed | completed_with_warnings | failed | in_progress | other (provider's last backup verdict)
+    last_backup_status: str | None = None
+    last_backup_at: datetime | None = None
+    #: The protected resource (e.g. the VM's resource id).
+    source_resource_id: str | None = None
+    policy_name: str | None = None
+    health_status: str | None = None
+
+
+@dataclass
+class NormalizedBackupJob:
+    """One backup/restore job run by a vault."""
+
+    external_id: str
+    vault_external_id: str
+    item_name: str | None
+    operation: str | None
+    #: completed | completed_with_warnings | failed | in_progress | cancelled | other
+    status: str
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    duration_seconds: float | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+#: Backup tables a collector can read; keys of NormalizedBundle.backup_status.
+BACKUP_TABLES = ("vaults", "items", "jobs")
+
+
+@dataclass
 class NormalizedBundle:
     devices: list[NormalizedDevice] = field(default_factory=list)
     interfaces: list[NormalizedInterface] = field(default_factory=list)
@@ -280,6 +343,13 @@ class NormalizedBundle:
     #: and retirement rule as ``l3_status``. A missing key means the
     #: collector does not read that table.
     firewall_status: dict[str, str] = field(default_factory=dict)
+    #: Backup vaults, protected items and jobs (Azure Backup).
+    backup_vaults: list[NormalizedBackupVault] = field(default_factory=list)
+    backup_items: list[NormalizedBackupItem] = field(default_factory=list)
+    backup_jobs: list[NormalizedBackupJob] = field(default_factory=list)
+    #: Outcome per backup table ("vaults", "items", "jobs"), same values and
+    #: retirement rule as ``l3_status``. A missing key means not read.
+    backup_status: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

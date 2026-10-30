@@ -12,6 +12,7 @@ from app.collectors import base  # noqa: F401  (registration side effects)
 from app.collectors import (  # noqa: F401  (registration side effects)
     aws,
     azure,
+    azure_backup,
     connectivity,
     datadog,
     fortigate,
@@ -39,6 +40,7 @@ from app.collectors import (  # noqa: F401  (registration side effects)
 _COLLECTOR_MODULES: tuple[str, ...] = (
     "aws",
     "azure",
+    "azure_backup",
     "connectivity",
     "datadog",
     "fortigate",

@@ -140,6 +140,11 @@ class Settings(BaseSettings):
     firewall_resource_warning_pct: float = 85.0
     firewall_resource_critical_pct: float = 95.0
     firewall_licence_warning_days: int = 30
+    # Backup monitoring: a protected item with no successful backup for longer
+    # than this recovery-point objective alerts (hours). Job history read per
+    # poll covers this many hours back.
+    backup_rpo_hours: int = 24
+    backup_job_lookback_hours: int = 72
 
     # Correlation: how long an open incident may be quiet before a new alert
     # starts a fresh incident instead of reopening it. Replaces the hardcoded
