@@ -6,8 +6,10 @@ import {
   AlertTriangle,
   Bell,
   CheckCircle2,
+  Clock,
   Globe2,
   HardDrive,
+  HelpCircle,
   Server,
   Workflow,
   type LucideIcon,
@@ -43,6 +45,8 @@ const ICONS: Record<string, LucideIcon> = {
   "Critical Incidents": AlertTriangle,
   "Devices Online": Server,
   "Devices Offline": HardDrive,
+  "Devices Stale": Clock,
+  "Devices Unknown": HelpCircle,
   "Sensors Healthy": CheckCircle2,
   "Collector Success": Workflow,
   "Sites Online": Globe2,
@@ -58,12 +62,12 @@ const STATUS_CLASS: Record<string, string> = {
 function Kpi({ kpi }: { kpi: OperationalHealthKpi }) {
   const Icon = ICONS[kpi.label] ?? Globe2;
   return (
-    <li className={`op-health__kpi ${STATUS_CLASS[kpi.status]}`}>
+    <li className={`op-health__kpi kpi-card ${STATUS_CLASS[kpi.status]}`}>
       <Link href={kpi.href} className="op-health__link">
         <span className="op-health__icon"><Icon size={15} /></span>
         <small className="op-health__label">{kpi.label}</small>
-        <b className="op-health__value">{kpi.value === null ? "N/A" : kpi.value}</b>
-        {kpi.context && <small className="op-health__context">{kpi.context}</small>}
+        <b className={`op-health__value kpi-card__value${kpi.value === null ? " kpi-card__value--empty" : ""}`}>{kpi.value === null ? "N/A" : kpi.value}</b>
+        {kpi.context && <small className="op-health__context kpi-card__subtext">{kpi.context}</small>}
       </Link>
     </li>
   );
@@ -88,7 +92,7 @@ const OperationalHealth = memo(function OperationalHealth({
           Operational data unavailable.
         </div>
       )}
-      <ul className="op-health__strip">
+      <ul className="op-health__strip kpi-row">
         {kpis.map((kpi) => (
           <Kpi key={kpi.label} kpi={kpi} />
         ))}

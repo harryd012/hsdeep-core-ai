@@ -8,6 +8,8 @@ import type { SocData } from "@/lib/soc/socModels";
 
 import DashboardMasthead from "@/components/dashboard/DashboardMasthead";
 
+import DeploymentReadinessPanel from "@/components/dashboard/DeploymentReadinessPanel";
+
 import OperationalHealth from "@/components/dashboard/OperationalHealth";
 
 import AlertSummaryPanel from "@/components/dashboard/AlertSummaryPanel";
@@ -86,9 +88,15 @@ export default function UnifiedCommandCenter({
           apiHost: nocData.header.apiHost,
         }}
         apiHealthy={nocData.apiHealthy}
+        apiHealth={nocData.apiHealth}
       />
 
       <div className="hs-dashboard">
+        {/** DEPLOYMENT READINESS (PHASE 2): local helm baseline, chart
+            validity and configured prerequisites. A local helm PASS
+            never means the application is deployed or production ready. */}
+        <DeploymentReadinessPanel apiHealth={nocData.apiHealth} />
+
         {/* LEVEL 1-3 - the three questions, answered before anything else. */}
         <AttentionRequired
           data={nocData.attention}
@@ -104,6 +112,7 @@ export default function UnifiedCommandCenter({
         <LiveInfrastructureIntelligence nocData={nocData} />
 
         <nav className="dashboard-section-nav" aria-label="Dashboard sections">
+          <a href="#readiness">Deployment Readiness</a>
           <a href="#attention">Attention</a>
           <a href="#infrastructure-intelligence">Infrastructure Intel</a>
           <a href="#operational-health">NOC Overview</a>

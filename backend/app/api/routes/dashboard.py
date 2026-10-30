@@ -111,9 +111,12 @@ def get_operational_intelligence_service(
 def get_cloud_operations_service(
     db: AsyncSession = Depends(get_db),
 ) -> CloudOperationsService:
+    from app.services.backup_service import BackupService
+
     return CloudOperationsService(
         device_repo=DeviceRepository(db),
         incident_repo=IncidentRepository(db),
+        backup_service=BackupService(db),
     )
 
 

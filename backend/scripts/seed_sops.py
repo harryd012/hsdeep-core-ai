@@ -1,6 +1,7 @@
 """
-Seed the SOP Repository with 13 production runbooks (SOP-002 through SOP-014)
-that were previously hardcoded in the frontend. SOP-001 already exists.
+Seed the SOP Repository with production runbooks SOP-002 through SOP-015
+(SOP-002 to SOP-014 were previously hardcoded in the frontend; SOP-015 is MPLS
+L2VPN/L3VPN troubleshooting). SOP-001 already exists.
 Idempotent: keyed on (tenant_id, sop_number).
 """
 from __future__ import annotations
@@ -229,6 +230,203 @@ SEEDS = [
             {"order": 6, "action": "If battery fails, schedule a battery/set replacement and escalate to facilities."},
         ],
         "possible_causes": ["Battery aging", "Input power instability", "Overload condition", "Charger fault", "Test failure from previous deep discharge"],
+    },
+    {
+        "sop_number": "SOP-015",
+        "name": "MPLS L2VPN/L3VPN Troubleshooting",
+        "description": "Troubleshooting framework for MPLS L2VPN Ethernet frame transport and L3VPN customer prefix routing through provider VRFs",
+        "category": "connectivity",
+        "tags": [
+            "mpls",
+            "l2vpn",
+            "l3vpn",
+            "vrf",
+            "bgp",
+            "ethernet",
+            "wan",
+            "carrier-noc"
+        ],
+        "vendor": "Provider",
+        "platform": "MPLS Core",
+        "steps": [
+            {
+                "order": 1,
+                "action": "Check physical link status and interface statistics on PE-CE boundary",
+                "expected_result": "Interface is up with no error packets",
+                "warnings": [
+                    "Verify physical cable connectivity first"
+                ],
+                "troubleshooting_matrix": {
+                    "no_link": "Check cable, transceivers, physical layer",
+                    "errors": "Check interface errors, logging, MTU mismatch"
+                },
+                "commands": [
+                    {
+                        "platform": "cisco_nxos",
+                        "version": "any",
+                        "command": "show interface",
+                        "authorized_provider_only": True
+                    },
+                    {
+                        "platform": "juniper_junos",
+                        "version": "any",
+                        "command": "show interfaces extensive",
+                        "authorized_provider_only": True
+                    }
+                ]
+            },
+            {
+                "order": 2,
+                "action": "Verify VLAN tagging and EVC/pseudowire status",
+                "expected_result": "EVC status up, pseudowire up",
+                "warnings": [
+                    "mismatched VLAN tags will cause frame loss"
+                ],
+                "troubleshooting_matrix": {
+                    "pseudowire_down": "Check PW status, labeling, routing instance",
+                    "vlan_mismatch": "Verify CE-VLAN matching EVC configuration"
+                },
+                "commands": [
+                    {
+                        "platform": "cisco_nxos",
+                        "version": "any",
+                        "command": "show mpls l2vpn evc",
+                        "authorized_provider_only": True
+                    }
+                ]
+            },
+            {
+                "order": 3,
+                "action": "Confirm MAC learning on L2VPN",
+                "expected_result": "MAC addresses learned and visible in FIB",
+                "warnings": [
+                    "aged MAC entries may stale after link flaps"
+                ],
+                "troubleshooting_matrix": {
+                    "missing_mac": "Check EVC, pseudowire, CE device config",
+                    "mac_flapping": "Verify STP/RSTP status on Ethernet segments"
+                },
+                "commands": [
+                    {
+                        "platform": "cisco_nxos",
+                        "version": "any",
+                        "command": "show mpls forwarding-table",
+                        "authorized_provider_only": True
+                    }
+                ]
+            },
+            {
+                "order": 4,
+                "action": "Check MTU consistency across the EVC",
+                "expected_result": "MTU matches across CE-PE link and within EVC",
+                "warnings": [
+                    "MTU mismatch causes packet drop or fragmentation"
+                ],
+                "troubleshooting_matrix": {
+                    "mtu_mismatch": "Align MTU across all EVC endpoints",
+                    "exceed_mtu": "Check for jumbo frame configuration"
+                },
+                "commands": [
+                    {
+                        "platform": "cisco_nxos",
+                        "version": "any",
+                        "command": "show interface mtu",
+                        "authorized_provider_only": True
+                    }
+                ]
+            },
+            {
+                "order": 5,
+                "action": "Verify STP/RSTP status where applicable",
+                "expected_result": "No blocking states, consistent timers",
+                "warnings": [
+                    "STP convergence delays can impact failover"
+                ],
+                "troubleshooting_matrix": {
+                    "blocking_state": "Check STP topology, root bridge placement",
+                    "timers_mismatch": "Verify STP timers across switches"
+                },
+                "commands": [
+                    {
+                        "platform": "cisco_nxos",
+                        "version": "any",
+                        "command": "show spanning-tree",
+                        "authorized_provider_only": True
+                    }
+                ]
+            },
+            {
+                "order": 6,
+                "action": "Check CE-PE adjacency using BGP or static routes",
+                "expected_result": "CE-PE session established, routes received",
+                "warnings": [
+                    "Adjacency failures indicate misconfigured VRF or ACLs"
+                ],
+                "troubleshooting_matrix": {
+                    "bgp_peering_fail": "Verify BGP config, route-targets, VRF instance",
+                    "static_route_fail": "Check static route reachability, VRF-lite"
+                },
+                "commands": [
+                    {
+                        "platform": "cisco_ios",
+                        "version": "any",
+                        "command": "show ip bgp vrf CUSTOMER1",
+                        "authorized_provider_only": True
+                    }
+                ]
+            },
+            {
+                "order": 7,
+                "action": "Verify advertised and received routes in PE VRF",
+                "expected_result": "Customer prefixes present in BGP table, correct next-hop",
+                "warnings": [
+                    "Stale routes indicate peer instability"
+                ],
+                "troubleshooting_matrix": {
+                    "missing_routes": "Check route-target import/export, RT mismatch",
+                    "wrong_next_hop": "Validate PE next-hop address, label allocation"
+                },
+                "commands": [
+                    {
+                        "platform": "cisco_nxos",
+                        "version": "any",
+                        "command": "show ip bgp vpnv4 all",
+                        "authorized_provider_only": True
+                    }
+                ]
+            },
+            {
+                "order": 8,
+                "action": "Validate return path and provider MPLS core health",
+                "expected_result": "Return path operational, MPLS labels propagated core-to-core",
+                "warnings": [
+                    "Label imposition/imposition failures indicate core issues"
+                ],
+                "troubleshooting_matrix": {
+                    "label_missing": "Check LSDP, LDP session, core connectivity",
+                    "core_congestion": "Verify no core congestion, label TTL handling"
+                },
+                "commands": [
+                    {
+                        "platform": "cisco_nxos",
+                        "version": "any",
+                        "command": "show mpls lsp",
+                        "authorized_provider_only": True
+                    }
+                ]
+            }
+        ],
+        "possible_causes": [
+            "Physical link failure",
+            "VLAN misconfiguration",
+            "PW signaling failure",
+            "MAC learning failure",
+            "MTU mismatch",
+            "STP blocking",
+            "CE-PE BGP peering failure",
+            "Route-target mismatch",
+            "MPLS label distribution failure"
+        ]
     },
 ]
 

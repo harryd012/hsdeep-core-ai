@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { memo, useState } from "react";
-import { Bot, Send } from "lucide-react";
+import { Send } from "lucide-react";
 import { copilotChat, type CopilotChatResponse } from "@/lib/api";
 import type { AiOperationsData, SectionState } from "@/lib/dashboard/dashboardModels";
+import BotAvatar, { type BotAvatarStatus } from "@/components/ai/BotAvatar";
 
 /**
  * AiOperations — Zone 2 (presentational).
@@ -66,11 +67,22 @@ const AiOperations = memo(function AiOperations({
       ? { text: "AI CONNECTING", color: "var(--muted)" }
       : STATUS_LABEL[data.aiStatus];
 
+  /** Avatar variant derived ONLY from the real AI status reported by the
+   *  adapter (CommandCenterOverview). No fabricated states. */
+  const ctoAvatarStatus: BotAvatarStatus =
+    state === "loading"
+      ? "offline"
+      : data.aiStatus === "online"
+        ? "controller"
+        : data.aiStatus === "degraded"
+          ? "degraded"
+          : "offline";
+
   return (
     <section className="ai-ops" aria-label="AI Operations">
       <header className="ai-ops__header">
         <h2>
-          <Bot size={16} /> AI OPERATIONS
+          <BotAvatar status={ctoAvatarStatus} size="sm" working={(data.activeTasks ?? 0) > 0} label="AI Operations" /> AI OPERATIONS
         </h2>
         <span className="ai-ops__status" style={{ color: status.color }}>
           <i className="ai-ops__status-dot" style={{ background: status.color }} />
@@ -81,9 +93,15 @@ const AiOperations = memo(function AiOperations({
       {state === "error" && <div className="ai-ops__note">AI data unavailable.</div>}
 
       <div className="ai-ops__grid">
-        {/* Left: AI CTO / operational intelligence summary */}
+        {/* Left: AI CTO / operational intelligence summary (single header) */}
         <div className="ai-ops__summary">
           <div className="ai-ops__cto">
+            <BotAvatar
+              status={ctoAvatarStatus}
+              size="lg"
+              working={(data.activeTasks ?? 0) > 0}
+              label={`AI CTO · ${status.text}`}
+            />
             <span className="ai-ops__cto-title">AI CTO</span>
             <span className="ai-ops__status" style={{ color: status.color }}>
               <i className="ai-ops__status-dot" style={{ background: status.color }} />
@@ -121,15 +139,24 @@ const AiOperations = memo(function AiOperations({
           )}
 
           <div className="ai-ops__recommendations">
-            <h3>AI ANALYSIS</h3>
+            <h3>AI CTO Recommendations</h3>
             {state === "empty" && <p className="ai-ops__note">No AI insights at this time.</p>}
+            {state === "success" && data.recommendations.length === 0 && (
+              <p className="ai-ops__note">No open recommendations.</p>
+            )}
             {data.recommendations.map((rec) => (
               <p
                 key={rec.id}
                 className={`ai-ops__rec ai-ops__rec--${rec.severity}`}
-                title={rec.kind.replace(/_/g, " ")}
               >
-                {rec.message}
+                <span className="ai-ops__rec-meta">
+                  <span className={`ai-ops__rec-sev ai-ops__rec-sev--${rec.severity}`}>
+                    {rec.severity}
+                  </span>
+                  <span className="ai-ops__rec-kind">{rec.kind.replace(/_/g, " ")}</span>
+                  {rec.deviceScoped && <span className="ai-ops__rec-scope">device-scoped</span>}
+                </span>
+                <span className="ai-ops__rec-message">{rec.message}</span>
               </p>
             ))}
           </div>

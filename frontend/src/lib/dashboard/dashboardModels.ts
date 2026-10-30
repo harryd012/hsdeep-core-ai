@@ -8,6 +8,7 @@
  * honest empty state.
  */
 import type { CommandKpi } from "./commandKpis";
+import type { SystemStatus } from "@/lib/health";
 
 /* ---------------------------------------------------------------------------
  * Shared primitives
@@ -32,7 +33,12 @@ export interface OperationalHealthData {
   activeAlerts: OperationalHealthKpi;
   criticalIncidents: OperationalHealthKpi;
   devicesOnline: OperationalHealthKpi;
+  /** Confirmed down: a recent probe reported a down-ish status. */
   devicesOffline: OperationalHealthKpi;
+  /** Last seen older than the freshness threshold (not confirmed down). */
+  devicesStale: OperationalHealthKpi;
+  /** No usable evidence to classify (never labelled down). */
+  devicesUnknown: OperationalHealthKpi;
   sensorsHealthy: OperationalHealthKpi;
   collectorSuccess: OperationalHealthKpi;
   sites: OperationalHealthKpi;
@@ -276,7 +282,12 @@ export interface AttentionRequiredData {
 
 export interface DashboardData {
   header: DashboardHeaderData;
-  /** True when GET /health answers OK — drives the masthead status pill. */
+  /** Authoritative platform state from GET /health ("ok" | "degraded" |
+   *  "unavailable"); null while the probe has not answered. Drives the
+   *  masthead status pill. */
+  apiHealth: SystemStatus | null;
+  /** True when the API answers; false when unreachable; null while the probe
+   *  has not answered. Drives the masthead API row. */
   apiHealthy: boolean | null;
   /** Level 1-3: attention counters, the items behind them, and next actions. */
   attention: AttentionRequiredData;

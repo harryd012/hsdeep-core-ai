@@ -80,6 +80,24 @@ from a blank database.
 | Frontend `tsc`, `npm test`, eslint on changed files | clean; 121 passed; 0 errors |
 | Browser (throwaway demo tenants, removed afterwards) | grant form shown, reason required, grant opened, override active; revoked grant sends the app back to the home tenant |
 
+## 2026-10-30 - Merge of the parallel lines
+
+`feat/azure-backup-b1` (contains `feat/ui-page-kit` at `1bc297a2a`,
+`integration/r0`, `chore/r0-capture`; 18 commits) merged into
+`release/cloud-saas-stabilization`. Rollback tag: `rollback/pre-parallel-merge`.
+
+| Check | Result |
+| --- | --- |
+| Conflicts | `backend/app/main.py`, `backend/app/models/__init__.py`: both sides added imports/routers; kept both |
+| Alembic | two heads (`d2b8e6f1a4c9`, `7826ac6377f8`) joined by merge `e9a3c5d7b1f2`; then `f3d6a8c2e4b7` (cleanup tables) |
+| Migration round trip | `downgrade -1` is ambiguous at a merge head; new `ci/migration_roundtrip.py` downgrades to the parents' common ancestor (`c7f1a9d3e5b2`) and back up: OK on `hsdeep_test_release` |
+| Local gates (`PYTHON=... bash ci/quality_gates.sh`) | secret scan, scanner tests 14, ratchet, frontend unit tests 172 passed, build, one head, focused suites 269 passed; full suite 2,703 passed, 2 failed |
+| The 2 failures | `test_cleanup_duplicate_incidents.py` (from the merged line; its own CI runs 41052827903 / 41050853655 also failed): the script ran `CREATE/ALTER TABLE` at run time, which the test role cannot do. Pre-existing defect; fixed by migration `f3d6a8c2e4b7` and creating the tables in the script only when missing. File re-run: 3 passed |
+| Full suite after the fix | 2,704 passed, 1 skipped, 1 failed: `tests/scheduler/test_concurrency_properties.py::test_bounded_tick_concurrency_never_exceeds_configured_max`. Flaky: re-runs 1 failed / 6 passed; file unchanged since first tracked; the merge touches no scheduler code. Classified pre-existing flaky, tracked below |
+
+Known flaky tests: `test_bounded_tick_concurrency_never_exceeds_configured_max`
+(Hypothesis property over real async timing).
+
 ## Remote CI
 
 | Run | Branch | Revision | Result |

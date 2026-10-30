@@ -51,6 +51,9 @@ from app.services.alert_service import AlertService
 from app.services.monitoring.bundle_saver import BundleSaver
 from app.services.monitoring.collection_orchestrator import CollectionOrchestrator
 from app.services.monitoring.monitoring_service import MonitoringService, MonitoringSourceNotFound
+from app.services.monitoring.source_health_manager import SourceHealthManager
+from app.repositories.source_health_audit_repository import SourceHealthAuditRepository
+from app.services.events.event_bus import get_event_bus
 from app.core.auth import Principal, generate_refresh_token, get_current_user, hash_refresh_token
 from app.core.entitlements import evaluate_resource_limit, get_billing_service
 from app.models.collector_credential import CollectorCredential
@@ -85,6 +88,11 @@ def get_collection_orchestrator(db: AsyncSession = Depends(get_db)) -> Collectio
         ),
         alert_service=AlertService(AlertRepository(db)),
         source_repo=MonitoringSourceRepository(db),
+        health_manager=SourceHealthManager(
+            MonitoringSourceRepository(db),
+            SourceHealthAuditRepository(db),
+            get_event_bus(),
+        ),
     )
 
 
@@ -257,6 +265,18 @@ async def sync_source(
 
             logging.getLogger(__name__).exception(
                 "RCA trigger failed for committed incident %s", reference.incident_id
+            )
+    # Source-health domain events (SOURCE_RECOVERED / SOURCE_HEALTH_DEGRADED) are
+    # published AFTER the commit above so a rolled-back collection never emits a
+    # spurious recovery/degradation signal. Best-effort, like the RCA triggers.
+    for event in run.recovery_events:
+        try:
+            await get_event_bus().publish(event)
+        except Exception:  # noqa: BLE001 - health row is already committed
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "Source-health event publish failed for source %s", source_id
             )
     return SyncResult(
         source_id=source_id,

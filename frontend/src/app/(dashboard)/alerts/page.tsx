@@ -161,6 +161,7 @@ export default function AlertsPage() {
           rows={visible}
           rowKey={(a) => a.id}
           defaultSort={{ key: "last", dir: "desc" }}
+          maxHeight="max(480px, calc(100vh - 300px))"
           emptyText={alerts.length === 0 ? "No alerts. All monitored signals are quiet." : "No alerts match the current filter."}
         />
       </Panel>

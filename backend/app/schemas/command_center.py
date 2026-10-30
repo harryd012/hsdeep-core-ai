@@ -108,11 +108,17 @@ class CCTask(BaseModel):
 
 
 class CCWorkload(BaseModel):
-    """Per-department operational workload (derived from real agents/tasks)."""
+    """Per-department operational workload (derived from real agents/tasks).
+
+    ``total_tasks`` is every task assigned to a department agent regardless of
+    status; ``active_tasks`` is the non-terminal subset (not ``recorded`` or
+    ``cancelled``). Keeping both lets the UI label the two distinctly.
+    """
 
     department: str
     agent_count: int
     active_agents: int
+    total_tasks: int = 0
     active_tasks: int
     queued_tasks: int
     verifying_tasks: int

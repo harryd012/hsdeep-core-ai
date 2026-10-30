@@ -1,0 +1,158 @@
+﻿/* ============================================================================
+ * HSDEEP CORE AI - OBSERVABILITY UI PRIMITIVES (shared workspace state view)
+ *
+ * Additive styles for the reusable observability primitives (DataStateView,
+ * MetricTile, Sparkline). NO new palette: every colour, radius, gap and
+ * border is an existing HSDEEP token (see dashboard.css :root). Scoped under
+ * .hs-dashboard to avoid any global leakage.
+ * ========================================================================== */
+
+/* ---- DataStateView: loading / error / empty / stale / unavailable / ok --- */
+
+.hs-dashboard .obs-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 20px 16px;
+  text-align: center;
+  border: 1px solid var(--line, #94c8e624);
+  border-radius: 10px;
+  background: var(--surface, #071622);
+  min-height: 96px;
+}
+
+.hs-dashboard .obs-state__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong, #94c8e647);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim, #8aa6b2);
+  background: var(--surface-2, #0a1c2b);
+  white-space: nowrap;
+}
+.hs-dashboard .obs-state__badge--healthy {
+  color: var(--green, #2ecc71);
+  border-color: var(--green, #2ecc71);
+}
+.hs-dashboard .obs-state__badge--warning {
+  color: var(--amber, #f5a623);
+  border-color: var(--amber, #f5a623);
+}
+.hs-dashboard .obs-state__badge--critical {
+  color: var(--red, #ff5c5c);
+  border-color: var(--red, #ff5c5c);
+}
+.hs-dashboard .obs-state__badge--info {
+  color: var(--information, #38bdf8);
+  border-color: var(--information, #38bdf8);
+}
+
+.hs-dashboard .obs-state__desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim, #8aa6b2);
+  max-width: 460px;
+}
+
+/* Pulsing dot used only by the LOADING state (motion, not a data claim). */
+.hs-dashboard .obs-state__pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--information, #38bdf8);
+  animation: obs-pulse 1.1s ease-in-out infinite;
+}
+@keyframes obs-pulse {
+  0%,
+  100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hs-dashboard .obs-state__pulse { animation: none; opacity: 0.7; }
+}
+
+/* ---- MetricTile: reusable stat/metric card --------------------------------- */
+
+.hs-dashboard .obs-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--line, #94c8e624);
+  border-radius: 10px;
+  background: var(--surface, #071622);
+  min-width: 0;
+}
+.hs-dashboard .obs-metric--healthy { border-left: 3px solid var(--green, #2ecc71); }
+.hs-dashboard .obs-metric--warning { border-left: 3px solid var(--amber, #f5a623); }
+.hs-dashboard .obs-metric--critical { border-left: 3px solid var(--red, #ff5c5c); }
+.hs-dashboard .obs-metric--info { border-left: 3px solid var(--information, #38bdf8); }
+
+.hs-dashboard .obs-metric__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.hs-dashboard .obs-metric__label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted, #6b8494);
+}
+.hs-dashboard .obs-metric__value {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--text, #d7e4ec);
+  font-variant-numeric: tabular-nums;
+}
+.hs-dashboard .obs-metric__unit {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim, #8aa6b2);
+  margin-left: 3px;
+}
+.hs-dashboard .obs-metric__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.hs-dashboard .obs-metric__note {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--muted, #6b8494);
+}
+.hs-dashboard .obs-metric__spark {
+  flex: none;
+  display: block;
+}
+
+/* ---- Sparkline (SVG, no library) ------------------------------------------ */
+
+.hs-dashboard .obs-spark {
+  display: block;
+  overflow: visible;
+}
+.hs-dashboard .obs-spark__line {
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.hs-dashboard .obs-spark__area {
+  stroke: none;
+  opacity: 0.16;
+}

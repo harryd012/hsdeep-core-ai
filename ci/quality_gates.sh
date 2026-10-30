@@ -72,7 +72,7 @@ npm test
 npm run build
 cd "$ROOT"
 
-step "2b/6 database migrations: one head, latest revision reversible"
+step "2b/6 database migrations: one head, newest revisions reversible"
 cd backend
 HEADS="$("$PYTHON" -m alembic heads 2>/dev/null | grep -c '(head)' || true)"
 if [ "$HEADS" != "1" ]; then
@@ -84,8 +84,8 @@ fi
 # runs only in CI (a throwaway database) or when explicitly requested, never
 # against a developer's working database by default.
 if [ -n "${CI:-}" ] || [ "${MIGRATION_ROUNDTRIP:-0}" = "1" ]; then
-  "$PYTHON" -m alembic downgrade -1
-  "$PYTHON" -m alembic upgrade head
+  # Handles merge heads, where `downgrade -1` is ambiguous.
+  "$PYTHON" ../ci/migration_roundtrip.py
 fi
 cd "$ROOT"
 

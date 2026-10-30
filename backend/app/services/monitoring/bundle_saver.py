@@ -140,6 +140,12 @@ class SaveResult:
     vpn_tunnels_upserted: int = 0
     vpn_tunnels_retired: int = 0
     firewall_status: dict[str, str] = field(default_factory=dict)
+    # -- Backup monitoring --------------------------------------------------
+    backup_vaults_updated: int = 0
+    backup_items_upserted: int = 0
+    backup_items_retired: int = 0
+    backup_jobs_upserted: int = 0
+    backup_status: dict[str, str] = field(default_factory=dict)
     # -- Universal infrastructure layer (spec: canonical telemetry) -----------
     #: Availability observations written for this bundle (one per device, from
     #: the device's own reported status).
@@ -532,11 +538,37 @@ class BundleSaver:
             result.firewall_status = dict(bundle.firewall_status)
         firewall_reading_ids = {r.external_id for r in firewall_readings}
 
+        # -- 2c. Backup vaults, protected items and jobs ----------------------
+        # Same shape as the firewall tables: own tables, and what the provider
+        # reported becomes sensor readings so backup alerts open and resolve
+        # through the sensor path.
+        backup_readings: list = []
+        if bundle.backup_status:
+            from app.services.monitoring.backup_saver import save_backup
+
+            bk_result = await save_backup(
+                self.device_repo.db,
+                tenant_id=source.tenant_id,
+                source_id=source.id,
+                bundle=bundle,
+                device_id_by_external=device_id_by_external,
+                now=collected_at,
+            )
+            backup_readings = bk_result.readings
+            result.backup_vaults_updated = bk_result.vaults_updated
+            result.backup_items_upserted = bk_result.items_upserted
+            result.backup_items_retired = bk_result.items_retired
+            result.backup_jobs_upserted = bk_result.jobs_upserted
+            result.backup_status = dict(bundle.backup_status)
+        # Firewall and backup readings always name their device (the firewall /
+        # the vault), so their alerts are linked to it below.
+        device_linked_reading_ids = firewall_reading_ids | {r.external_id for r in backup_readings}
+
         # -- 3. Sensors ------------------------------------------------------
         # external_id -> Sensor.id, for metric sensor_id resolution in step 4.
         sensor_id_by_external: dict[str, object] = {}
 
-        for reading in [*bundle.sensors, *firewall_readings]:
+        for reading in [*bundle.sensors, *firewall_readings, *backup_readings]:
             interface_id = None
             if reading.device_external_id is not None and reading.interface_external_id is not None:
                 interface_id = interface_id_by_key.get(
@@ -581,7 +613,7 @@ class BundleSaver:
             # Firewall readings always name their device, so their alerts
             # carry it for correlation and health (KNOWN GAP #2 is about the
             # repository signature; the link is set on the row directly).
-            if reading.external_id in firewall_reading_ids:
+            if reading.external_id in device_linked_reading_ids:
                 fw_device_id = device_id_by_external.get(reading.device_external_id)
                 if fw_device_id is not None and sensor.device_id != fw_device_id:
                     sensor.device_id = fw_device_id

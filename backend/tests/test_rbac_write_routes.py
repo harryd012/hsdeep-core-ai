@@ -123,6 +123,8 @@ def test_viewer_cannot_reach_any_guarded_write_route():
         "POST /api/failover/simulate",
         "POST /api/infrastructure/intelligence/correlation/context",
         "POST /api/network-intelligence/evaluate",
+        "POST /api/paloalto/rca/assess",
+        "POST /api/paloalto/runbooks/match",
     ]
 
 
@@ -143,6 +145,7 @@ DENIED_FOR_VIEWER = [
     ("post", "/api/workflows/executions/{id}/approve", "workflows.approve", {"node_id": "n1"}),
     ("post", "/api/sops/{id}/versions/{id}/approve", "sops.approve", {}),
     ("patch", "/api/tickets/{id}", "tickets.write", {}),
+    ("post", "/api/paloalto/executions/{id}/approve", "runbooks.approve", {"step_id": "session_packet_capture"}),
 ]
 
 
@@ -161,6 +164,27 @@ async def test_viewer_gets_403_and_permitted_user_passes_the_guard(tenant, metho
     async with _client(tenant.id, VIEWER | {code}) as client:
         allowed = await client.request(method.upper(), url, **kwargs)
     assert allowed.status_code == 404, allowed.text
+
+
+async def test_paloalto_step_role_is_not_client_supplied(tenant):
+    """?actor=admin must not skip the approval an approval-gated step needs:
+    the safety role is fixed server-side, and approval comes only from the
+    /approve route (runbooks.approve)."""
+    async with _client(tenant.id, OPERATOR | {"runbooks.execute"}) as client:
+        created = await client.post("/api/paloalto/executions", json={})
+        assert created.status_code == 201, created.text
+        ex_id = created.json()["id"]
+        for step in ("incident_intake", "traffic_flow_map", "traffic_log_investigation"):
+            ran = await client.post(f"/api/paloalto/executions/{ex_id}/steps/{step}/run")
+            assert ran.status_code == 200, ran.text
+
+        gated = await client.post(
+            f"/api/paloalto/executions/{ex_id}/steps/session_packet_capture/run",
+            params={"actor": "admin"},
+        )
+    assert gated.status_code == 200, gated.text
+    step = next(s for s in gated.json()["steps"] if s["id"] == "session_packet_capture")
+    assert step["status"] == "blocked", step
 
 
 async def test_sop_approval_is_attributed_to_the_signed_in_user(tenant, db):

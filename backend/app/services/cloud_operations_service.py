@@ -14,7 +14,9 @@ DATA SOURCE CONVENTIONS (authoritative, tenant-scoped repo methods only):
                                 (statuses: open + acknowledged + investigating)
     4. Cloud Spend           - NOT CONFIGURED (no billing integration)
     5. Policy Compliance     - NOT CONFIGURED (no policy-assessment integration)
-    6. Backup Readiness      - NOT CONFIGURED (no backup/recovery evidence)
+    6. Backup Readiness      - BackupService.overview: % of protected items with a
+                               backup inside the RPO (Azure Backup collector);
+                               unavailable until a backup source reports items
 
 Nothing here is independently recalculated: each measured card is read through
 the same repository method the detail pages already use, so this panel's numbers
@@ -29,6 +31,7 @@ from datetime import datetime, timezone
 
 from app.repositories.device_repository import DeviceRepository
 from app.repositories.incident_repository import IncidentRepository
+from app.services.backup_service import BackupService
 from app.schemas.dashboard import CloudOperations, CloudOpsKPI
 from app.services.operational_intelligence_service import (
     DEVICE_FRESHNESS_WINDOW_SECONDS,
@@ -37,7 +40,8 @@ from app.services.operational_intelligence_service import (
 #: Explicit "not configured" reason strings - surfaced verbatim to the operator.
 REASON_BILLING_ABSENT = "billing integration not configured (no CostManagementClient)"
 REASON_POLICY_ABSENT = "policy-assessment integration not configured (no policyinsights)"
-REASON_BACKUP_ABSENT = "backup/recovery integration not configured (no RecoveryServicesBackup)"
+REASON_BACKUP_ABSENT = "backup/recovery integration not configured (add an Azure Backup source)"
+REASON_BACKUP_NO_ITEMS = "Azure Backup source configured, but no protected items reported yet"
 
 #: Incident statuses the platform treats as an active (unresolved) incident.
 ACTIVE_INCIDENT_STATUSES = ("open", "acknowledged", "investigating")
@@ -50,9 +54,12 @@ class CloudOperationsService:
         self,
         device_repo: DeviceRepository,
         incident_repo: IncidentRepository,
+        backup_service: "BackupService | None" = None,
     ) -> None:
         self.device_repo = device_repo
         self.incident_repo = incident_repo
+        #: Optional: without it Backup Readiness reports "not configured".
+        self.backup_service = backup_service
 
     async def get(self, tenant_id: uuid.UUID) -> CloudOperations:
         """Return the six-card Cloud Operations KPI snapshot for ``tenant_id``."""
@@ -112,10 +119,26 @@ class CloudOperationsService:
                 unavailable_reason=REASON_POLICY_ABSENT,
                 last_collected_at=None,
             ),
-            backup_readiness=CloudOpsKPI(
-                value=None,
-                unavailable=True,
-                unavailable_reason=REASON_BACKUP_ABSENT,
-                last_collected_at=None,
-            ),
+            backup_readiness=await self._backup_readiness(tenant_id, now),
         )
+
+    async def _backup_readiness(self, tenant_id: uuid.UUID, now: datetime) -> CloudOpsKPI:
+        """6. Backup Readiness - % of protected items with a backup inside the
+        RPO, from the Azure Backup collector. Unavailable (never 0) until a
+        backup source exists and has reported protected items."""
+        from app.services.backup_service import readiness_from_overview
+
+        if self.backup_service is None:
+            return CloudOpsKPI(unavailable=True, unavailable_reason=REASON_BACKUP_ABSENT)
+        overview = await self.backup_service.overview(tenant_id, now=now)
+        if not overview.configured:
+            return CloudOpsKPI(unavailable=True, unavailable_reason=REASON_BACKUP_ABSENT)
+        value, detail = readiness_from_overview(overview)
+        if value is None:
+            return CloudOpsKPI(
+                detail=detail,
+                unavailable=True,
+                unavailable_reason=REASON_BACKUP_NO_ITEMS,
+                last_collected_at=overview.observed_at,
+            )
+        return CloudOpsKPI(value=value, detail=detail, last_collected_at=overview.observed_at)

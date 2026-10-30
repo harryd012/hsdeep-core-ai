@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { memo } from "react";
 import type { CSSProperties } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import type {
   AttentionDeviceRow,
   AttentionIncidentRow,
@@ -11,6 +12,7 @@ import type {
 } from "@/lib/dashboard/dashboardModels";
 import type { CommandKpi } from "@/lib/dashboard/commandKpis";
 import CommandKpiCards from "./CommandKpiCards";
+import OperationalIntelligencePanel from "./OperationalIntelligencePanel";
 
 /**
  * AttentionRequired — the top of the portal, ordered by what an operator has to
@@ -227,15 +229,28 @@ function EvidenceBlock({
   href?: string;
   linkLabel?: string;
 }) {
+  const queryClient = useQueryClient();
   const unavailable = rows.every((row) => row.value === "N/A");
   return (
     <div className="hud-panel">
       <div className="panel-header"><h2>{title}</h2></div>
       <div className="panel-body">
         {unavailable ? (
-          <p style={{ margin: 0, fontSize: 13, color: "var(--muted)" }}>
-            Not available — the aggregation endpoint did not respond.
-          </p>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <p style={{ margin: 0, fontSize: 13, color: "var(--muted)" }}>
+              Not available — the aggregation endpoint did not respond.
+            </p>
+            <button
+              type="button"
+              className="brief-retry"
+              onClick={() => {
+                void queryClient.invalidateQueries({ queryKey: ["dashboard", "incident-intelligence"] });
+                void queryClient.invalidateQueries({ queryKey: ["dashboard", "collector-health"] });
+              }}
+            >
+              Retry
+            </button>
+          </div>
         ) : (
           <dl style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, margin: 0 }}>
             {rows.map((row) => (
@@ -291,9 +306,20 @@ const AttentionRequired = memo(function AttentionRequired({
 
       {/* LEVEL 1-3 - what needs attention first, then what it is impacting and how
           the estate is holding up. The PHASE 1 normalized KPI strip carries title,
-          value, state and context per KPI, and renders N/A when a source is silent. */}
+          value, state and context per KPI, and renders N/A when a source is silent.
+          PHASE 6A: the right-hand OPERATIONAL INTELLIGENCE zone fills the
+          previously unused area with the backend-aggregated KPI payload (one
+          60s read, same CommandKpiCards chrome as the strip). */}
       <LevelCaption>Levels 1-3 - Attention, impact and health</LevelCaption>
-      <CommandKpiCards kpis={kpis} />
+      <div className="attention-split">
+        <div className="attention-split__strip">
+          <CommandKpiCards kpis={kpis} />
+        </div>
+        <div className="attention-split__oi">
+          <h3 className="attention-split__oi-title">Operational intelligence</h3>
+          <OperationalIntelligencePanel />
+        </div>
+      </div>
 
       <LevelCaption>Level 4 - Why</LevelCaption>
 

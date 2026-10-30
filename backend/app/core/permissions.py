@@ -37,6 +37,7 @@ PERMISSION_CATALOG: Final[list[tuple[str, str]]] = [
     ("sites.write", "Create/update/delete sites"),
     ("devices.read", "View devices, interfaces, sensors and metrics"),
     ("devices.write", "Create/update/delete devices"),
+    ("backup.read", "View backup vaults, protected items and backup jobs"),
     ("business_services.read", "View business services"),
     ("business_services.write", "Create/update/delete business services"),
     # Alerts / incidents
@@ -111,7 +112,7 @@ DEFAULT_ROLES: Final[dict[str, tuple[str, object]]] = {
     "Operator": (
         "NOC/SOC operator: act on alerts/incidents and run remediation",
         [
-            "monitoring.read", "sites.read", "devices.read", "business_services.read",
+            "monitoring.read", "sites.read", "devices.read", "backup.read", "business_services.read",
             "alerts.read", "alerts.acknowledge", "alerts.resolve",
             "incidents.read", "incidents.write", "priorities.read",
             "sops.read", "runbooks.read", "runbooks.execute",

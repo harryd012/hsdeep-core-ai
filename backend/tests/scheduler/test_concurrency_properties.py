@@ -12,15 +12,24 @@ pytest-asyncio's per-test coroutine model is fragile. These tests drive
 each hypothesis example via `_run_async_case()`, which runs the example on
 its OWN fresh event loop.
 
-Why a fresh loop per example (and not the session loop): pytest-asyncio
-0.26 removed the `event_loop` fixture, and there is no public handle to its
-session loop from a sync test. `app.core.db.engine` is a module-level
-object whose pooled asyncpg connections bind to whatever loop first used
-them, so each example brackets its work with `engine.dispose()` - before
-(so no connection from a previous loop is checked out) and after (so this
-example's connections close on the loop that owns them, instead of leaking
-into the pool and blowing up the next test with "Event loop is closed" /
-"attached to a different loop").
+Why a fresh engine per example (not a shared pool dispose):
+- pytest-asyncio 0.26 binds the shared `app.core.db.engine` to the
+  session-scoped event loop the first time it is used. Hypothesis creates
+  a brand-new event loop per example via `asyncio.new_event_loop()`.
+- If the shared engine is reused on the new loop, asyncpg raises "Task got
+  Future attached to a different loop" because the pool's connections are
+  bound to the session loop.
+- `engine.dispose()` only flushes idle pool connections; it cannot prevent
+  new connections allocated on the new loop from corrupting the shared pool
+  state when the new loop closes and those connections are never properly
+  returned.
+- Creating a completely independent engine instance per example means no
+  asyncpg connection ever crosses event-loop boundaries. The example engine
+  and all its connections are created, used, and disposed within the new
+  loop; the shared session-loop engine is left completely untouched.
+- `_run_async_case` patches `app.core.db`, `app.scheduler.jobs`, and this
+  module's own imported `AsyncSessionLocal`/`engine` names for the duration
+  of each example, then restores originals in a `finally` block.
 
 Each example still creates and tears down its own tenant/source fixtures
 directly (rather than via the function-scoped `tenant`/
@@ -44,22 +53,89 @@ from app.scheduler import jobs
 
 
 def _run_async_case(case_factory):
-    """Run one hypothesis example's async case on its own fresh event loop.
+    """Run one hypothesis example on its own fresh event loop with its own
+    isolated engine and session factory.
 
-    `engine.dispose()` runs before and after the case (see module docstring):
-    the pool must contain only connections bound to the loop that is
-    actually running, and must be empty when that loop closes.
+    Why a fresh engine per example (not a shared pool dispose):
+    - pytest-asyncio 0.26 binds the shared `app.core.db.engine` to the
+      session-scoped event loop the first time it is used. Hypothesis runs
+      each example in a brand-new event loop via `asyncio.new_event_loop()`.
+    - If the shared engine is reused, asyncpg raises "Task got Future attached
+      to a different loop" when its connections are checked out/closed on the
+      new loop.
+    - `engine.dispose()` only closes idle pool connections - it cannot prevent
+      new connections on the new loop from being mis-attributed to the shared
+      pool that will later be used by the session loop.
+    - Creating a completely independent engine per example means no asyncpg
+      connection ever crosses event-loop boundaries. The example's engine and
+      all its connections are created, used, and disposed within the same new
+      loop, then the shared engine (session loop) is completely untouched.
+
+    The example's engine and session factory are injected into both
+    `app.core.db` and `app.scheduler.jobs` for the duration of the case, then
+    restored, so all code paths that import from those modules see the
+    isolated engine without any permanent module-level change.
     """
-    async def _with_fresh_pool():
-        await engine.dispose()
+    import sys
+    import app.core.db as _db_module
+    import app.scheduler.jobs as _jobs_module
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from app.core.config import get_settings as _get_settings
+
+    # This test module itself has `AsyncSessionLocal` and `engine` as module-level
+    # names (imported from app.core.db). Those names are used by _make_tenant_with_sources
+    # and _cleanup_tenant. We need to patch this module's globals too.
+    _this_module = sys.modules[__name__]
+
+    async def _with_isolated_engine():
+        settings = _get_settings()
+        example_engine = create_async_engine(
+            settings.database_url,
+            pool_pre_ping=True,
+            future=True,
+            pool_size=5,
+            max_overflow=5,
+        )
+        example_session_factory = async_sessionmaker(
+            bind=example_engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+
+        # Patch both modules so `tick()` and all repository calls inside the
+        # example use the per-example engine, not the shared session-loop engine.
+        original_db_engine = _db_module.engine
+        original_db_session = _db_module.AsyncSessionLocal
+        original_jobs_engine = _jobs_module.engine
+        original_jobs_session = _jobs_module.AsyncSessionLocal
+        # Also patch the test module's own imported names used by fixture helpers.
+        original_this_engine = getattr(_this_module, "engine", None)
+        original_this_session = getattr(_this_module, "AsyncSessionLocal", None)
+
+        _db_module.engine = example_engine
+        _db_module.AsyncSessionLocal = example_session_factory
+        _jobs_module.engine = example_engine
+        _jobs_module.AsyncSessionLocal = example_session_factory
+        _this_module.engine = example_engine
+        _this_module.AsyncSessionLocal = example_session_factory
         try:
             return await case_factory()
         finally:
-            await engine.dispose()
+            _db_module.engine = original_db_engine
+            _db_module.AsyncSessionLocal = original_db_session
+            _jobs_module.engine = original_jobs_engine
+            _jobs_module.AsyncSessionLocal = original_jobs_session
+            if original_this_engine is not None:
+                _this_module.engine = original_this_engine
+            if original_this_session is not None:
+                _this_module.AsyncSessionLocal = original_this_session
+            # Dispose all example connections on this loop before the loop closes.
+            await example_engine.dispose()
 
     loop = asyncio.new_event_loop()
     try:
-        return loop.run_until_complete(_with_fresh_pool())
+        return loop.run_until_complete(_with_isolated_engine())
     finally:
         loop.close()
 

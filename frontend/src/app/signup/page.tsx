@@ -15,6 +15,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import AuthBackdrop from "@/components/auth/AuthBackdrop";
 
 export default function SignupPage() {
   const { signup } = useAuth();
@@ -76,18 +77,18 @@ export default function SignupPage() {
   }
 
   return (
-    <div className="flex min-h-screen w-full items-center justify-center bg-black px-4 py-12">
-      <form
-        onSubmit={handleSubmit}
-        className="w-full max-w-sm rounded-lg border border-white/10 bg-black/60 p-8 shadow-xl"
-        noValidate
-      >
-        <div className="mb-6 text-center">
-          <h1 className="text-lg font-semibold tracking-wide text-white">HSDEEP CORE AI</h1>
-          <p className="mt-1 text-xs uppercase tracking-wide text-white/50">
-            Start your 14-day free trial
-          </p>
-        </div>
+    <div className="login-page">
+      <AuthBackdrop />
+      <h1 className="sr-only">HSDEEP CORE AI — Start your free trial</h1>
+      <div className="login-page__panel login-page__panel--center">
+        <form onSubmit={handleSubmit} className="login-card" noValidate>
+          <div className="login-card__header">
+            <p className="login-card__welcome">HSDEEP CORE AI</p>
+            <h2 className="login-card__title">Start your 14-day free trial</h2>
+            <p className="login-card__subtitle">
+              No payment required now — you start on the Starter plan.
+            </p>
+          </div>
 
         {error && (
           <div
@@ -162,7 +163,7 @@ export default function SignupPage() {
           placeholder="At least 8 characters"
         />
         <p className="mb-6 text-[11px] text-white/40">
-          You'll start on the Starter plan with a 14-day trial — no payment required now.
+          You&apos;ll start on the Starter plan with a 14-day trial — no payment required now.
         </p>
 
         <button
@@ -175,11 +176,12 @@ export default function SignupPage() {
 
         <p className="mt-4 text-center text-xs text-white/50">
           Already have an account?{" "}
-          <a href="/login" className="text-white/80 underline hover:text-white">
+          <a href="/login" className="login-card__link">
             Sign in
           </a>
         </p>
-      </form>
+        </form>
+      </div>
     </div>
   );
 }

@@ -86,9 +86,15 @@ class ScopeProbeHostOut(BaseModel):
 
 
 class ScopeProbeResultOut(BaseModel):
-    """Observation-only probe result: no devices, no canonical resources."""
+    """Observation-only probe result: no devices, no canonical resources.
+
+    ``job_id`` is the durable record of this probe (``DiscoveryProbeJob``), which
+    the separate materialize endpoint consumes. It is additive: the probe still
+    creates no device.
+    """
 
     scope_id: uuid.UUID
+    job_id: uuid.UUID
     target: str
     hosts_probed: int
     hosts_total: int

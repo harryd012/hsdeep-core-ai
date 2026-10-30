@@ -29,6 +29,8 @@
  * Thresholds below are documented product policy, not universal truth.
  */
 import type { Alert, Device, Incident } from "@/lib/api";
+import { countDeviceStates } from "./metrics";
+import type { DeviceStateCounts } from "./metrics";
 import type { OperationalHealthData } from "./dashboardModels";
 
 export type CommandKpiState = "healthy" | "degraded" | "critical" | "unknown" | "unavailable";
@@ -52,6 +54,8 @@ export interface CommandKpiInput {
   incidents?: Incident[] | undefined;
   alerts?: Alert[] | undefined;
   devices?: Device[] | undefined;
+  /** Canonical full-estate device counts (backend counts_by_state). */
+  canonicalDeviceStates?: DeviceStateCounts | undefined;
   /** AI task counters (null = the metrics payload was unavailable). */
   aiTasks?:
     | { active: number | null; queued: number | null; failed: number | null }
@@ -70,15 +74,6 @@ export interface CommandKpiInput {
 
 /** Incident statuses that no longer need an operator. */
 const CLOSED_INCIDENT_STATUS = new Set(["resolved", "closed", "archived", "recovered"]);
-
-/**
- * Device statuses that mean "not healthy" (collector vocabulary). Deliberately a
- * fixed list: a status we do not recognise - including the backend default
- * "unknown" - is NOT counted as a problem.
- */
-const DEGRADED_DEVICE_STATUS = new Set([
-  "degraded", "warning", "down", "offline", "critical", "error", "unreachable",
-]);
 
 /** Collector success thresholds (same convention as the existing health adapter). */
 const COLLECTOR_SUCCESS_HEALTHY = 90;
@@ -147,13 +142,14 @@ export function buildCommandKpis(input: CommandKpiInput): CommandKpi[] {
     : null;
 
   const deviceList = devices ?? [];
-  const deviceTotal = available.devices ? deviceList.length : null;
-  const degradedSystems = available.devices
-    ? deviceList.filter((d) => DEGRADED_DEVICE_STATUS.has((d.status || "").toLowerCase())).length
-    : null;
-  const unclassifiedDevices = available.devices
-    ? deviceList.filter((d) => ["", "unknown"].includes((d.status || "").toLowerCase())).length
-    : null;
+  // Single shared device-state rollup (metrics.ts): "degraded" = CONFIRMED down,
+  // "unclassified" = no evidence — identical to the Operational Health strip.
+  // Canonical full-estate counts (backend counts_by_state) take precedence over
+  // the capped device list (GET /devices defaults to 100 rows).
+  const deviceStateCounts = input.canonicalDeviceStates ?? (available.devices ? countDeviceStates(deviceList) : null);
+  const deviceTotal = input.canonicalDeviceStates?.total ?? (available.devices ? deviceList.length : null);
+  const degradedSystems = deviceStateCounts?.down ?? null;
+  const unclassifiedDevices = deviceStateCounts?.unknown ?? null;
 
   const devicesOnline = operationalHealth.devicesOnline.value;
   const devicesOffline = operationalHealth.devicesOffline.value;
