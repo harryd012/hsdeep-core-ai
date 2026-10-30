@@ -39,6 +39,7 @@ from app.collectors.base import (
     NormalizedNeighbor,
     NormalizedSensorReading,
 )
+from app.collectors.snmp_firewall import collect_firewall, firewall_family, normalize_firewall
 from app.collectors.snmp_l3 import collect_l3, normalize_l3
 
 from app.collectors.switching import (
@@ -250,6 +251,9 @@ def _coerce_ipv4(value: Any) -> str | None:
 class SNMPCollector(BaseCollector):
     display_name = "SNMP (v1/v2c/v3)"
     implemented = True
+    category = "network"
+    #: Read only from FortiGate and PAN-OS agents, chosen by sysObjectID.
+    firewall_capabilities = ("status", "vpn")
 
     # -- config helpers -------------------------------------------------------
 
@@ -860,6 +864,21 @@ class SNMPCollector(BaseCollector):
             raw["switching"] = {"status": {"vlan": NEIGHBOR_FAILED, "stp": NEIGHBOR_FAILED,
                                            "lag": NEIGHBOR_FAILED}}
 
+        # Firewall tables (firewall gateway), only for a device whose own
+        # sysObjectID says it is a supported firewall.
+        family = firewall_family((raw.get("switching") or {}).get("sys_object_id"))
+        if family is not None:
+            try:
+                raw["firewall"] = await collect_firewall(self._walk_with_status, family)
+            except CollectorConfigError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "SNMP collect(): firewall tables failed: source_id=%s error=%s",
+                    self.source.id, exc,
+                )
+                raw["firewall"] = {"family": family, "failed": True}
+
         # Authoritative device identity (ENTITY-MIB). Best-effort: a device with
         # no ENTITY-MIB still collects normally, it just cannot be correlated
         # across collectors by serial.
@@ -927,7 +946,10 @@ class SNMPCollector(BaseCollector):
         device = NormalizedDevice(
             external_id=hostname,
             name=sys_name,
-            device_type=classify_switch("other", sys_descr) or "other",
+            device_type=(
+                "firewall" if raw.get("firewall")
+                else classify_switch("other", sys_descr) or "other"
+            ),
             vendor=vendor,
             model=model,
             serial_number=serial_number,
@@ -1042,7 +1064,7 @@ class SNMPCollector(BaseCollector):
             coerce_ipv4=_coerce_ipv4,
         )
 
-        return NormalizedBundle(
+        bundle = NormalizedBundle(
             devices=[device],
             interfaces=interfaces,
             neighbors=neighbors,
@@ -1054,6 +1076,9 @@ class SNMPCollector(BaseCollector):
             routes=routes,
             l3_status=l3_status,
         )
+        if raw.get("firewall"):
+            normalize_firewall(raw["firewall"], bundle, hostname)
+        return bundle
 
 
 def _safe_float(value: Any) -> float | None:

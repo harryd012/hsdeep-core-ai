@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 class LinuxSSHCollector(BaseCollector):
     display_name = "Linux (SSH)"
     implemented = True
+    category = "server"
 
     # -- config helpers -------------------------------------------------------
 

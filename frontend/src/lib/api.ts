@@ -24,6 +24,7 @@
  */
 
 import type { RecoveryCheck } from "@/lib/incidents/recovery";
+import type { GatewaySourceType } from "@/lib/gateway";
 
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -506,6 +507,10 @@ export interface MonitoringSourceOut {
   snmp_version: string | null;
   username: string | null;
   poll_interval_seconds: number;
+  /** healthy | degraded | failing | unknown */
+  health_status?: string | null;
+  /** Last collection run that succeeded; drives "connected" in the gateway. */
+  last_successful_run_at?: string | null;
   /** Whether credential material is stored for this source. Never the value:
    *  the secret itself is not returned by the API, by design. */
   credential_configured?: boolean;
@@ -2864,21 +2869,70 @@ export interface CommandCenterOverview {
   health: CommandCenterHealth | null;
 }
 
-/** Real adapter/source types actually implemented in the Collector
- * Framework (app/collectors/*). Informational only — the Tool Gateway
- * has no live execution tracking yet. */
-export const TOOL_GATEWAY_ADAPTERS: { id: string; name: string; implemented: boolean }[] = [
-  { id: "prtg", name: "PRTG Network Monitor", implemented: true },
-  { id: "meraki", name: "Cisco Meraki Dashboard", implemented: true },
-  { id: "fortigate", name: "Fortinet FortiGate", implemented: true },
-  { id: "fortimanager", name: "Fortinet FortiManager", implemented: true },
-  { id: "linux", name: "Linux (SSH)", implemented: true },
-  { id: "azure", name: "Microsoft Azure Monitor", implemented: true },
-  { id: "vmware", name: "VMware vSphere / vCenter", implemented: true },
-  { id: "windows_winrm", name: "Windows (WinRM)", implemented: true },
-  { id: "snmp", name: "SNMP (v1/v2c/v3)", implemented: true },
-  { id: "zabbix", name: "Zabbix Enterprise", implemented: true },
-];
+/** Collectors the backend registers (app/collectors/*), with their gateway
+ * category and the firewall tables they read. Replaces the old hard-coded
+ * adapter list, which drifted from the backend. */
+export function listSourceTypes(): Promise<GatewaySourceType[]> {
+  return apiFetch<GatewaySourceType[]>("/api/monitoring/source-types");
+}
+
+// ---------------------------------------------------------------------------
+// Firewall gateway (docs/architecture/firewall-gateway.md)
+// ---------------------------------------------------------------------------
+export interface FirewallLicence {
+  feature: string;
+  expires_at: string | null;
+  status: "valid" | "expiring" | "expired" | "unknown";
+}
+
+export interface FirewallTunnel {
+  name: string;
+  tunnel_type: string;
+  remote_gateway: string | null;
+  status: string;
+  ever_up: boolean;
+  phase2_up: number | null;
+  phase2_total: number | null;
+  last_change_at: string | null;
+  last_seen_at: string;
+}
+
+export interface FirewallSummary {
+  device_id: string;
+  name: string;
+  vendor: string | null;
+  model: string | null;
+  ip_address: string | null;
+  device_status: string;
+  /** fresh | stale | none: whether firewall state was reported recently. */
+  evidence: "fresh" | "stale" | "none";
+  observed_at: string | null;
+  table_status: Record<string, string>;
+  ha_mode: string | null;
+  ha_role: string | null;
+  ha_sync: string | null;
+  ha_peer_serial: string | null;
+  session_count: number | null;
+  session_limit: number | null;
+  cpu_percent: number | null;
+  memory_percent: number | null;
+  firmware_version: string | null;
+  licences: FirewallLicence[] | null;
+  tunnels_up: number | null;
+  tunnels_total: number | null;
+}
+
+export interface FirewallDetail extends FirewallSummary {
+  tunnels: FirewallTunnel[];
+}
+
+export function listFirewalls(): Promise<FirewallSummary[]> {
+  return apiFetch<FirewallSummary[]>("/api/firewalls");
+}
+
+export function getFirewall(deviceId: string): Promise<FirewallDetail> {
+  return apiFetch<FirewallDetail>(`/api/firewalls/${encodeURIComponent(deviceId)}`);
+}
 
 export function getCommandCenterOverview(tenantId: string = DEFAULT_TENANT_ID): Promise<CommandCenterOverview> {
   return apiFetch<CommandCenterOverview>(`/api/command-center/overview?${withTenant(tenantId).toString()}`);

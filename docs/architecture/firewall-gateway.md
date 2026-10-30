@@ -1,6 +1,24 @@
 # Firewall gateway
 
-Status: proposed 2026-10-30, awaiting approval. Nothing here is built yet.
+Status: approved 2026-10-30; phase A implemented (batch 11, see
+docs/PLATFORM_LEDGER.md). Decisions and differences from the proposal:
+
+- Open decisions taken as proposed: FortiGate and Palo Alto first; a VPN
+  tunnel alerts by default only after it has been seen up.
+- Alerts reuse the sensor path (readings with `fw:` external ids) instead of
+  a new alert type, so they auto-resolve when the firewall recovers.
+- No mixin: `BaseCollector` gains `category` and `firewall_capabilities`
+  class attributes, and the records live in `app/collectors/base.py`.
+- Licences are stored on `firewall_status.licences` (JSONB), not in
+  `device.custom_metadata`; tunnels removed from a device are deleted.
+- Thresholds are global settings (`FIREWALL_*`) for now; per-tenant
+  thresholds are phase B.
+- FortiGate's REST API exposes no session limit, so session load alerts
+  need PAN-OS (or a later FortiGate source for the limit).
+- PAN-OS over SNMP has no configuration-sync object: there `ha_sync`
+  reports whether the HA peer is present and healthy.
+- The Firewalls page is `/infrastructure/firewalls` with a detail panel
+  (tunnels, licences) rather than a drawer.
 
 ## Problem
 

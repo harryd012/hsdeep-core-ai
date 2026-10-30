@@ -64,6 +64,7 @@ def _retry_after_seconds(response: httpx.Response) -> float:
 class DatadogCollector(BaseCollector):
     display_name = "Datadog"
     implemented = True
+    category = "monitoring"
 
     def _require_config(self) -> None:
         missing: list[str] = []

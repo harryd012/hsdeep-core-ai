@@ -315,6 +315,43 @@ The per-tenant notification settings were stored but nothing ever sent.
 Not verified against the real services: Slack, PagerDuty and SMTP calls are
 exercised with fakes; a live check needs real webhook/integration keys.
 
+## Batch 11: firewall gateway, phase A
+
+Design: `docs/architecture/firewall-gateway.md` (approved 2026-10-30).
+
+- One firewall model on `NormalizedBundle`: `firewalls` (HA mode/role/sync,
+  peer serial, sessions and limit, CPU, memory, firmware), `vpn_tunnels`,
+  `licences`, and a per-table outcome `firewall_status`. Tables
+  `firewall_status` and `vpn_tunnels` (migration `b5e8c2d4f6a1`).
+- Adapters: FortiGate REST (`cmdb/system/ha`, `monitor/system/ha-checksums`,
+  `resource/usage`, `vpn/ipsec`, `license/status`), PAN-OS XML (HA state,
+  session info, system resources, `vpn flow`, licence info), and the SNMP
+  collector for FortiGate and PAN-OS agents chosen by sysObjectID
+  (`app/collectors/snmp_firewall.py`). All read-only; tests assert no write
+  commands are issued.
+- Alerts reuse the sensor path: the saver turns reported values into
+  `fw:` sensors (HA sync, session %, CPU, memory, licence days, VPN tunnel),
+  so alerts open and auto-resolve like any threshold. A tunnel that has
+  never been up never alerts; a tunnel removed from the device resolves its
+  alert. Thresholds are settings (`FIREWALL_*`), not per tenant yet.
+- Fixed on the way: the PAN-OS HA command was malformed XML (PAN-OS would
+  reject it), and PAN-OS `status="error"` answers counted as successful
+  empty reads, which could wipe stored L3 rows; they are now "unavailable".
+- API: `GET /api/firewalls`, `GET /api/firewalls/{device_id}`
+  (`devices.read`); `/api/monitoring/source-types` gains `category` and
+  `firewall_capabilities`; monitoring sources expose `health_status` and
+  `last_successful_run_at`.
+- Frontend: the AI Copilot Tool gateway panel reads the backend registry
+  (18 collectors, grouped) and shows Connected / No recent data / Available
+  from the tenant's own sources, replacing the hard-coded list of 10 that
+  marked everything "Registered". New page `/infrastructure/firewalls`.
+- Tests: `test_firewall_gateway.py` (10), `test_firewall_adapters.py` (13),
+  `frontend/tests/gateway.test.mjs`, `frontend/tests/firewalls.test.mjs`.
+
+Not verified against real devices: FortiGate and PAN-OS responses are
+exercised with recorded-shape fixtures; field names should be checked on a
+live unit (FortiOS 7.x, PAN-OS 10/11) before relying on HA alerts.
+
 ## Next
 
 1. Edge agent: commit and ship the uncommitted `backend/agent/hsdeep_edge_agent`
@@ -324,3 +361,5 @@ exercised with fakes; a live check needs real webhook/integration keys.
 3. Before public sign-up: CAPTCHA or equivalent abuse protection.
 4. Encrypt notification secrets at rest (Slack URL, PagerDuty key) with the
    existing SECRET_ENCRYPTION_KEY, like collector credentials.
+5. Firewall gateway phase B: SNMP maps for Cisco ASA/FTD, Check Point and
+   SonicWall; policy hit counts; per-tenant firewall thresholds.

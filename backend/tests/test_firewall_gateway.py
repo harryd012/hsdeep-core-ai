@@ -191,3 +191,85 @@ async def test_bundles_without_firewall_tables_are_untouched(db, monitoring_sour
     await db.commit()
     assert result.firewalls_updated == 0
     assert (await db.execute(select(FirewallStatus).where(FirewallStatus.tenant_id == source.tenant_id))).first() is None
+
+
+# ---------------------------------------------------------------------------
+# API
+# ---------------------------------------------------------------------------
+import uuid  # noqa: E402
+
+import httpx  # noqa: E402
+import pytest_asyncio  # noqa: E402
+
+from app.core.auth import create_access_token  # noqa: E402
+from app.main import app  # noqa: E402
+from app.models.device import Device  # noqa: E402
+
+
+@pytest_asyncio.fixture
+async def other_tenant(seeded_subscription):
+    """A second tenant on the same plan, removed (with its subscription) after the test."""
+    from sqlalchemy import delete
+
+    from app.core.db import AsyncSessionLocal
+    from app.models.subscription import Subscription
+    from app.models.tenant import Tenant
+
+    async with AsyncSessionLocal() as s:
+        other = Tenant(name="Other MSP", slug=f"other-{uuid.uuid4().hex[:8]}")
+        s.add(other)
+        await s.flush()
+        s.add(Subscription(
+            tenant_id=other.id, plan_id=seeded_subscription.plan_id, status="active",
+            current_period_start=NOW, current_period_end=NOW + timedelta(days=30), billing_interval="month",
+        ))
+        await s.commit()
+    yield other.id
+    async with AsyncSessionLocal() as s:
+        await s.execute(delete(Subscription).where(Subscription.tenant_id == other.id))
+        await s.execute(delete(Tenant).where(Tenant.id == other.id))
+        await s.commit()
+
+
+def _client(tenant_id, permissions=frozenset({"devices.read"})):
+    token = create_access_token(
+        user_id=uuid.uuid4(), tenant_id=tenant_id, email="noc@hsdeep.local",
+        is_superuser=False, permissions=permissions,
+    )
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test",
+                             headers={"Authorization": f"Bearer {token}"})
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_api_lists_firewalls_with_honest_gaps_and_tenant_isolation(db, monitoring_source_factory, other_tenant):
+    source = await monitoring_source_factory(source_type="fortigate")
+    await _saver(db).save(source, _bundle(status=HEALTHY, tunnels=[_tunnel("up"), _tunnel("down", "spare")]))
+    db.add(Device(tenant_id=source.tenant_id, name="new-fw", device_type="firewall", status="unknown"))
+    await db.commit()
+
+    async with _client(source.tenant_id) as client:
+        listed = (await client.get("/api/firewalls")).json()
+        by_name = {f["name"]: f for f in listed}
+        assert by_name["edge-fw"]["evidence"] == "fresh"
+        assert (by_name["edge-fw"]["ha_sync"], by_name["edge-fw"]["tunnels_up"], by_name["edge-fw"]["tunnels_total"]) == ("in_sync", 1, 2)
+        fresh = by_name["new-fw"]
+        assert (fresh["evidence"], fresh["ha_sync"], fresh["cpu_percent"], fresh["tunnels_total"]) == ("none", None, None, None)
+
+        detail = (await client.get(f"/api/firewalls/{by_name['edge-fw']['device_id']}")).json()
+        assert [t["name"] for t in detail["tunnels"]] == ["spare", "to-branch"]
+
+    # Another tenant (subscribed to the same plan) sees none of it.
+    async with _client(other_tenant) as other:
+        assert (await other.get("/api/firewalls")).json() == []
+        assert (await other.get(f"/api/firewalls/{by_name['edge-fw']['device_id']}")).status_code == 404
+    async with _client(source.tenant_id, permissions=frozenset()) as no_perm:
+        assert (await no_perm.get("/api/firewalls")).status_code == 403
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_source_types_carry_category_and_firewall_capabilities(tenant):
+    async with _client(tenant.id, permissions=frozenset({"monitoring.read"})) as client:
+        types = {t["source_type"]: t for t in (await client.get("/api/monitoring/source-types")).json()}
+    assert types["fortigate"]["category"] == "firewall"
+    assert types["fortigate"]["firewall_capabilities"] == ["status", "vpn", "licences"]
+    assert types["prtg"]["firewall_capabilities"] == []

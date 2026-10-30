@@ -18,6 +18,7 @@ from collections import defaultdict
 from collections import deque
 
 from app.api.routes import auth, alerts, dashboard, devices, health, incidents, infrastructure, monitoring, priorities, sops
+from app.api.routes import firewalls
 from app.api.routes import ingest
 from app.api.routes import agents, tasks
 from app.api.routes import command_center
@@ -522,6 +523,7 @@ app.add_middleware(_SecurityHeadersMiddleware)
 app.include_router(health.router)
 app.include_router(auth.router, prefix="/api")
 app.include_router(monitoring.router, prefix="/api")
+app.include_router(firewalls.router, prefix="/api")
 app.include_router(alerts.router, prefix="/api")
 app.include_router(incidents.router, prefix="/api")
 app.include_router(priorities.router, prefix="/api")

@@ -129,6 +129,7 @@ _CHANNEL_FETCH_CONCURRENCY = 5  # bounds concurrent per-sensor/device sub-calls
 class PRTGCollector(BaseCollector):
     display_name = "PRTG Network Monitor"
     implemented = True
+    category = "monitoring"
 
     # -- config / URL helpers -------------------------------------------------
 

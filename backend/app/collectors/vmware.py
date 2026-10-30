@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 class VMwareCollector(BaseCollector):
     display_name = "VMware vSphere / vCenter"
     implemented = True
+    category = "cloud"
 
     # -- config helpers -------------------------------------------------------
 

@@ -53,6 +53,7 @@ _RETRY_DELAY_SECONDS = 1.0
 class ZabbixCollector(BaseCollector):
     display_name = "Zabbix Enterprise"
     implemented = True
+    category = "monitoring"
 
     # -- config / URL helpers -------------------------------------------------
 

@@ -190,3 +190,66 @@ async def test_panos_collect_issues_only_show_and_licence_info(monkeypatch):
     assert all(b.startswith("<request><cmd><show>") or "<license><info/>" in b for b in bodies)
     assert not any(word in b for b in bodies for word in ("<commit", "<set>", "<delete", "restart", "reboot"))
     assert raw["vpn_status"] == "unavailable"
+
+
+# ---------------------------------------------------------------------------
+# Generic SNMP firewall tables
+# ---------------------------------------------------------------------------
+from app.collectors.base import NormalizedBundle  # noqa: E402
+from app.collectors import snmp_firewall as sf  # noqa: E402
+
+
+def _walker(tables: dict[str, list[tuple[str, str]]], errors: dict[str, str] | None = None):
+    async def walk(base):
+        return tables.get(base, []), (errors or {}).get(base)
+    return walk
+
+
+def test_firewall_family_comes_from_sys_object_id_only():
+    assert sf.firewall_family("1.3.6.1.4.1.12356.101.1.1004") == "fortigate"
+    assert sf.firewall_family(".1.3.6.1.4.1.25461.2.3.18") == "panos"
+    assert sf.firewall_family("1.3.6.1.4.1.12356.106.1.1") is None  # FortiSwitch
+    assert sf.firewall_family(None) is None
+
+
+@pytest.mark.asyncio
+async def test_snmp_fortigate_tables():
+    fg = "1.3.6.1.4.1.12356.101"
+    walk = _walker({
+        sf._FG_SYS: [(f"{fg}.4.1.3.0", "41"), (f"{fg}.4.1.4.0", "70"), (f"{fg}.4.1.8.0", "900")],
+        sf._FG_HA_MODE: [(f"{fg}.13.1.1.0", "3")],
+        sf._FG_HA_SERIAL: [(f"{sf._FG_HA_SERIAL}.1", "FGT-A"), (f"{sf._FG_HA_SERIAL}.2", "FGT-B")],
+        sf._FG_HA_SYNC: [(f"{sf._FG_HA_SYNC}.1", "1"), (f"{sf._FG_HA_SYNC}.2", "0")],
+        sf._FG_VPN_P1: [(f"{sf._FG_VPN_P1}.1", "hq"), (f"{sf._FG_VPN_P1}.2", "hq")],
+        sf._FG_VPN_GW: [(f"{sf._FG_VPN_GW}.1", "198.51.100.1")],
+        sf._FG_VPN_STATUS: [(f"{sf._FG_VPN_STATUS}.1", "2"), (f"{sf._FG_VPN_STATUS}.2", "1")],
+    })
+    bundle = NormalizedBundle()
+    sf.normalize_firewall(await sf.collect_firewall(walk, "fortigate"), bundle, "fgt")
+    [fw] = bundle.firewalls
+    assert (fw.cpu_percent, fw.memory_percent, fw.session_count) == (41.0, 70.0, 900)
+    assert (fw.ha_mode, fw.ha_sync, fw.ha_peer_serial) == ("active-passive", "out_of_sync", "FGT-B")
+    [t] = bundle.vpn_tunnels
+    assert (t.name, t.status, t.phase2_up, t.phase2_total, t.remote_gateway) == ("hq", "up", 1, 2, "198.51.100.1")
+    assert bundle.firewall_status == {"status": "collected", "vpn": "collected"}
+
+
+@pytest.mark.asyncio
+async def test_snmp_panos_tables_and_failed_walks():
+    walk = _walker({
+        sf._PAN_SYS: [(f"{sf._PAN_SYS}.11.0", "active"), (f"{sf._PAN_SYS}.12.0", "unknown"),
+                      (f"{sf._PAN_SYS}.13.0", "Active-Passive")],
+        sf._PAN_SESSION: [(f"{sf._PAN_SESSION}.2.0", "100000"), (f"{sf._PAN_SESSION}.3.0", "96000")],
+        sf._HR_PROCESSOR_LOAD: [(f"{sf._HR_PROCESSOR_LOAD}.1", "10"), (f"{sf._HR_PROCESSOR_LOAD}.2", "30")],
+    })
+    bundle = NormalizedBundle()
+    sf.normalize_firewall(await sf.collect_firewall(walk, "panos"), bundle, "pa")
+    [fw] = bundle.firewalls
+    assert (fw.ha_mode, fw.ha_role, fw.ha_sync) == ("active-passive", "active", "out_of_sync")
+    assert (fw.session_count, fw.session_limit, fw.cpu_percent, fw.memory_percent) == (96000, 100000, 20.0, None)
+    assert "vpn" not in bundle.firewall_status  # not read over SNMP for PAN-OS
+
+    failed = NormalizedBundle()
+    raw = await sf.collect_firewall(_walker({}, {sf._PAN_SYS: "timeout", sf._PAN_SESSION: "timeout"}), "panos")
+    sf.normalize_firewall(raw, failed, "pa")
+    assert failed.firewalls == [] and failed.firewall_status == {"status": "failed"}

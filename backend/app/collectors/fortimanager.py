@@ -43,6 +43,7 @@ _RETRY_DELAY_SECONDS = 1.0
 class FortiManagerCollector(BaseCollector):
     display_name = "Fortinet FortiManager"
     implemented = True
+    category = "firewall"
 
     # -- config helpers -------------------------------------------------------
 

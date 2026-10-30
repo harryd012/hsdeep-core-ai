@@ -8,8 +8,11 @@ import {
   CCMetrics,
   CCTask,
   CCWorkload,
-  TOOL_GATEWAY_ADAPTERS,
+  listMonitoringSources,
+  listSourceTypes,
 } from "@/lib/api";
+import { useQuery } from "@tanstack/react-query";
+import { gatewayEntries, groupByCategory, type GatewayState } from "@/lib/gateway";
 import { useCommandCenterOverview } from "@/hooks/useAiQueries";
 import { ctoState } from "@/lib/health";
 import CommandCenterTopology from "@/components/dashboard/CommandCenterTopology";
@@ -256,29 +259,70 @@ export default function AiCopilotPage() {
           <DataTable caption="Agent directory" columns={agentColumns} rows={agents} rowKey={(a) => a.id} defaultSort={{ key: "name", dir: "asc" }} maxHeight={420} emptyText="No agents match the current filter." />
         </Panel>
 
-        <Panel
-          title="Tool gateway"
-          info="Integrations agents can call. Execution is not tracked per call yet, so only registration is shown."
-          aside={`${TOOL_GATEWAY_ADAPTERS.length} adapters`}
-          state="ready"
-          className="pk-col-4"
-        >
-          <ul className="pk-list">
-            {TOOL_GATEWAY_ADAPTERS.map((a) => (
-              <li key={a.id}>
-                <div className="pk-list__main"><span className="pk-cell-main">{a.name}</span></div>
-                <div className="pk-list__aside">
-                  <Pill tone={a.implemented ? "good" : "neutral"}>{a.implemented ? "Registered" : "Planned"}</Pill>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </Panel>
+        <ToolGatewayPanel />
 
         <Panel title="Agent topology" info="AI CTO, managers and agents with their live tasks." state="ready" className="pk-col-12">
           <CommandCenterTopology />
         </Panel>
       </div>
     </PageShell>
+  );
+}
+
+const GATEWAY_PILL: Record<GatewayState, { tone: Tone; label: string }> = {
+  connected: { tone: "good", label: "Connected" },
+  stale: { tone: "warn", label: "No recent data" },
+  available: { tone: "neutral", label: "Available" },
+};
+
+/**
+ * Collectors the backend registers, grouped by category and joined with this
+ * tenant's sources. "Connected" means a successful poll in the last 24 h;
+ * a configured source with no recent success says so instead.
+ */
+function ToolGatewayPanel() {
+  const types = useQuery({ queryKey: ["source-types"], queryFn: listSourceTypes, staleTime: 5 * 60_000 });
+  const sources = useQuery({ queryKey: ["monitoring-sources"], queryFn: () => listMonitoringSources(), refetchInterval: 60_000 });
+  const groups = useMemo(
+    () => (types.data ? groupByCategory(gatewayEntries(types.data, sources.data ?? [])) : []),
+    [types.data, sources.data],
+  );
+  const entries = groups.flatMap((g) => g.entries);
+  const connected = entries.filter((e) => e.state === "connected").length;
+  const state = types.isError ? "error" : types.isLoading ? "loading" : entries.length ? "ready" : "empty";
+
+  return (
+    <Panel
+      title="Tool gateway"
+      info="Collectors the platform can use, from the backend registry. Connected means this tenant has a source of that type with a successful poll in the last 24 hours."
+      aside={types.data ? `${connected} of ${entries.length} connected` : undefined}
+      state={state}
+      errorText="Could not load the collector registry."
+      onRetry={() => types.refetch()}
+      className="pk-col-4"
+    >
+      {sources.isError && <p className="pk-cell-sub" style={{ marginBottom: 8 }}>Source status unavailable: showing the registry only.</p>}
+      {groups.map((g) => (
+        <div key={g.category} style={{ marginBottom: 12 }}>
+          <div className="pk-cell-sub" style={{ textTransform: "uppercase", letterSpacing: 0.4, margin: "4px 0" }}>{g.label}</div>
+          <ul className="pk-list">
+            {g.entries.map((e) => {
+              const pill = sources.isError ? { tone: "neutral" as Tone, label: "Unknown" } : GATEWAY_PILL[e.state];
+              return (
+                <li key={e.source_type}>
+                  <div className="pk-list__main">
+                    <span className="pk-cell-main">{e.display_name}</span>
+                    {e.lastSuccessAt && <span className="pk-cell-sub"> · last data {ago(e.lastSuccessAt)}</span>}
+                  </div>
+                  <div className="pk-list__aside">
+                    <Pill tone={pill.tone}>{pill.label}</Pill>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
+    </Panel>
   );
 }
