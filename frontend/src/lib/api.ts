@@ -3510,3 +3510,110 @@ export function listRunbooks(limit = 200): Promise<RunbookSummary[]> {
 export function listRunbookHistory(limit = 200): Promise<RunbookExecution[]> {
   return apiFetch<RunbookExecution[]>(`/api/runbooks/history?limit=${limit}`);
 }
+
+// ---------------------------------------------------------------------------
+// Backup monitoring (GET /api/backup/*). Mirrors backend/app/schemas/backup.py.
+// ---------------------------------------------------------------------------
+
+export type BackupRpoState = "within" | "breached" | "never" | "not_protected";
+
+export interface BackupJobCounts {
+  total: number;
+  completed: number;
+  completed_with_warnings: number;
+  failed: number;
+  in_progress: number;
+  other: number;
+}
+
+export interface BackupOverview {
+  /** False until an Azure Backup source exists; counts are real zeros only when true. */
+  configured: boolean;
+  generated_at: string;
+  rpo_hours: number;
+  sources: { id: string; name: string; status: string; is_active: boolean; last_sync_at: string | null; last_error: string | null }[];
+  vaults: number;
+  vaults_soft_delete_off: number;
+  items_total: number;
+  items_protected: number;
+  items_within_rpo: number;
+  items_breaching_rpo: number;
+  items_never_backed_up: number;
+  items_not_protected: number;
+  items_last_failed: number;
+  /** Percent of finished jobs that completed in the last 24 h; null when none finished. */
+  success_rate_24h: number | null;
+  jobs_24h: BackupJobCounts;
+  jobs_7d: BackupJobCounts;
+  daily: { day: string; completed: number; completed_with_warnings: number; failed: number; other: number }[];
+  last_job_at: string | null;
+  observed_at: string | null;
+}
+
+export interface BackupVault {
+  id: string;
+  device_id: string | null;
+  name: string;
+  provider: string;
+  location: string | null;
+  resource_group: string | null;
+  subscription_id: string | null;
+  soft_delete_state: string | null;
+  immutability_state: string | null;
+  storage_redundancy: string | null;
+  observed_at: string | null;
+  items_total: number;
+  items_breaching_rpo: number;
+}
+
+export interface BackupItem {
+  id: string;
+  vault_id: string;
+  vault_name: string;
+  name: string;
+  workload_type: string | null;
+  protection_state: string | null;
+  last_backup_status: string | null;
+  last_backup_at: string | null;
+  age_hours: number | null;
+  rpo_state: BackupRpoState;
+  policy_name: string | null;
+  health_status: string | null;
+  source_resource_id: string | null;
+}
+
+export interface BackupJob {
+  id: string;
+  vault_id: string;
+  vault_name: string;
+  item_name: string | null;
+  operation: string | null;
+  status: string;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+export function getBackupOverview(): Promise<BackupOverview> {
+  return apiFetch<BackupOverview>("/api/backup/overview");
+}
+
+export function listBackupVaults(): Promise<BackupVault[]> {
+  return apiFetch<BackupVault[]>("/api/backup/vaults");
+}
+
+export function listBackupItems(params: { vaultId?: string; rpoState?: BackupRpoState } = {}): Promise<BackupItem[]> {
+  const qs = new URLSearchParams();
+  if (params.vaultId) qs.set("vault_id", params.vaultId);
+  if (params.rpoState) qs.set("rpo_state", params.rpoState);
+  const q = qs.toString();
+  return apiFetch<BackupItem[]>(`/api/backup/items${q ? `?${q}` : ""}`);
+}
+
+export function listBackupJobs(params: { days?: number; status?: string; limit?: number } = {}): Promise<BackupJob[]> {
+  const qs = new URLSearchParams({ days: String(params.days ?? 7), limit: String(params.limit ?? 200) });
+  if (params.status) qs.set("status", params.status);
+  return apiFetch<BackupJob[]>(`/api/backup/jobs?${qs.toString()}`);
+}

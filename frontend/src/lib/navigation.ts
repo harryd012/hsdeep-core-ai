@@ -71,6 +71,7 @@ export const NAV_CONFIG: NavGroup[] = [
       { label: "Universal Resources", route: "/infrastructure/universal", keywords: "cloud firewall router switch" },
       { label: "Asset Inventory", route: "/infrastructure/assets", keywords: "cmdb devices" },
       { label: "Firewalls", route: "/infrastructure/firewalls", keywords: "firewall fortigate palo alto ha vpn licence" },
+      { label: "Backup", route: "/infrastructure/backup", keywords: "azure backup recovery services vault rpo restore" },
       { label: "Explorer", route: "/explorer", keywords: "hosts sites sensors" },
       { label: "Topology", route: "/infrastructure-topology/live", keywords: "map smartscape graph" },
       { label: "Discovery", route: "/infrastructure/discovery", keywords: "scan probe snmp" },

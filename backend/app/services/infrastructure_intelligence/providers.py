@@ -127,6 +127,8 @@ SOURCE_TYPE_TO_PROVIDER: dict[str, str] = {
     "wmi": V.PROVIDER_WMI,
     "linux_ssh": V.PROVIDER_SSH,
     "azure": V.PROVIDER_AZURE,
+    # Recovery Services vaults are Azure resources read with the same identity.
+    "azure_backup": V.PROVIDER_AZURE,
     "aws": V.PROVIDER_AWS,
     "gcp": V.PROVIDER_GCP,
     "vmware": V.PROVIDER_VMWARE,

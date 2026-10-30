@@ -306,3 +306,8 @@ a.pk-barlist__row:hover { background: var(--ecc-surface-raised); }
 .pk-report-card__top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .pk-report-card__headline { margin: 4px 0 0; font-size: 24px; font-weight: 700; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
 .pk-report-card__detail { margin: 0; font-size: 12px; color: var(--ecc-text-muted); }
+
+/* -- onboarding forms ---------------------------------------------------- */
+.pk-form--wide { max-width: none; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); align-items: end; }
+.pk-form--wide > .pk-help, .pk-form--wide > .pk-banner { grid-column: 1 / -1; }
+.pk-help { margin: 0; font-size: 12px; line-height: 1.5; color: var(--ecc-text-muted); max-width: 900px; }

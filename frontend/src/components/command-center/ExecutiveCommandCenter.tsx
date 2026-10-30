@@ -38,7 +38,8 @@ import SiteHoneycomb from "./SiteHoneycomb";
 import CoverageRow from "./CoverageRow";
 import AppearanceMenu from "@/components/AppearanceMenu";
 import SituationBriefing from "./SituationBriefing";
-import { getAlertSummary } from "@/lib/api";
+import { getAlertSummary, getBackupOverview } from "@/lib/api";
+import { DayColumns } from "@/components/ui/PageKit";
 import type { BriefingInput } from "@/lib/commandCenter/briefing";
 
 /**
@@ -789,6 +790,78 @@ export default function ExecutiveCommandCenter() {
             ))}
         </CardShell>
       </div>
+
+      <div className="ecc-row">
+        <BackupHealthCard />
+      </div>
     </div>
+  );
+}
+
+const BACKUP_RPO = [
+  { key: "within", label: "Within RPO", color: "var(--ecc-good)" },
+  { key: "breached", label: "RPO breached", color: "var(--ecc-bad)" },
+  { key: "never", label: "Never backed up", color: "var(--ecc-warn)" },
+  { key: "not_protected", label: "Not protected", color: "var(--ecc-unknown)" },
+] as const;
+
+/** Data protection row: RPO compliance, job outcomes and failures from the
+ *  Azure Backup collector. One line with a connect link until a source exists. */
+function BackupHealthCard() {
+  const q = useQuery({ queryKey: ["dashboard", "backup-overview"], queryFn: getBackupOverview, refetchInterval: POLL_MS, retry: false });
+  const o = q.data;
+  const state: CardState = q.isLoading ? "loading" : q.error ? "error" : "ready";
+  const counts = o ? { within: o.items_within_rpo, breached: o.items_breaching_rpo, never: o.items_never_backed_up, not_protected: o.items_not_protected } : null;
+  return (
+    <CardShell
+      title="Backup Health"
+      info="Azure Backup: protected items against the recovery-point objective, job outcomes and failures. Select to open Backup."
+      aside={o?.configured ? (o.observed_at ? `Collected ${formatAge(o.observed_at)}` : "Awaiting first collection") : undefined}
+      state={state}
+      onRetry={() => q.refetch()}
+      className="ecc-span-full"
+    >
+      {o && !o.configured && (
+        <div className="ecc-quiet ecc-quiet--inline" role="status">
+          <p className="ecc-quiet__title">Backup monitoring is not connected</p>
+          <p className="ecc-quiet__detail">Connect an Azure subscription (read-only, Backup Reader role) to track backup recency, failed jobs and vault security here.</p>
+          <Link className="ecc-quiet__action" href="/infrastructure/backup">Connect Azure Backup</Link>
+        </div>
+      )}
+      {o && o.configured && counts && (
+        <div className="ecc-backup">
+          <Link href="/infrastructure/backup" className="ecc-split" aria-label="Open Backup">
+            <DonutRing
+              label={`${o.items_total} backup items: ${BACKUP_RPO.map((r) => `${counts[r.key]} ${r.label}`).join(", ")}`}
+              centerValue={formatCount(o.items_total)}
+              centerLabel="Items"
+              size={104}
+              segments={BACKUP_RPO.map((r) => ({ key: r.key, value: counts[r.key], color: r.color }))}
+            />
+            <Legend total={o.items_total} rows={BACKUP_RPO.map((r) => ({ key: r.key, label: r.label, value: counts[r.key], color: r.color }))} />
+          </Link>
+          <dl className="ecc-backup__stats">
+            <div><dt>RPO</dt><dd>{o.rpo_hours} h</dd></div>
+            <div><dt>Last backup failed</dt><dd className={o.items_last_failed ? "is-bad" : undefined}>{o.items_last_failed}</dd></div>
+            <div><dt>Job success 24h</dt><dd>{o.success_rate_24h === null ? NOT_MEASURED : `${o.success_rate_24h}%`}</dd></div>
+            <div><dt>Failed jobs 7d</dt><dd className={o.jobs_7d.failed ? "is-bad" : undefined}>{o.jobs_7d.failed}</dd></div>
+            <div><dt>Vaults</dt><dd>{o.vaults}{o.vaults_soft_delete_off ? <span className="is-warn"> · {o.vaults_soft_delete_off} soft delete off</span> : null}</dd></div>
+          </dl>
+          <div className="ecc-backup__jobs">
+            <DayColumns
+              label="Backup jobs per day, last 14 days"
+              height={96}
+              buckets={o.daily.map((d) => ({ key: d.day, label: d.day.slice(5), values: { completed: d.completed, completed_with_warnings: d.completed_with_warnings, failed: d.failed, other: d.other } }))}
+              series={[
+                { key: "completed", label: "Completed", color: "var(--ecc-good)" },
+                { key: "completed_with_warnings", label: "Warnings", color: "var(--ecc-warn)" },
+                { key: "failed", label: "Failed", color: "var(--ecc-bad)" },
+                { key: "other", label: "Other", color: "var(--ecc-unknown)" },
+              ]}
+            />
+          </div>
+        </div>
+      )}
+    </CardShell>
   );
 }
