@@ -8,7 +8,7 @@ type Mode = "impact" | "dependencies";
 
 export default function AssetDependenciesPage() {
   const params = useParams();
-  const deviceId = params.deviceId as string;
+  const deviceId = params?.deviceId as string;
   const [mode, setMode] = useState<Mode>("impact");
   const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -32,6 +32,9 @@ export default function AssetDependenciesPage() {
       }
     }
     load();
+    return () => {
+      cancelled = true;
+    };
   }, [deviceId, mode]);
 
   const statusColor = (type: string) => {

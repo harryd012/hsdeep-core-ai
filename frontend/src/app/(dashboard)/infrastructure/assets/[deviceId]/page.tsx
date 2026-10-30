@@ -6,7 +6,7 @@ import { AssetDevice, AssetRelationship, getAssetDevice, getAssetDeviceRelations
 
 export default function AssetDetailsPage() {
   const params = useParams();
-  const deviceId = params.deviceId as string;
+  const deviceId = params?.deviceId as string;
   const [device, setDevice] = useState<AssetDevice | null>(null);
   const [relationships, setRelationships] = useState<AssetRelationship[]>([]);
   const [loading, setLoading] = useState(true);
@@ -33,6 +33,9 @@ export default function AssetDetailsPage() {
       }
     }
     load();
+    return () => {
+      cancelled = true;
+    };
   }, [deviceId]);
 
   const statusColor = (status: string) => {

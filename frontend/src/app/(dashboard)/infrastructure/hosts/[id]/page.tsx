@@ -55,7 +55,7 @@ function SensorGauge({ s }: { s: SensorOut }) {
 }
 
 function HostContent() {
-  const { id } = useParams<{ id: string }>();
+  const id = useParams<{ id: string }>()?.id ?? "";
   const rawParams = useSearchParams();
   const params = useMemo(() => rawParams ?? new URLSearchParams(), [rawParams]);
   const router = useRouter();
