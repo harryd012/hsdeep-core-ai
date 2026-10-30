@@ -13,6 +13,7 @@ import { useAiCtoStatus } from "@/hooks/useAiCtoStatus";
 import { dependencyStatusLine } from "@/lib/health";
 import AppearanceMenu from "@/components/AppearanceMenu";
 import AppLauncher from "@/components/AppLauncher";
+import SupportAccessForm from "@/components/SupportAccessForm";
 import "@/app/styles/executive-command-center.css";
 import "@/app/styles/navigation.css";
 import { NAV_SECTIONS, visibleNav, type NavGroup } from "@/lib/navigation";
@@ -113,6 +114,8 @@ export default function Sidebar() {
   })();
   const canSwitch = (user?.is_superuser) && accessible.length > 1;
   const [tenantOpen, setTenantOpen] = useState(false);
+  // Customer tenant awaiting a break-glass reason before the switch.
+  const [pendingTenant, setPendingTenant] = useState<{ id: string; name: string } | null>(null);
   const tenantRef = useRef<HTMLDivElement>(null);
 
   // Close the tenant dropdown on outside click.
@@ -126,8 +129,22 @@ export default function Sidebar() {
     return () => document.removeEventListener("mousedown", onClick);
   }, [tenantOpen]);
 
-  function switchTenant(tenantId: string) {
+  function switchTenant(tenantId: string, name: string) {
+    // Another tenant needs a support grant (reason + duration) first; the
+    // user's own tenant just drops the override.
+    const home = user?.home_tenant_id ?? user?.tenant_id;
+    if (tenantId !== home) {
+      setPendingTenant({ id: tenantId, name });
+      return;
+    }
+    clearActiveTenantOverride();
+    setTenantOpen(false);
+    window.location.reload();
+  }
+
+  function grantOpened(tenantId: string) {
     setActiveTenantOverride(tenantId);
+    setPendingTenant(null);
     setTenantOpen(false);
     // Reload so all dashboard data refreshes under the new active tenant.
     window.location.reload();
@@ -199,7 +216,7 @@ export default function Sidebar() {
                       role="option"
                       aria-selected={isActive}
                       className={`hs-sidebar__tenant-item ${isActive ? "active" : ""}`}
-                      onClick={() => switchTenant(t.id)}
+                      onClick={() => switchTenant(t.id, t.name)}
                     >
                       <span className="hs-sidebar__tenant-name">{t.name}</span>
                       {!t.is_active && <span className="hs-sidebar__tenant-suspended">suspended</span>}
@@ -209,6 +226,14 @@ export default function Sidebar() {
                 );
               })}
             </ul>
+          )}
+          {canSwitch && pendingTenant && (
+            <SupportAccessForm
+              tenantId={pendingTenant.id}
+              tenantName={pendingTenant.name}
+              onOpened={() => grantOpened(pendingTenant.id)}
+              onCancel={() => setPendingTenant(null)}
+            />
           )}
         </div>
 

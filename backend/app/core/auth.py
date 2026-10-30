@@ -251,34 +251,6 @@ class Principal:
         return self.is_superuser or code in self.permissions
 
 
-async def _audit_impersonation(
-    actor_user_id: uuid.UUID, actor_email: str, target_tenant_id: uuid.UUID
-) -> None:
-    """Best-effort audit of a superuser cross-tenant (X-Tenant-Id) override.
-    Opens its own session so it can never break or slow the request."""
-    try:
-        from app.core.db import AsyncSessionLocal
-        from app.services.audit_service import AuditService
-
-        async with AsyncSessionLocal() as db:
-            await AuditService(db).record(
-                tenant_id=target_tenant_id,
-                action="tenant.impersonation",
-                actor_id=actor_user_id,
-                actor_email=actor_email,
-                entity_type="tenant",
-                entity_id=target_tenant_id,
-                description=(
-                    f"Superuser {actor_email} acted on tenant "
-                    f"{target_tenant_id} via X-Tenant-Id override"
-                ),
-                context={"target_tenant_id": str(target_tenant_id)},
-            )
-            await db.commit()
-    except Exception:  # noqa: BLE001 - auditing must never break auth
-        logger.exception("Failed to audit tenant impersonation for actor %s", actor_email)
-
-
 def _principal_from_payload(payload: dict, x_tenant_id: uuid.UUID | None) -> Principal:
     is_superuser = bool(payload.get("su", False))
     token_tenant = uuid.UUID(payload["tid"])
@@ -291,19 +263,9 @@ def _principal_from_payload(payload: dict, x_tenant_id: uuid.UUID | None) -> Pri
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="X-Tenant-Id override is not permitted for this user",
             )
+        # Allowed only with a live break-glass grant, checked in
+        # get_current_user (_require_support_grant), which also logs the use.
         effective_tenant = x_tenant_id
-        # Security audit: every cross-tenant override is recorded
-        # (fire-and-forget; never blocks or fails the request). Skipped when
-        # no event loop is running (e.g. direct unit-test invocation).
-        try:
-            _loop = asyncio.get_running_loop()
-            _loop.create_task(
-                _audit_impersonation(
-                    uuid.UUID(payload["sub"]), payload.get("email", ""), effective_tenant
-                )
-            )
-        except RuntimeError:
-            logger.debug("Impersonation audit skipped: no running event loop")
     else:
         effective_tenant = token_tenant
 
@@ -339,6 +301,28 @@ async def _validate_override_tenant(target_tenant_id: uuid.UUID) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Target tenant does not exist or is not accessible",
         )
+
+
+SUPPORT_GRANT_REQUIRED = (
+    "Support access to this tenant needs an active break-glass grant "
+    "(POST /api/support-access/grants with a reason)."
+)
+
+
+async def _require_support_grant(principal: Principal) -> None:
+    """403 unless the superuser holds an unrevoked, unexpired grant for the
+    target tenant. Every allowed use is logged with the grant id."""
+    from app.core.db import AsyncSessionLocal
+    from app.services.support_access import SupportAccessService
+
+    async with AsyncSessionLocal() as db:
+        grant = await SupportAccessService(db).live_grant(principal.user_id, principal.tenant_id)
+    if grant is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=SUPPORT_GRANT_REQUIRED)
+    logger.info(
+        "support access: user=%s tenant=%s grant=%s expires=%s",
+        principal.user_id, principal.tenant_id, grant.id, grant.expires_at.isoformat(),
+    )
 
 
 def _override_applied(principal: Principal, payload: dict) -> bool:
@@ -427,11 +411,13 @@ async def get_current_user(
     # Try JWT first.
     try:
         payload = _decode_access_token(token)
-        principal = _principal_from_payload(payload, x_tenant_id)
     except HTTPException:
         # Not a valid JWT - fall through to API key resolution.
         pass
     else:
+        # A valid JWT: authorization failures (e.g. a forbidden X-Tenant-Id)
+        # are final here, never retried as an API key.
+        principal = _principal_from_payload(payload, x_tenant_id)
         # Server-side revocation: an access token bound to a sign-in session
         # stops working as soon as the session is revoked (logout, password
         # reset, refresh-token replay) or the user is disabled.
@@ -441,9 +427,12 @@ async def get_current_user(
                 detail="Session has ended. Sign in again.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        # P0 hardening: validate the override target before trusting it.
+        # Superuser acting in another tenant: the target must exist AND the
+        # caller must hold a live break-glass grant for it (R1.2).
         if _override_applied(principal, payload):
             await _validate_override_tenant(principal.tenant_id)
+            await _require_support_grant(principal)
+        request.state.token_tenant_id = uuid.UUID(payload["tid"])
         _publish_principal(request, principal)
         return principal
 

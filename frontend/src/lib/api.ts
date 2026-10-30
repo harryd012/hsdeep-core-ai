@@ -864,6 +864,8 @@ export interface MeResponse {
   // -- P0 tenant context (authoritative backend data) --
   tenant_name: string | null;
   accessible_tenants: AccessibleTenant[];
+  /** The user's own tenant; differs from tenant_id under a support grant. */
+  home_tenant_id?: string | null;
 }
 
 export function getMe(): Promise<MeResponse> {
@@ -897,6 +899,22 @@ export function setActiveTenantOverride(tenantId: string | null): void {
 
 export function clearActiveTenantOverride(): void {
   setActiveTenantOverride(null);
+}
+
+/** Server detail when a superuser's X-Tenant-Id has no live support grant. */
+const SUPPORT_GRANT_REQUIRED = "break-glass grant";
+
+/**
+ * Open break-glass support access to another tenant (R1.2). Grants are
+ * managed from the support user's own tenant, so any current override is
+ * cleared first; the caller then sets the new override.
+ */
+export async function openSupportGrant(tenantId: string, reason: string, durationMinutes: number): Promise<void> {
+  clearActiveTenantOverride();
+  await apiFetch("/api/support-access/grants", {
+    method: "POST",
+    body: JSON.stringify({ tenant_id: tenantId, reason, duration_minutes: durationMinutes }),
+  });
 }
 
 export interface UserOut {
@@ -1241,6 +1259,14 @@ async function apiFetchWithRetry<T>(
       if (getAuthToken() === token) await refreshAuthToken();
       if (!getAuthToken()) throw new ApiError(path, 401, "Please log in again.");
       return apiFetchWithRetry<T>(path, init, attempt + 1, timeoutMs);
+    }
+
+    // A support grant expired or was revoked by the customer: return to the
+    // user's own tenant instead of failing every request.
+    if (res.status === 403 && activeTenant && message.includes(SUPPORT_GRANT_REQUIRED)) {
+      clearActiveTenantOverride();
+      if (typeof window !== "undefined") window.location.reload();
+      throw new ApiError(path, 403, "Support access to that tenant has ended. Returned to your own tenant.");
     }
 
     throw new ApiError(path, res.status, res.status === 401 ? "Session expired - please log in again." : message);

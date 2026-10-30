@@ -31,6 +31,11 @@ PUBLIC_WRITE_ROUTES = {
     ("POST", "/api/auth/logout"),
     # Signed-in self-service: ends only the caller's own sessions.
     ("POST", "/api/auth/logout-all"),
+    # Break-glass support grants: opening needs a superuser; revoking needs the
+    # grant holder or the customer tenant's users.update. Checked in the
+    # handler and covered by tests/test_support_access.py.
+    ("POST", "/api/support-access/grants"),
+    ("POST", "/api/support-access/grants/{grant_id}/revoke"),
     # Account self-service: authorised by a single-use emailed token, or
     # (forgot) answered identically for any email; rate limited per IP.
     ("POST", "/api/auth/password/forgot"),

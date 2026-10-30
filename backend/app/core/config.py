@@ -119,6 +119,10 @@ class Settings(BaseSettings):
     # how long a revoked session's access token can still be used on another
     # process. 0 checks the database on every request.
     session_check_cache_seconds: int = 10
+    # Break-glass support access (R1.2): longest grant a superuser may open
+    # on another tenant, and the default when none is requested.
+    support_grant_max_minutes: int = 480
+    support_grant_default_minutes: int = 60
     # Master switch for the phased auth cutover. While False (default), the
     # `require_permission`/`get_current_user` dependencies still authenticate
     # a presented token but routes that have NOT yet been migrated keep their

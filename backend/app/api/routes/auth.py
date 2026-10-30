@@ -264,11 +264,15 @@ async def logout_all(
 
 @router.get("/me", response_model=MeResponse)
 async def me(
+    request: Request,
     principal: Principal = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     service: AuthService = Depends(get_auth_service),
 ):
-    user = await service.users.get_by_id(principal.user_id, principal.tenant_id)
+    # The user row lives in their own tenant, which differs from the active
+    # tenant while a support grant is in use.
+    home_tenant_id = getattr(request.state, "token_tenant_id", None) or principal.tenant_id
+    user = await service.users.get_by_id(principal.user_id, home_tenant_id)
     role_names = sorted(r.name for r in user.roles) if user else []
 
     # -- P0 tenant context (authoritative DB rows, never token-invented) -----
@@ -314,6 +318,7 @@ async def me(
         permissions=sorted(principal.permissions),
         tenant_name=tenant_name,
         accessible_tenants=accessible,
+        home_tenant_id=home_tenant_id,
     )
 
 

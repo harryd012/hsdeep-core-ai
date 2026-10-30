@@ -2722,3 +2722,46 @@ body {
 }
 
 
+
+/* Break-glass support access form (R1.2) */
+.hs-support-form {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--ecc-border, #d0d7de);
+  border-radius: 8px;
+  background: var(--ecc-surface, #fff);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.hs-support-form__title { font-weight: 600; margin: 0; }
+.hs-support-form__hint { margin: 0; color: var(--ecc-text-muted, #57606a); }
+.hs-support-form__label { display: flex; flex-direction: column; gap: 3px; }
+.hs-support-form textarea,
+.hs-support-form select {
+  font: inherit;
+  padding: 5px 6px;
+  border: 1px solid var(--ecc-border, #d0d7de);
+  border-radius: 6px;
+  background: var(--ecc-surface, #fff);
+  color: inherit;
+  resize: vertical;
+}
+.hs-support-form__error { margin: 0; color: var(--ecc-bad, #cf222e); }
+.hs-support-form__actions { display: flex; justify-content: flex-end; gap: 6px; }
+.hs-support-form__actions button {
+  font: inherit;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--ecc-border, #d0d7de);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.hs-support-form__actions button[type="submit"] {
+  background: var(--ecc-accent, #0969da);
+  border-color: var(--ecc-accent, #0969da);
+  color: #fff;
+}
+.hs-support-form__actions button:disabled { opacity: 0.55; cursor: not-allowed; }

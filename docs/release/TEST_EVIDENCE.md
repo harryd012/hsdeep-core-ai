@@ -65,6 +65,21 @@ Classified failures during the run:
 | Full backend suite (`pytest -q`) at `9e979cbc4` | 2,542 passed, 1 skipped, 1 failed: `test_every_mutating_route_requires_a_permission` flagged the new `/api/auth/logout-all` (new regression in the guard list, not in auth). Fixed in `fe7af585f`; file re-run 15 passed. |
 | Frontend `tsc --noEmit`, `npm test` | clean; 121 passed |
 
+## 2026-10-30 - R1.2 break-glass support access
+
+Test database changed to `hsdeep_test_release` (this worktree's
+`backend/.env.test`): another line of work migrated the shared `hsdeep_test`
+to a revision not on this branch. The new database was built from empty
+through all 70 migrations to `d2b8e6f1a4c9`, which also proves the full chain
+from a blank database.
+
+| Command | Result |
+| --- | --- |
+| `pytest tests/test_support_access.py tests/test_auth_tenants.py tests/test_auth_core.py tests/test_tenant_isolation.py tests/test_security_boundary.py tests/test_session_revocation.py` | 105 passed |
+| Full backend suite | 2,553 passed, 1 skipped, 1 failed: RBAC guard flagged the two new grant routes (authorised in the handler); listed with reason; `test_rbac_write_routes` + `test_support_access` 26 passed |
+| Frontend `tsc`, `npm test`, eslint on changed files | clean; 121 passed; 0 errors |
+| Browser (throwaway demo tenants, removed afterwards) | grant form shown, reason required, grant opened, override active; revoked grant sends the app back to the home tenant |
+
 ## Remote CI
 
 | Run | Branch | Revision | Result |

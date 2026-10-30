@@ -57,7 +57,7 @@ on any branch; they need the owner's commit before they can be released.
 | ID | Task | Status | Evidence |
 | --- | --- | --- | --- |
 | R1.1 | Tenant identity: no frontend fallback tenant | VERIFIED | `9e979cbc4`. Backend reads no tenant from the query (0 matches for `tenant_id ... Query(` in routes). `tsc` clean; 121 frontend tests pass. Not yet checked in a signed-in browser session. |
-| R1.2 | Scoped, time-bound, audited support access | BLOCKED | Needs an owner decision on the grant model (see `RELEASE_BLOCKERS.md` BLK-R1-02). |
+| R1.2 | Scoped, time-bound, audited support access | VERIFIED | Break-glass grants (owner decision). `tests/test_support_access.py` 11 passed; `test_auth_tenants` updated; full backend suite 2,553 passed (+ RBAC guard list updated, 26 passed); frontend 121 passed. Browser check on a throwaway tenant: the switch asked for a reason, opened a 60 min grant, wrote `support_access.granted` in the customer's audit log; after revocation the app returned to the home tenant by itself. Migration `d2b8e6f1a4c9` round-tripped. |
 | R1.3 | Cross-tenant isolation suite | NOT_STARTED | |
 | R1.4 | Server-side session revocation | VERIFIED | `431b85c85`, `fe7af585f`; migration `c7f1a9d3e5b2` round-tripped; `tests/test_session_revocation.py` 8 passed; auth/email/pilot/security suites 64 passed; full backend suite 2,542 passed + RBAC guard fixed (15 passed). |
 | R1.5 | RBAC per-role tests | NOT_STARTED | Write routes already guarded (`test_rbac_write_routes`). Role changes now end the user's sessions (R1.4). |

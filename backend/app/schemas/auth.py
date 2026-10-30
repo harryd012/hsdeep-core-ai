@@ -83,6 +83,9 @@ class MeResponse(BaseModel):
     # live tenants per the interim MSP cross-tenant model). Never invented
     # client-side; never includes tenants the principal cannot access.
     accessible_tenants: list[TenantContext] = Field(default_factory=list)
+    # The user's OWN tenant (from the token). Differs from tenant_id only
+    # while a superuser acts in another tenant under a support grant.
+    home_tenant_id: uuid.UUID | None = None
 
 
 class TenantContext(BaseModel):
