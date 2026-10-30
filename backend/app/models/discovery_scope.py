@@ -131,6 +131,14 @@ class DiscoveryScope(Base, UUIDPKMixin, TimestampMixin, SoftDeleteMixin):
     )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # NOTE: migration a3f7c1d84b26 omitted the ix_discovery_scopes_is_deleted
+    # index that every other SoftDeleteMixin table carries. The model mirrors
+    # the live schema (no single-column is_deleted index) so autogenerate stays
+    # clean; add it via a dedicated forward migration if it is ever wanted.
+    is_deleted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
     tenant: Mapped["Tenant"] = relationship()
     credential_profile: Mapped["MonitoringSource | None"] = relationship()
 

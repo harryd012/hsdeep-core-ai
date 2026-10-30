@@ -16,8 +16,7 @@ import time
 from collections import defaultdict
 from collections import deque
 
-from app.api.routes import auth, alerts, dashboard, devices, health, incidents, infrastructure, monitoring, priorities, sops
-from app.api.routes import ingest
+from app.api.routes import auth, alerts, dashboard, devices, health, incidents, infrastructure, monitoring, priorities, sops, paloalto
 from app.api.routes import agents, tasks
 from app.api.routes import command_center
 from app.api.routes import discovery_scopes
@@ -33,8 +32,10 @@ from app.api.routes import zones, change_requests, ai_diagnoses
 from app.api.routes import device_actions
 from app.api.routes import network_intelligence
 from app.api.routes import discovery
+from app.api.routes import discovery_probe_jobs
 from app.api.routes import infrastructure_intelligence
 from app.api.routes import failover_intelligence
+from app.api.routes import ingest
 from app.core.config import get_settings
 from app.core.di import init_di
 from app.core.logging import configure_logging
@@ -256,17 +257,10 @@ else:
         else ["http://localhost:3000", "http://127.0.0.1:3000"]
     )
 
-# Observability + HTTPS enforcement. Registered before CORS so CORS remains the
-# outermost layer; the request logger therefore covers every routed request.
+# Observability + HTTPS enforcement run innermost, below CORS and the rate
+# limiter, so every routed request is observed regardless of layer.
 app.add_middleware(RequestObservabilityMiddleware)
 app.add_middleware(ForceHttpsMiddleware, enabled=settings.force_https)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # ---------------------------------------------------
 # Root Endpoint
@@ -397,6 +391,12 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
     The burst window below is deliberately left as-is: it is generous (it uses
     the period allowance as a per-minute ceiling) and changing it would alter
     existing behaviour for every tenant. The period quota is the real limit.
+
+    Session/control-plane endpoints (``/api/auth/login|refresh|logout|me``)
+    are exempt from BOTH metering and the period quota - see
+    ``app.services.metering.api_quota.CONTROL_PLANE_PATHS`` - so a tenant
+    whose allowance is exhausted can still authenticate and reach the upgrade
+    flow instead of being locked out behind a 429 on ``/api/auth/me``.
     """
 
     def __init__(self, app, requests_per_minute: int = 60) -> None:
@@ -413,6 +413,7 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
 
             from app.services.metering.api_quota import (
                 api_allowance,
+                is_control_plane_path,
                 pending_for,
                 record_api_call,
             )
@@ -420,6 +421,18 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
             try:
                 tenant_id = _uuid.UUID(key.split(":", 1)[1])
             except ValueError:
+                return await call_next(request)
+
+            # Session/control-plane endpoints (login, refresh, logout, the
+            # post-login /me identity read) are neither metered nor quota-
+            # blocked: when the application API allowance is exhausted the
+            # tenant must still be able to authenticate and reach /usage to
+            # resolve the lockout. See CONTROL_PLANE_PATHS in
+            # app/services/metering/api_quota.py for the full rationale.
+            # Normal tenant APIs below are metered and blocked unchanged, and
+            # the per-minute burst limiter at the top of dispatch still
+            # applies to these paths too.
+            if is_control_plane_path(request.url.path):
                 return await call_next(request)
 
             # Meter the request, then enforce the period allowance. Metering
@@ -494,11 +507,24 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 # ---------------------------------------------------
-# Middleware (order matters – rate limit runs first, security headers wrap
-# every response including rate-limited 429s since it's added last/outermost)
+# Middleware (order matters — outermost runs first).
+#
+# CORS is registered OUTER to the rate limiter so the limiter's early 429
+# (period-quota) response still carries Access-Control-Allow-Origin. If CORS
+# sat inner to the limiter, that 429 would be returned before CORS ran and a
+# browser would report a CORS failure instead of the quota error. Security
+# headers stay outermost (added last) so they wrap every response, including
+# those 429s.
 # ---------------------------------------------------
 
 app.add_middleware(_RateLimitMiddleware, requests_per_minute=60)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.add_middleware(_SecurityHeadersMiddleware)
 
 # ---------------------------------------------------
@@ -515,6 +541,7 @@ app.include_router(dashboard.router, prefix="/api")
 app.include_router(devices.router, prefix="/api")
 app.include_router(infrastructure.router, prefix="/api")
 app.include_router(sops.router, prefix="/api")
+app.include_router(paloalto.router, prefix="/api")
 app.include_router(metering_router)
 app.include_router(billing.router, prefix="/api")
 app.include_router(onboarding.router, prefix="/api")
@@ -546,6 +573,7 @@ app.include_router(network_intelligence.router, prefix="/api")
 app.include_router(infrastructure_intelligence.router, prefix="/api")
 app.include_router(failover_intelligence.router, prefix="/api")
 app.include_router(discovery.router, prefix="/api")
+app.include_router(discovery_probe_jobs.router, prefix="/api")
 app.include_router(discovery_scopes.router, prefix="/api")
 app.include_router(admin_tenants.router, prefix="/api")
 app.include_router(ingest.router, prefix="/api/v1")

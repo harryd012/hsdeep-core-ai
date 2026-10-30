@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.db import check_db_connection
 from app.core.redis import redis_health
 from app.models.agent import Agent
@@ -195,11 +196,17 @@ class CommandCenterService:
         else:
             health_status = "ok"
 
-        system_online = db_ok and redis_ok
+        # PostgreSQL is the critical dependency: `system_online` means "the
+        # platform can serve requests" and must NOT require Redis, whose absence
+        # only degrades the cache/rate-limit layer (the scheduler and task
+        # routing are PostgreSQL-backed). Redis still counts toward `ready`
+        # per the same `readiness_require_redis` contract as /ready.
+        system_online = db_ok
+        ready = db_ok and (redis_ok or not get_settings().readiness_require_redis)
 
         health = CommandCenterHealth(
             status=health_status,
-            ready=system_online,
+            ready=ready,
             ai_ready=ollama_status == "up",
             system_online=system_online,
             timestamp=now.isoformat(),
@@ -358,6 +365,7 @@ class CommandCenterService:
                 department=dept.upper(),
                 agent_count=len(deps_agents),
                 active_agents=active_agents,
+                total_tasks=len(dept_tasks),
                 active_tasks=active_tasks,
                 queued_tasks=sum(1 for t in dept_tasks if t.status in _QUEUED),
                 verifying_tasks=sum(1 for t in dept_tasks if t.status in _VERIFYING),

@@ -1,0 +1,349 @@
+"""Focused P2.1 tests for the deterministic alert correlation engine.
+
+Covers tenant isolation, idempotent correlation identity, explainable
+deterministic signals, the bounded temporal window, and empty/stale input.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.db import AsyncSessionLocal
+from app.models.alert import Alert
+from app.models.device import Device
+from app.models.monitoring_source import MonitoringSource
+from app.models.sensor import Sensor
+from app.models.site import Site
+from app.models.tenant import Tenant
+from app.repositories.alert_repository import AlertRepository
+from app.repositories.incident_repository import IncidentRepository
+from app.services.alerting.correlation_engine import (
+    CORRELATION_WINDOW,
+    CorrelationEngine,
+    CorrelationResult,
+    SignalEvidence,
+)
+
+pytestmark = pytest.mark.asyncio
+
+
+async def _seed_tenant(name: str, slug: str) -> Tenant:
+    async with AsyncSessionLocal() as db:
+        tenant = Tenant(name=name, slug=slug)
+        db.add(tenant)
+        # Commit (not just flush): the scaffold + engine sessions below are
+        # separate connections and must be able to see this row.
+        await db.commit()
+        await db.refresh(tenant)
+        return tenant
+
+
+async def _seed_scaffold(tenant: Tenant):
+    async with AsyncSessionLocal() as db:
+        site = Site(tenant_id=tenant.id, name="Site", code=f"SITE-{uuid.uuid4().hex[:4]}")
+        db.add(site)
+        await db.flush()
+        device = Device(tenant_id=tenant.id, site_id=site.id, name="corr.example.com", device_type="server", vendor="Generic", status="up")
+        db.add(device)
+        await db.flush()
+        source = MonitoringSource(tenant_id=tenant.id, name="src", source_type="prtg", is_active=True)
+        db.add(source)
+        await db.flush()
+        sensor = Sensor(
+            tenant_id=tenant.id,
+            monitoring_source_id=source.id,
+            device_id=device.id,
+            external_id="ssl-993",
+            name="SSL Security Check - corr.example.com:993",
+            metric_type="ssl_security",
+            status="down",
+            critical_threshold=0,
+            warning_threshold=0,
+            current_value=0,
+        )
+        db.add(sensor)
+        # Commit so the device/source/sensor rows are visible to the engine
+        # session that creates and correlates the alerts.
+        await db.commit()
+        await db.refresh(site)
+        await db.refresh(device)
+        await db.refresh(source)
+        await db.refresh(sensor)
+        return site, device, source, sensor
+
+
+async def _seed_alert(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    *,
+    device_id: uuid.UUID,
+    sensor_id: uuid.UUID,
+    source_id: uuid.UUID,
+    severity: str = "critical",
+) -> Alert:
+    """Create an alert inside the CALLER's session.
+
+    The alert must belong to the same session the CorrelationEngine uses:
+    correlate() mutates it (set_correlation_fields) and calls db.refresh() on
+    it, which fails for an object detached from a different session.
+    """
+    now = datetime.now(timezone.utc)
+    alert = Alert(
+        tenant_id=tenant_id,
+        device_id=device_id,
+        sensor_id=sensor_id,
+        monitoring_source_id=source_id,
+        title="SSL Security Check - host:993",
+        severity=severity,
+        status="open",
+        metric_type="ssl_security",
+        source="monitoring_sync",
+        triggered_value=0.0,
+        threshold_value=0.0,
+        triggered_at=now,
+        last_occurred_at=now,
+        occurrence_count=1,
+    )
+    db.add(alert)
+    await db.flush()
+    await db.refresh(alert)
+    return alert
+
+
+async def _correlate(engine: CorrelationEngine, alert) -> CorrelationResult:
+    return await engine.correlate(alert)
+
+
+async def _delete_tenant(tenant: Tenant) -> None:
+    async with AsyncSessionLocal() as db:
+        from sqlalchemy import delete
+
+        await db.execute(delete(Tenant).where(Tenant.id == tenant.id))
+        await db.commit()
+
+class TestTenantIsolation:
+    async def test_tenant_a_and_b_alerts_never_share_a_group(self):
+        tenant_a = await _seed_tenant(f"Tenant A {uuid.uuid4().hex[:8]}", f"ta-{uuid.uuid4().hex[:8]}")
+        try:
+            site_a, device_a, source_a, sensor_a = await _seed_scaffold(tenant_a)
+            tenant_b = await _seed_tenant(f"Tenant B {uuid.uuid4().hex[:8]}", f"tb-{uuid.uuid4().hex[:8]}")
+            site_b, device_b, source_b, sensor_b = await _seed_scaffold(tenant_b)
+            try:
+                async with AsyncSessionLocal() as db:
+                    engine = CorrelationEngine(AlertRepository(db), IncidentRepository(db))
+                    alert_a = await _seed_alert(db, tenant_a.id, device_id=device_a.id, sensor_id=sensor_a.id, source_id=source_a.id)
+                    alert_b = await _seed_alert(db, tenant_b.id, device_id=device_b.id, sensor_id=sensor_b.id, source_id=source_b.id)
+
+                    result_a = await _correlate(engine, alert_a)
+                    result_b = await _correlate(engine, alert_b)
+
+                    assert result_a.correlation_id != result_b.correlation_id
+                    assert result_a.alert_ids == [alert_a.id]
+                    assert result_b.alert_ids == [alert_b.id]
+                    assert result_a.tenant_id == tenant_a.id
+                    assert result_b.tenant_id == tenant_b.id
+                    assert str(alert_a.device_id) not in {str(x) for x in result_b.alert_ids}
+                    assert str(alert_b.device_id) not in {str(x) for x in result_a.alert_ids}
+            finally:
+                await _delete_tenant(tenant_b)
+        finally:
+            await _delete_tenant(tenant_a)
+
+    async def test_open_incident_lookup_never_returns_another_tenant(self):
+        tenant_a = await _seed_tenant(f"Tenant A {uuid.uuid4().hex[:8]}", f"ta-{uuid.uuid4().hex[:8]}")
+        try:
+            site_a, device_a, source_a, sensor_a = await _seed_scaffold(tenant_a)
+            tenant_b = await _seed_tenant(f"Tenant B {uuid.uuid4().hex[:8]}", f"tb-{uuid.uuid4().hex[:8]}")
+            site_b, device_b, source_b, sensor_b = await _seed_scaffold(tenant_b)
+            try:
+                async with AsyncSessionLocal() as db:
+                    repo = IncidentRepository(db)
+                    engine = CorrelationEngine(AlertRepository(db), repo)
+                    alert_a = await _seed_alert(db, tenant_a.id, device_id=device_a.id, sensor_id=sensor_a.id, source_id=source_a.id)
+                    alert_b = await _seed_alert(db, tenant_b.id, device_id=device_b.id, sensor_id=sensor_b.id, source_id=source_b.id)
+                    await _correlate(engine, alert_a)
+                    await _correlate(engine, alert_b)
+
+                    a_incident = await repo.get_open_for_device(device_a.id, tenant_a.id)
+                    b_incident = await repo.get_open_for_device(device_b.id, tenant_b.id)
+                    assert a_incident is not None and b_incident is not None
+                    assert a_incident.id != b_incident.id
+                    assert a_incident.tenant_id == tenant_a.id
+                    assert b_incident.tenant_id == tenant_b.id
+                    assert a_incident.id != await repo.get_open_for_device(device_b.id, tenant_a.id)
+                    assert b_incident.id != await repo.get_open_for_device(device_a.id, tenant_b.id)
+            finally:
+                await _delete_tenant(tenant_b)
+        finally:
+            await _delete_tenant(tenant_a)
+
+
+class TestIdempotency:
+    async def test_same_alert_processed_twice_is_idempotent(self):
+        tenant = await _seed_tenant(f"Idempotency {uuid.uuid4().hex[:8]}", f"idem-{uuid.uuid4().hex[:8]}")
+        try:
+            site, device, source, sensor = await _seed_scaffold(tenant)
+            try:
+                async with AsyncSessionLocal() as db:
+                    repo = IncidentRepository(db)
+                    engine = CorrelationEngine(AlertRepository(db), repo)
+                    alert = await _seed_alert(db, tenant.id, device_id=device.id, sensor_id=sensor.id, source_id=source.id)
+
+                    first = await _correlate(engine, alert)
+                    second = await _correlate(engine, alert)
+
+                    assert first.correlation_id == second.correlation_id
+                    assert first.is_new_incident is True
+                    assert second.is_new_incident is False
+                    assert first.score == second.score
+                    assert first.recomputed is True
+                    assert second.recomputed is False
+
+                    incident = await repo.get(alert.incident_id, tenant.id)
+                    assert incident is not None
+                    assert incident.alert_count == 1
+                    assert incident.total_occurrences == 2
+            finally:
+                await _delete_tenant(tenant)
+        finally:
+            # Guards the outer try: cleans up if _seed_scaffold fails before
+            # the inner try is entered. No-op (0 rows) when the inner finally
+            # already deleted the tenant.
+            await _delete_tenant(tenant)
+
+    async def test_distinct_alert_sets_are_not_merged(self):
+        tenant = await _seed_tenant(f"Distinct {uuid.uuid4().hex[:8]}", f"dist-{uuid.uuid4().hex[:8]}")
+        try:
+            site, device, source, sensor = await _seed_scaffold(tenant)
+            try:
+                async with AsyncSessionLocal() as db:
+                    repo = IncidentRepository(db)
+                    engine = CorrelationEngine(AlertRepository(db), repo)
+                    alert_a = await _seed_alert(db, tenant.id, device_id=device.id, sensor_id=sensor.id, source_id=source.id)
+                    sensor_b = Sensor(
+                        tenant_id=tenant.id,
+                        monitoring_source_id=source.id,
+                        device_id=device.id,
+                        external_id="ssl-443",
+                        name="SSL Security Check - corr.example.com:443",
+                        metric_type="ssl_security",
+                        status="down",
+                        critical_threshold=0,
+                        warning_threshold=0,
+                        current_value=0,
+                    )
+                    db.add(sensor_b)
+                    await db.flush()
+                    await db.refresh(sensor_b)
+                    alert_b = await _seed_alert(db, tenant.id, device_id=device.id, sensor_id=sensor_b.id, source_id=source.id)
+
+                    first = await _correlate(engine, alert_a)
+                    second = await _correlate(engine, alert_b)
+
+                    # Different sensors -> different signatures -> NOT merged.
+                    # (The old assertion here claimed second's incident held
+                    # BOTH alerts, which is impossible given the two lines
+                    # below/above assert they are separate incidents - an alert
+                    # has exactly one incident_id. Corrected to assert the
+                    # second incident contains only alert_b, which is what
+                    # "are_not_merged" actually requires.)
+                    assert first.correlation_id != second.correlation_id
+                    assert len(first.alert_ids) == 1
+                    assert set(second.alert_ids) == {alert_b.id}
+            finally:
+                await _delete_tenant(tenant)
+        finally:
+            # Guards the outer try: cleans up if _seed_scaffold fails before
+            # the inner try is entered. No-op (0 rows) when the inner finally
+            # already deleted the tenant.
+            await _delete_tenant(tenant)
+
+class TestSignalsAndWindow:
+    async def test_same_device_is_a_strong_signal(self):
+        tenant = await _seed_tenant(f"Signals {uuid.uuid4().hex[:8]}", f"sig-{uuid.uuid4().hex[:8]}")
+        try:
+            site, device, source, sensor = await _seed_scaffold(tenant)
+            try:
+                async with AsyncSessionLocal() as db:
+                    engine = CorrelationEngine(AlertRepository(db), IncidentRepository(db))
+                    alert_a = await _seed_alert(db, tenant.id, device_id=device.id, sensor_id=sensor.id, source_id=source.id)
+                    first = await _correlate(engine, alert_a)
+                    result = await _correlate(engine, alert_a)
+
+                    assert result.score >= 30
+                    assert any(s.signal_type == "same_device" and s.strength == "strong" for s in result.correlation_signals)
+                    assert result.reason.startswith("joined via")
+            finally:
+                await _delete_tenant(tenant)
+        finally:
+            # Guards the outer try: cleans up if _seed_scaffold fails before
+            # the inner try is entered. No-op (0 rows) when the inner finally
+            # already deleted the tenant.
+            await _delete_tenant(tenant)
+
+    async def test_cold_incident_older_than_window_starts_a_new_group(self):
+        tenant = await _seed_tenant(f"Cold {uuid.uuid4().hex[:8]}", f"cold-{uuid.uuid4().hex[:8]}")
+        try:
+            site, device, source, sensor = await _seed_scaffold(tenant)
+            try:
+                async with AsyncSessionLocal() as db:
+                    repo = IncidentRepository(db)
+                    engine = CorrelationEngine(AlertRepository(db), repo)
+                    alert_a = await _seed_alert(db, tenant.id, device_id=device.id, sensor_id=sensor.id, source_id=source.id)
+                    first = await _correlate(engine, alert_a)
+
+                    # A fresh condition (different sensor) on the same device,
+                    # issued older than CORRELATION_WINDOW, must start a new group.
+                    old = datetime.now(timezone.utc) - CORRELATION_WINDOW - timedelta(seconds=1)
+                    sensor_b = Sensor(
+                        tenant_id=tenant.id,
+                        monitoring_source_id=source.id,
+                        device_id=device.id,
+                        external_id="ssl-443",
+                        name="SSL Security Check - corr.example.com:443",
+                        metric_type="ssl_security",
+                        status="down",
+                        critical_threshold=0,
+                        warning_threshold=0,
+                        current_value=0,
+                    )
+                    db.add(sensor_b)
+                    await db.flush()
+                    await db.refresh(sensor_b)
+                    alert_b = Alert(
+                        tenant_id=tenant.id,
+                        device_id=device.id,
+                        sensor_id=sensor_b.id,
+                        monitoring_source_id=source.id,
+                        title="SSL Security Check - corr.example.com:443",
+                        severity="critical",
+                        status="open",
+                        metric_type="ssl_security",
+                        source="monitoring_sync",
+                        triggered_value=0.0,
+                        threshold_value=0.0,
+                        triggered_at=old,
+                        last_occurred_at=old,
+                        occurrence_count=1,
+                    )
+                    db.add(alert_b)
+                    await db.flush()
+                    await db.refresh(alert_b)
+
+                    second = await _correlate(engine, alert_b)
+
+                    assert second.is_new_incident is True
+                    assert first.correlation_id != second.correlation_id
+            finally:
+                await _delete_tenant(tenant)
+        finally:
+            # Guards the outer try: cleans up if _seed_scaffold fails before
+            # the inner try is entered. No-op (0 rows) when the inner finally
+            # already deleted the tenant.
+            await _delete_tenant(tenant)
+

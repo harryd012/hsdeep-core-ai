@@ -109,6 +109,15 @@ class TenantCustomProperty(Base, UUIDPKMixin, TimestampMixin, SoftDeleteMixin):
         nullable=True,
     )
 
+    # NOTE: migration b8e42d9c7a15 omitted the
+    # ix_tenant_custom_properties_is_deleted index that every other
+    # SoftDeleteMixin table carries. The model mirrors the live schema (no
+    # single-column is_deleted index) so autogenerate stays clean; add it via
+    # a dedicated forward migration if it is ever wanted.
+    is_deleted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
     tenant: Mapped["Tenant"] = relationship()
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

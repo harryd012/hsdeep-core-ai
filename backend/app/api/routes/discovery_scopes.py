@@ -15,7 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Principal, get_tenant_id, require_permission
 from app.core.db import get_db
+from app.models.discovery_probe import JOB_STATUS_COMPLETED, JOB_STATUS_FAILED
 from app.models.discovery_scope import SCOPE_TYPES, DiscoveryScope
+from app.repositories.discovery_probe_repository import DiscoveryProbeRepository
 from app.repositories.discovery_scope_repository import DiscoveryScopeRepository
 from app.schemas.discovery_scope import (
     DiscoveryScopeCreate,
@@ -45,6 +47,10 @@ router = APIRouter(prefix="/infrastructure/discovery/scopes", tags=["discovery"]
 
 def _get_repo(db: AsyncSession = Depends(get_db)) -> DiscoveryScopeRepository:
     return DiscoveryScopeRepository(db)
+
+
+def _get_probe_repo(db: AsyncSession = Depends(get_db)) -> DiscoveryProbeRepository:
+    return DiscoveryProbeRepository(db)
 
 
 def to_out(scope: DiscoveryScope) -> DiscoveryScopeOut:
@@ -246,12 +252,15 @@ async def probe_scope_target(
     _principal: Principal = Depends(require_permission("devices.write")),
     db: AsyncSession = Depends(get_db),
     repo: DiscoveryScopeRepository = Depends(_get_repo),
+    probe_repo: DiscoveryProbeRepository = Depends(_get_probe_repo),
 ):
     """Run the existing bounded probe over this scope's target.
 
-    OBSERVATION ONLY: it records when the scope last ran and returns probe
-    evidence. It creates no canonical resources - device creation, identity
-    resolution and quota all stay on the existing collection path.
+    OBSERVATION ONLY: it records when the scope last ran, persists the probe
+    evidence as a durable ``DiscoveryProbeJob`` (for later review/materialize),
+    and returns the evidence. It creates no canonical resources - device
+    creation, identity resolution and quota all stay on the separate materialize
+    step over the existing collection path.
     """
     scope = await _get_or_404(repo, scope_id, tenant_id)
     if not scope.enabled:
@@ -259,18 +268,65 @@ async def probe_scope_target(
             status_code=status.HTTP_409_CONFLICT, detail="Scope is disabled"
         )
 
+    now = datetime.now(timezone.utc)
     try:
         report = await probe_scope(scope)
     except ScopeNotProbeable as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - record the failed run durably
+        logger.exception("scope probe failed for scope %s", scope.id)
+        await probe_repo.create_job(
+            tenant_id=tenant_id,
+            scope_id=scope.id,
+            target=scope.target,
+            scope_type=scope.scope_type,
+            status=JOB_STATUS_FAILED,
+            error=str(exc)[:2000],
+            started_at=now,
+            finished_at=now,
+        )
+        await repo.update(
+            scope, status="error", last_run_at=now, last_error=str(exc)[:2000]
+        )
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail="probe failed"
+        ) from exc
 
-    scope = await repo.update(
-        scope, status="ok", last_run_at=datetime.now(timezone.utc), last_error=None
+    job = await probe_repo.create_job(
+        tenant_id=tenant_id,
+        scope_id=scope.id,
+        target=scope.target,
+        scope_type=scope.scope_type,
+        status=JOB_STATUS_COMPLETED,
+        hosts_probed=report.hosts_probed,
+        hosts_total=report.hosts_total,
+        reachable=len(report.reachable),
+        truncated=report.truncated,
+        started_at=now,
+        finished_at=now,
     )
+    await probe_repo.add_hosts(
+        job.id,
+        tenant_id,
+        [
+            {
+                "address": h.address,
+                "reachable": h.reachable,
+                "latency_ms": h.latency_ms,
+                "packet_loss_pct": h.packet_loss_pct,
+                "protocols": dict(h.protocols),
+                "evidence": list(h.evidence),
+            }
+            for h in report.hosts
+        ],
+    )
+    scope = await repo.update(scope, status="ok", last_run_at=now, last_error=None)
     await db.commit()
 
     return ScopeProbeResultOut(
         scope_id=scope.id,
+        job_id=job.id,
         target=scope.target,
         hosts_probed=report.hosts_probed,
         hosts_total=report.hosts_total,
