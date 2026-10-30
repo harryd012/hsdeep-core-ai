@@ -5,7 +5,7 @@
 # means the FIRST failing gate stops the pipeline, so a failed or missing gate can
 # never produce a green build. Nothing here is skipped to obtain a pass.
 #
-# Requirements: python3.12 with backend/requirements-dev.txt installed, node with
+# Requirements: python3.12 with backend/requirements-dev.txt installed, node 24 (.nvmrc) with
 # frontend/node_modules installed, and a reachable PostgreSQL
 # (backend/.env DATABASE_URL). Redis is optional: readiness degrades, the API
 # still serves.
@@ -58,13 +58,31 @@ step "1/6 security + dependency gates"
 "$PYTHON" ci/secret_scan.py
 "$PYTHON" ci/requirements_check.py
 
-step "2/6 frontend type-check, lint ratchet, production build"
+step "2/6 frontend type-check, lint ratchet, unit tests, production build"
 cd frontend
 npx tsc --noEmit
 cd "$ROOT"
 "$PYTHON" ci/lint_ratchet.py
 cd frontend
+npm test
 npm run build
+cd "$ROOT"
+
+step "2b/6 database migrations: one head, latest revision reversible"
+cd backend
+HEADS="$("$PYTHON" -m alembic heads 2>/dev/null | grep -c '(head)' || true)"
+if [ "$HEADS" != "1" ]; then
+  echo "expected exactly one alembic head, found $HEADS" >&2
+  "$PYTHON" -m alembic heads >&2
+  exit 1
+fi
+# The round trip downgrades the newest revision, which drops its tables. It
+# runs only in CI (a throwaway database) or when explicitly requested, never
+# against a developer's working database by default.
+if [ -n "${CI:-}" ] || [ "${MIGRATION_ROUNDTRIP:-0}" = "1" ]; then
+  "$PYTHON" -m alembic downgrade -1
+  "$PYTHON" -m alembic upgrade head
+fi
 cd "$ROOT"
 
 step "3/6 backend focused suites (blockers + contracts)"
