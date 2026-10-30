@@ -24,7 +24,7 @@
       }
     ],
     "strictNullChecks": true,
-    "baseUrl": ".",
+    
     "paths": {
       "@/*": ["./src/*"]
     }
