@@ -1,0 +1,231 @@
+{
+  "results": [
+    {
+      "name": "sidebar exposes the Infrastructure group",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "sidebar lists a Topology child entry",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "Topology entry targets the Phase 9.5 route",
+      "ok": true,
+      "detail": "href=/infrastructure-topology/live"
+    },
+    {
+      "name": "clicking Topology navigates to the Phase 9.5 route",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "page title is rendered",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "breadcrumb is rendered",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "freshness badge renders",
+      "ok": true,
+      "detail": "● LIVE DATA · fresh"
+    },
+    {
+      "name": "KPI strip renders",
+      "ok": true,
+      "detail": "devices,online,warning,offline,unknown,stale,links,interfaces,unidentified,traffic"
+    },
+    {
+      "name": "KPI strip reports the real device count",
+      "ok": true,
+      "detail": "devices=267"
+    },
+    {
+      "name": "KPI strip reports the real relationship count",
+      "ok": true,
+      "detail": "links=2"
+    },
+    {
+      "name": "KPI strip separates online from offline from real operational state",
+      "ok": true,
+      "detail": "online=11 offline=254"
+    },
+    {
+      "name": "KPI strip reports interfaces and the real unclassified count",
+      "ok": true,
+      "detail": "interfaces=5 unidentified=265"
+    },
+    {
+      "name": "traffic KPI does not claim a measurement that does not exist",
+      "ok": true,
+      "detail": "traffic=No telemetry"
+    },
+    {
+      "name": "empty state disappears once real relationships exist",
+      "ok": true,
+      "detail": "links=2"
+    },
+    {
+      "name": "canvas uses the available viewport height",
+      "ok": true,
+      "detail": "height=664 of 1000"
+    },
+    {
+      "name": "canvas spans the workspace width",
+      "ok": true,
+      "detail": "width=1348"
+    },
+    {
+      "name": "real relationships are drawn as links",
+      "ok": true,
+      "detail": "links=2 lines=2"
+    },
+    {
+      "name": "device nodes are drawn from real rows",
+      "ok": true,
+      "detail": "nodes=270"
+    },
+    {
+      "name": "unclassified resources stay Unknown Resource",
+      "ok": true,
+      "detail": "unknown=268"
+    },
+    {
+      "name": "clicking a link opens the link drawer",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "link drawer shows the collected interface evidence",
+      "ok": true,
+      "detail": "RELATIONSHIP CONNECTED TO dot · UP The recorded relationship state is active. RELATIONSHIP"
+    },
+    {
+      "name": "legend is present",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "legend explains device and link states",
+      "ok": true,
+      "detail": "LEGEND dot Online triangle Warning square Offline ring Unknown hex Data stale hex Maintena"
+    },
+    {
+      "name": "minimap is present for a real graph",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "zoom / fit / reset controls are present",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "zoom in changes the scale",
+      "ok": true,
+      "detail": "scale=17%"
+    },
+    {
+      "name": "fit to screen recomputes the view",
+      "ok": true,
+      "detail": "scale=14%"
+    },
+    {
+      "name": "reset returns to 100%",
+      "ok": true,
+      "detail": "scale=100%"
+    },
+    {
+      "name": "search counter shows the real node total",
+      "ok": true,
+      "detail": "{\"results\":270,\"total\":270}"
+    },
+    {
+      "name": "a non-matching search filters everything out",
+      "ok": true,
+      "detail": "{\"results\":0,\"total\":270}"
+    },
+    {
+      "name": "the filter panel opens",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "clearing filters restores every row",
+      "ok": true,
+      "detail": "{\"results\":270,\"total\":270}"
+    },
+    {
+      "name": "switching layout re-renders without losing the graph",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "clicking a device opens the detail drawer",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "drawer shows the resolved visual source",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "drawer names the unknown resource",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "drawer is sectioned for investigation",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "sections without backend data say so instead of inventing values",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "traffic animation toggle changes state",
+      "ok": true,
+      "detail": "true -> false"
+    },
+    {
+      "name": "direct URL navigation works",
+      "ok": true,
+      "detail": "relogin=false"
+    },
+    {
+      "name": "direct URL renders the graph, not the login form",
+      "ok": true,
+      "detail": "relogin=false"
+    },
+    {
+      "name": "browser refresh keeps the workspace rendered",
+      "ok": true,
+      "detail": "url=http://localhost:3000/infrastructure-topology/live relogin=false"
+    },
+    {
+      "name": "browser refresh keeps the same real data",
+      "ok": true,
+      "detail": "devices=267"
+    },
+    {
+      "name": "sidebar navigation and direct navigation agree",
+      "ok": true,
+      "detail": "sidebar=267 direct=267"
+    },
+    {
+      "name": "evidence screenshots captured",
+      "ok": true,
+      "detail": "C:\\Users\\harry\\AppData\\Local\\Temp\\hsdeep-topology-captures"
+    }
+  ],
+  "pageErrors": [],
+  "consoleErrors": []
+}
