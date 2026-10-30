@@ -86,4 +86,4 @@ from a blank database.
 | --- | --- | --- | --- |
 | 40976698591 | `feat/platform-buildout-b1` | `372863197` | success |
 | 40993533063 | `feat/platform-buildout-b1` | `2c6831db7` | success (firewall gateway) |
-| - | `release/cloud-saas-stabilization` | - | not pushed (BLK-R0-01) |
+| 41092830411 | `release/cloud-saas-stabilization` | `a1011d47b` | success (all gates incl. Docker builds and migration round trip; 7 min 52 s) |

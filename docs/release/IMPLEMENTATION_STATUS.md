@@ -15,10 +15,10 @@ ACCEPTED needs the owner's sign-off.
 | ID | Task | Status | Evidence |
 | --- | --- | --- | --- |
 | R0.1 | Reconcile branches, cut release branch, rollback point | VERIFIED | `origin/main` (`46cc95b85`) and local `main` (`f1757216a`) are ancestors of the release branch: `git merge-base --is-ancestor`. Only file deleted since `origin/main`: `frontend/src/lib/mock/sop-seed.ts` (intentional, fabricated data). `chore/deploy-readiness` is patch-equivalent (`git cherry` shows `-`). `fix/session-rpm-fair-use` (2 commits) merged in `c71376487`; 22 targeted tests pass. See "Branch reconciliation" below. |
-| R0.2 | CI/runtime alignment | CODE_COMPLETE | `c32dad8a1`: Node 24 LTS in CI (`.nvmrc`), `frontend/Dockerfile`, `package.json` engines (Node 20 EOL 2026-04-30; Next 16.2.9 supports >=20.9). Python 3.12 pinned (`.python-version`, pyproject, CI, image). Gates now run 121 frontend unit tests and require one alembic head; CI round-trips the newest migration. Remote CI run pending a push. |
+| R0.2 | CI/runtime alignment | VERIFIED | `c32dad8a1`: Node 24 LTS in CI (`.nvmrc`), `frontend/Dockerfile`, `package.json` engines (Node 20 EOL 2026-04-30; Next 16.2.9 supports >=20.9). Python 3.12 pinned. Gates run 121 frontend unit tests, require one alembic head, round-trip the newest migration in CI. Remote CI run 41092830411 on `a1011d47b`: success, including container builds. |
 | R0.3 | Secret scanner | VERIFIED | `8d8b90929`: scans what git would commit (1,095 files), tests included; value-based placeholder check; unreadable files fatal; 9 high-confidence token formats. `python -m pytest ci/test_secret_scan.py` 14 passed; `ci/secret_scan.py --self-test` passed; repo scan 0 fatal / 43 warnings (all throwaway passwords in tests). |
 | R0.4 | Documentation reconciliation | VERIFIED | This file, `RELEASE_BLOCKERS.md`, `SECURITY_GAP_REGISTER.md`, `RELEASE_CHECKLIST.md`, `TEST_EVIDENCE.md`, `ROADMAP.md`. Inventory below. |
-| R0.5 | Full gates on the release branch (local + remote CI) | TESTING | Local gates all passed (`TEST_EVIDENCE.md`); remote CI waits on push approval (BLK-R0-01). |
+| R0.5 | Full gates on the release branch (local + remote CI) | VERIFIED | Local gates (`TEST_EVIDENCE.md`) and remote CI run 41092830411 (`a1011d47b`, 2026-10-30, 7 min 52 s): every step success, gates run with `--with-containers`. |
 
 ### Branch reconciliation (2026-10-30)
 

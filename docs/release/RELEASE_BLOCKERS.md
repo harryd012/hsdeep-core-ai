@@ -6,7 +6,7 @@ only pilot-blocking ones are repeated here.
 
 | ID | Blocker | Why it blocks | Phase | Needs |
 | --- | --- | --- | --- | --- |
-| BLK-R0-01 | Release branch not pushed, so remote CI has not run on it | G1 needs a green remote run on the release commit | R0 | Owner approval to push |
+| BLK-R0-01 | ~~Release branch not pushed~~ | Resolved: pushed 2026-10-30; CI run 41092830411 green on `a1011d47b` | R0 | - |
 | BLK-R0-02 | ~245 uncommitted paths in the main checkout (dashboard-v2, explorer, SOP import pipeline, edge agent) | Not on any branch, so not releasable; the edge agent is needed for customer-site collection | R0 | Owner to commit or discard |
 | BLK-R1-01 | ~~No server-side access-token revocation~~ | Resolved in `431b85c85` (R1.4) | R1 | - |
 | BLK-R1-02 | ~~Support override not scoped or time-bound~~ | Resolved (R1.2, break-glass grants) | R1 | - |
