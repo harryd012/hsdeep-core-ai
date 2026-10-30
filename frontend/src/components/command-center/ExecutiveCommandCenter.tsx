@@ -30,6 +30,7 @@ import {
   formatPct,
   isStale,
   pct,
+  rangeDays,
   type CommandCenterRange,
 } from "@/lib/commandCenter/format";
 import { CardShell, DonutRing, KpiTile, Legend, type CardState } from "./primitives";
@@ -61,7 +62,45 @@ const RANGE_LABEL: Record<CommandCenterRange, string> = {
   "7d": "Last 7 days",
   "14d": "Last 14 days",
   "30d": "Last 30 days",
+  "90d": "Last 90 days",
 };
+
+/**
+ * Shown instead of an all-zero chart when the selected window has no
+ * incidents: when the last one happened, and a one-click wider window that
+ * would include it (or the widest window when it is older still).
+ */
+function QuietWindow({
+  what,
+  range,
+  lastAt,
+  now,
+  onWiden,
+}: {
+  what: string;
+  range: CommandCenterRange;
+  lastAt: string | null;
+  /** Reference time (when the data was fetched), not the render clock. */
+  now: number;
+  onWiden: (range: CommandCenterRange) => void;
+}) {
+  const days = lastAt ? Math.max(1, Math.ceil((now - Date.parse(lastAt)) / 86_400_000)) : null;
+  const target = RANGES.find((r) => rangeDays(r) > rangeDays(range) && (days === null || rangeDays(r) >= days)) ?? RANGES[RANGES.length - 1];
+  const canWiden = rangeDays(target) > rangeDays(range);
+  return (
+    <div className="ecc-quiet" role="status">
+      <p className="ecc-quiet__title">No {what} in the {RANGE_LABEL[range].toLowerCase()}</p>
+      <p className="ecc-quiet__detail">
+        {lastAt ? `Last incident activity ${days} day${days === 1 ? "" : "s"} ago (${new Date(lastAt).toLocaleDateString()}).` : "No incident has been recorded yet."}
+      </p>
+      {canWiden && lastAt && (
+        <button type="button" className="ecc-quiet__action" onClick={() => onWiden(target)}>
+          Show {RANGE_LABEL[target].toLowerCase()}
+        </button>
+      )}
+    </div>
+  );
+}
 
 const STATUS_TONE: Record<string, string> = {
   open: "var(--ecc-bad)",
@@ -280,7 +319,7 @@ function KpiStrip({ brief, loading, error }: { brief: CommandCenterBrief | undef
         delta={kpis && prev ? computeDelta(kpis.mtta_minutes, prev.mtta_minutes, "lower-is-better") : null}
         deltaSuffix="vs prev 24h"
         loading={loading}
-        naText={naText}
+        naText={brief ? "None acknowledged in 24h" : naText}
         unavailableReason={brief ? "No incident was acknowledged in the last 24h" : reason}
       />
       <KpiTile
@@ -292,7 +331,7 @@ function KpiStrip({ brief, loading, error }: { brief: CommandCenterBrief | undef
         delta={kpis && prev ? computeDelta(kpis.mttr_minutes, prev.mttr_minutes, "lower-is-better") : null}
         deltaSuffix="vs prev 24h"
         loading={loading}
-        naText={naText}
+        naText={brief ? "None resolved in 24h" : naText}
         unavailableReason={brief ? "No incident was resolved in the last 24h" : reason}
       />
     </div>
@@ -539,6 +578,13 @@ export default function ExecutiveCommandCenter() {
     .join(" · ");
   const windowAside = `${RANGE_LABEL[filters.range]}${scopeNote ? ` · ${scopeNote}` : ""}`;
   const analyticsState = (empty: boolean) => stateOf(analytics, empty);
+  // Latest incident activity (same filters). The recent list is ordered by
+  // last_alert_at, so its maximum is exact even though the list is capped.
+  const lastIncidentAt = (recent.data ?? []).reduce<string | null>((m, i) => (!m || i.last_alert_at > m ? i.last_alert_at : m), null);
+  const quietWindow = !!a && a.total_opened === 0 && a.duration.resolved_count === 0;
+  const quiet = (what: string) => (
+    <QuietWindow what={what} range={filters.range} lastAt={lastIncidentAt} now={analytics.dataUpdatedAt || recent.dataUpdatedAt} onWiden={(range) => update({ range })} />
+  );
   const severityRows = INCIDENT_SEVERITIES.map((s) => ({
     key: s,
     label: titleCase(s),
@@ -576,7 +622,7 @@ export default function ExecutiveCommandCenter() {
           onRetry={() => analytics.refetch()}
           className="ecc-span-5 ecc-span-wide"
         >
-          {a && <TrendChart points={a.trend} />}
+          {a && (quietWindow ? quiet("incidents opened or resolved") : <TrendChart points={a.trend} />)}
         </CardShell>
 
         <CardShell
@@ -587,7 +633,8 @@ export default function ExecutiveCommandCenter() {
           onRetry={() => analytics.refetch()}
           className="ecc-span-3"
         >
-          {a && (
+          {a && a.total_opened === 0 && quiet("incidents opened")}
+          {a && a.total_opened > 0 && (
             <div className="ecc-split">
               <DonutRing
                 label={`${a.total_opened} incidents opened: ${severityRows.map((r) => `${r.value} ${r.label}`).join(", ")}`}
@@ -613,19 +660,50 @@ export default function ExecutiveCommandCenter() {
           onRetry={() => analytics.refetch()}
           className="ecc-span-3"
         >
-          {a && <TopSites sites={a.top_sites} other={a.other_sites_count} />}
+          {a &&
+            (siteHealth.data && sites.length === 0 ? (
+              <div className="ecc-quiet" role="status">
+                <p className="ecc-quiet__title">Ranked by site once sites exist</p>
+                <p className="ecc-quiet__detail">
+                  {a.total_opened
+                    ? `${a.total_opened.toLocaleString("en-US")} incident${a.total_opened === 1 ? "" : "s"} opened in this window, none attributable to a site yet.`
+                    : "No incidents opened in this window either."}{" "}
+                  See Infrastructure Overview to set sites up.
+                </p>
+              </div>
+            ) : a.total_opened === 0 ? (
+              quiet("incidents opened")
+            ) : (
+              <TopSites sites={a.top_sites} other={a.other_sites_count} />
+            ))}
         </CardShell>
 
         <CardShell
           title="Infrastructure Overview (Sites)"
           info="Each site's worst device state and its active incident count. Select a site to filter the dashboard."
           aside={siteHealth.data?.unassigned_devices ? `${siteHealth.data.unassigned_devices} devices unassigned` : undefined}
-          state={stateOf(siteHealth, sites.length === 0)}
-          emptyText="No sites defined yet."
+          state={stateOf(siteHealth, false)}
           onRetry={() => siteHealth.refetch()}
           className="ecc-span-3"
         >
-          <SiteHoneycomb sites={sites} selectedSiteId={filters.siteId} onSelect={(siteId) => update({ siteId })} />
+          {siteHealth.data && sites.length === 0 ? (
+            <div className="ecc-quiet" role="status">
+              <p className="ecc-quiet__title">No sites yet</p>
+              <p className="ecc-quiet__detail">
+                {siteHealth.data.unassigned_devices
+                  ? `${siteHealth.data.unassigned_devices} devices are monitored but belong to no site. `
+                  : ""}
+                Sites unlock per-location health, the site filter on this page and site impact on incidents.
+              </p>
+              <ol className="ecc-quiet__steps">
+                <li>Create your locations in Organization</li>
+                <li>Assign devices to them</li>
+              </ol>
+              <a className="ecc-quiet__action" href="/organization">Set up sites</a>
+            </div>
+          ) : (
+            <SiteHoneycomb sites={sites} selectedSiteId={filters.siteId} onSelect={(siteId) => update({ siteId })} />
+          )}
         </CardShell>
 
         <CollectorHealthCard q={brief} />
@@ -653,7 +731,19 @@ export default function ExecutiveCommandCenter() {
           onRetry={() => analytics.refetch()}
           className="ecc-span-4"
         >
-          {a && <Heatmap grid={a.heatmap} />}
+          {a &&
+            (a.heatmap.every((row) => row.every((n) => n === 0)) ? (
+              <div className="ecc-quiet" role="status">
+                <p className="ecc-quiet__title">No incidents opened in the last {a.heatmap_days / 7} weeks</p>
+                <p className="ecc-quiet__detail">
+                  {lastIncidentAt
+                    ? `Last incident activity ${new Date(lastIncidentAt).toLocaleDateString()}. The heatmap fills in as incidents open, revealing recurring load windows.`
+                    : "The heatmap fills in as incidents open, revealing recurring load windows."}
+                </p>
+              </div>
+            ) : (
+              <Heatmap grid={a.heatmap} />
+            ))}
         </CardShell>
 
         <CardShell
@@ -666,9 +756,7 @@ export default function ExecutiveCommandCenter() {
         >
           {a &&
             (a.duration.resolved_count === 0 ? (
-              <div className="ecc-state" role="status">
-                No incidents resolved in this window
-              </div>
+              quiet("incidents resolved")
             ) : (
               <>
                 <Chart

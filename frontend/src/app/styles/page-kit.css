@@ -267,3 +267,42 @@ a.hd-chip:hover { border-color: var(--ecc-border-strong); background: var(--ecc-
 
 @media (max-width: 1100px) { .hd-grid { grid-template-columns: minmax(0, 1fr); } .hd-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .hd-chart__note { margin: 0 0 8px; padding: 6px 10px; border-radius: 7px; font-size: 12px; color: var(--ecc-text-muted); background: color-mix(in srgb, var(--ecc-warn) 10%, transparent); border: 1px solid color-mix(in srgb, var(--ecc-warn) 30%, transparent); }
+
+/* -- bar list (ranked breakdowns) --------------------------------------- */
+.pk-barlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.pk-barlist__row { display: grid; grid-template-columns: minmax(90px, 38%) 1fr auto; align-items: center; gap: 10px; font-size: 12px; color: var(--ecc-text); text-decoration: none; padding: 2px 4px; border-radius: 6px; }
+a.pk-barlist__row:hover { background: var(--ecc-surface-raised); }
+.pk-barlist__label { color: var(--ecc-text); }
+.pk-barlist__track { height: 8px; border-radius: 999px; background: var(--ecc-track); overflow: hidden; }
+.pk-barlist__fill { display: block; height: 100%; border-radius: 999px; }
+.pk-barlist__value { font-variant-numeric: tabular-nums; color: var(--ecc-text-muted); min-width: 48px; text-align: right; }
+.pk-empty-note { margin: 8px 0; font-size: 12px; color: var(--ecc-text-muted); }
+
+/* -- day columns (stacked daily volume) --------------------------------- */
+.pk-daycols { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.pk-daycols__plot { display: flex; align-items: flex-end; gap: 3px; border-bottom: 1px solid var(--ecc-border); padding-top: 4px; }
+.pk-daycols__col { flex: 1 1 0; min-width: 3px; height: 100%; display: flex; flex-direction: column-reverse; justify-content: flex-start; gap: 1px; }
+.pk-daycols__col > span { display: block; width: 100%; border-radius: 2px 2px 0 0; min-height: 2px; }
+.pk-daycols__col:hover > span { filter: brightness(1.25); }
+.pk-daycols__zero { height: 2px !important; background: var(--ecc-track); }
+.pk-daycols__axis { display: flex; gap: 3px; font-size: 10px; color: var(--ecc-text-muted); }
+.pk-daycols__axis > span { flex: 1 1 0; min-width: 3px; white-space: nowrap; overflow: visible; }
+.pk-daycols__legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--ecc-text-muted); }
+.pk-daycols__legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+
+/* -- donut + legend side by side ---------------------------------------- */
+.pk-donut-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.pk-donut-row > ul { flex: 1 1 160px; min-width: 0; }
+
+/* -- inline success-rate bar and panel sub-heading ---------------------- */
+.pk-rate { display: inline-flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
+.pk-rate__track { width: 80px; height: 6px; border-radius: 999px; background: var(--ecc-track); overflow: hidden; display: inline-block; }
+.pk-rate__track > span { display: block; height: 100%; border-radius: 999px; }
+.pk-subhead { margin: 14px 0 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ecc-text-muted); }
+
+/* -- reports index: live headline cards --------------------------------- */
+.pk-tiles--reports { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.pk-report-card { gap: 6px; min-height: 190px; }
+.pk-report-card__top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pk-report-card__headline { margin: 4px 0 0; font-size: 24px; font-weight: 700; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.pk-report-card__detail { margin: 0; font-size: 12px; color: var(--ecc-text-muted); }

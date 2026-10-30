@@ -3450,3 +3450,63 @@ export async function getCloudsOverview(): Promise<CloudsOverview> {
   return apiFetch<CloudsOverview>("/api/cloud/status");
 }
 
+
+// ---------------------------------------------------------------------------
+// Runbooks (GET /api/runbooks, GET /api/runbooks/history)
+// Mirrors backend/app/schemas/runbook.py.
+// ---------------------------------------------------------------------------
+
+export type RunbookExecutionMode = "manual" | "semi_automated" | "automated";
+export type RunbookExecutionStatus =
+  | "pending_approval"
+  | "approved"
+  | "rejected"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "rolled_back";
+
+export interface RunbookSummary {
+  id: string;
+  tenant_id: string;
+  sop_id: string;
+  sop_version_id: string;
+  name: string;
+  description: string | null;
+  execution_mode: RunbookExecutionMode;
+  steps: Record<string, unknown>[];
+  automation_ref: string | null;
+  requires_approval: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RunbookExecution {
+  id: string;
+  tenant_id: string;
+  runbook_id: string;
+  incident_id: string | null;
+  status: RunbookExecutionStatus;
+  operator_id: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  rejection_reason: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  duration_seconds: number | null;
+  result_notes: string | null;
+  rollback_required: boolean;
+  rollback_performed: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export function listRunbooks(limit = 200): Promise<RunbookSummary[]> {
+  return apiFetch<RunbookSummary[]>(`/api/runbooks?limit=${limit}`);
+}
+
+/** Execution history, most recent first. */
+export function listRunbookHistory(limit = 200): Promise<RunbookExecution[]> {
+  return apiFetch<RunbookExecution[]>(`/api/runbooks/history?limit=${limit}`);
+}

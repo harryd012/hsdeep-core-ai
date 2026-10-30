@@ -13,7 +13,7 @@
 
 export const NOT_MEASURED = "—";
 
-export const RANGES = ["7d", "14d", "30d"] as const;
+export const RANGES = ["7d", "14d", "30d", "90d"] as const;
 export type CommandCenterRange = (typeof RANGES)[number];
 export const DEFAULT_RANGE: CommandCenterRange = "7d";
 
