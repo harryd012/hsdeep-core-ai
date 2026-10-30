@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 # dependency, not a source of truth (PostgreSQL is), so a hung or unreachable
 # Redis must fail FAST rather than block a request indefinitely: the connect
 # timeout bounds the TCP/TLS handshake and the socket timeout bounds every
-# subsequent operation. Callers that must not fail closed (e.g. the signup
-# rate limiter in billing.py) already fail open on any Redis error.
+# subsequent operation. Each caller decides its own outage behaviour: the
+# signup rate limiter (billing.py) falls back to a per-process limit.
 _REDIS_CONNECT_TIMEOUT_SECONDS = 2.0
 _REDIS_SOCKET_TIMEOUT_SECONDS = 5.0
 

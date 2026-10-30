@@ -10,6 +10,7 @@ Exposes:
 from __future__ import annotations
 
 import logging
+from collections import defaultdict, deque
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -717,43 +718,74 @@ async def get_billing_portal(
 
 # ---- Helpers ---------------------------------------------------------------
 
+class _LocalWindow:
+    """In-process sliding window, the fallback when Redis is unavailable.
+
+    Same limit as the shared one, counted per API process: with N replicas an
+    IP can reach at most N x the limit during a Redis outage. That is a bound,
+    unlike failing open, which allowed unlimited signups.
+    """
+
+    def __init__(self) -> None:
+        self._hits: dict[str, deque[float]] = defaultdict(deque)
+
+    def acquire(self, key: str, limit: int, window_seconds: int) -> bool:
+        now = time.monotonic()
+        hits = self._hits[key]
+        while hits and hits[0] <= now - window_seconds:
+            hits.popleft()
+        if len(hits) >= limit:
+            return False
+        hits.append(now)
+        if len(self._hits) > 100_000:  # bound memory under a flood of IPs
+            self._hits.clear()
+        return True
+
+
+_signup_local_window = _LocalWindow()
+
+
+def _signup_rate_exceeded() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=(
+            f"Too many signups from this IP. Please try again in "
+            f"{_SIGNUP_RATE_WINDOW_SECONDS // 3600} hour(s)."
+        ),
+    )
+
+
 async def _check_signup_rate_limit(client_ip: str) -> None:
     """Enforce 5 signups per IP per hour using a Redis sliding window.
 
-    Returns 429 with a clear message when the limit is exceeded. Falls back
-    to allowing the request if Redis is unavailable (fail-open) so a Redis
-    outage never blocks legitimate signups.
+    Returns 429 when the limit is exceeded. If Redis is unavailable the
+    request is checked against an in-process window with the same limit
+    (never allowed unchecked) and the outage is logged at error level.
     """
-    import redis as redis_lib
+    from app.core.redis import redis_client
 
+    key = f"{_SIGNUP_RATE_KEY_PREFIX}{client_ip}"
+    now = time.time()
     try:
-        r = redis_lib.Redis.from_url(settings.redis_url, socket_connect_timeout=2)
-        key = f"{_SIGNUP_RATE_KEY_PREFIX}{client_ip}"
-        now = int(time.time())
-        window_start = now - _SIGNUP_RATE_WINDOW_SECONDS
-
-        # Remove entries older than the window, then count current ones.
-        pipe = r.pipeline()
-        pipe.zremrangebyscore(key, 0, window_start)
+        pipe = redis_client.pipeline()
+        pipe.zremrangebyscore(key, 0, now - _SIGNUP_RATE_WINDOW_SECONDS)
         pipe.zcard(key)
-        count = pipe.execute()[1]
-
+        count = (await pipe.execute())[1]
         if count >= _SIGNUP_RATE_LIMIT:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=(
-                    f"Too many signups from this IP. Please try again in "
-                    f"{_SIGNUP_RATE_WINDOW_SECONDS // 3600} hour(s)."
-                ),
-            )
-
-        # Record this signup attempt.
-        r.zadd(key, {str(now): now})
-        r.expire(key, _SIGNUP_RATE_WINDOW_SECONDS)
+            raise _signup_rate_exceeded()
+        # Unique member per attempt so two signups in the same second count twice.
+        await redis_client.zadd(key, {f"{now}:{uuid.uuid4().hex[:8]}": now})
+        await redis_client.expire(key, _SIGNUP_RATE_WINDOW_SECONDS)
+        return
     except HTTPException:
         raise
-    except Exception:  # noqa: BLE001 - fail-open on Redis outage
-        logger.warning("Signup rate limit check failed (Redis unavailable) - allowing request.")
+    except Exception as exc:  # noqa: BLE001 - any Redis failure uses the local window
+        logger.error(
+            "Signup rate limit: Redis unavailable (%s); enforcing the per-process limit instead.",
+            type(exc).__name__,
+        )
+    if not _signup_local_window.acquire(key, _SIGNUP_RATE_LIMIT, _SIGNUP_RATE_WINDOW_SECONDS):
+        raise _signup_rate_exceeded()
 
 
 def _slugify(name: str) -> str:
