@@ -6,7 +6,16 @@ import {
   Loader2, RefreshCw, Search,
 } from "lucide-react";
 import { getSop, listSops, type SOP, type SOPVersion } from "@/lib/api";
-import { SOP_CATEGORY_COLORS, SOP_SEED } from "@/lib/mock/sop-seed";
+
+const SOP_CATEGORY_COLORS: Record<string, string> = {
+  availability: "#ff4d4f",
+  capacity: "#00d38d",
+  performance: "#ffb200",
+  connectivity: "#3aa9ff",
+  security: "#9b6bff",
+  configuration: "#22d3ee",
+  other: "#82a0ac",
+};
 
 export default function SopEnginePage() {
   return <SopEngine />;
@@ -17,7 +26,6 @@ function SopEngine() {
   const [sops, setSops] = useState<SOP[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [usingSeed, setUsingSeed] = useState(false);
   const [search, setSearch] = useState("");
   const [activeCat, setActiveCat] = useState<string>("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -29,20 +37,11 @@ function SopEngine() {
     setLoading(true);
     setError(null);
     try {
-      const data = await listSops({ limit: 200 });
-      if (data.length > 0) {
-        setSops(data);
-        setUsingSeed(false);
-      } else {
-        // Tenant has no SOPs seeded yet — fall back to the sample library so
-        // the grid stays demonstrable instead of rendering a blank page.
-        setSops(SOP_SEED);
-        setUsingSeed(true);
-      }
+      // Only the tenant's own SOPs: an empty library is shown as empty, never
+      // padded with sample entries.
+      setSops(await listSops({ limit: 200 }));
     } catch {
-      setError("Could not reach the SOP API — showing the built-in sample library.");
-      setSops(SOP_SEED);
-      setUsingSeed(true);
+      setError("Could not load SOPs from the SOP library. Try Refresh.");
     } finally {
       setLoading(false);
     }
@@ -124,7 +123,7 @@ function SopEngine() {
           <div>
             <h1 className="text-2xl font-bold tracking-wide text-gray-900">SOP ENGINE</h1>
             <p className="mt-1 text-sm text-gray-500">
-              Standard Operating Procedures — {total} total{usingSeed ? " (sample library)" : ""}
+              Standard Operating Procedures — {error && total === 0 ? "unavailable" : `${total} total`}
             </p>
           </div>
           <button
@@ -173,7 +172,13 @@ function SopEngine() {
         {filtered.length === 0 ? (
           <div className="rounded-lg border border-gray-200 bg-white p-10 text-center">
             <BookOpen size={32} className="mx-auto mb-3 text-gray-300" />
-            <p className="text-sm text-gray-500">No SOPs match your search or filter.</p>
+            <p className="text-sm text-gray-500">
+              {total === 0
+                ? error
+                  ? "SOPs could not be loaded."
+                  : "No SOPs in this tenant yet. Import or create one to use it in incident recommendations."
+                : "No SOPs match your search or filter."}
+            </p>
           </div>
         ) : (
           <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(240px,1fr))]">

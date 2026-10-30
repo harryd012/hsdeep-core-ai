@@ -158,6 +158,7 @@ async def get_topology_quick_summary(
         interfaces_total,
         sensors_total,
         status_counts,
+        devices_linked,
     ) = await asyncio.gather(
         _count(lambda s: DeviceRepository(s).count(tenant_id)),
         _count(lambda s: SiteRepository(s).count(tenant_id)),
@@ -166,6 +167,7 @@ async def get_topology_quick_summary(
         _count(lambda s: InterfaceRepository(s).count_for_tenant(tenant_id)),
         _count(lambda s: SensorRepository(s).count_for_tenant(tenant_id)),
         _count(lambda s: DeviceRepository(s).counts_by_status(tenant_id)),
+        _count(lambda s: ResourceRelationshipRepository(s).count_linked_devices(tenant_id)),
     )
 
     # Map raw status strings → canonical 4-bucket health vocabulary.
@@ -181,6 +183,7 @@ async def get_topology_quick_summary(
         sites_total=sites_total,
         monitoring_sources_total=sources_total,
         relationships_total=relationships_total,
+        devices_linked=devices_linked,
         interfaces_total=interfaces_total,
         sensors_total=sensors_total,
         by_health=by_health,

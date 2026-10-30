@@ -112,6 +112,8 @@ export interface TopologyQuickSummary {
   sites_total: number;
   monitoring_sources_total: number;
   relationships_total: number;
+  /** Devices with at least one recorded relationship or topology link. */
+  devices_linked?: number;
   interfaces_total: number;
   sensors_total: number;
   by_health: Record<string, number>;

@@ -158,6 +158,31 @@ class ResourceRelationshipRepository:
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
+    async def count_linked_devices(self, tenant_id: uuid.UUID) -> int:
+        """Devices with at least one recorded relationship or topology link.
+
+        This is what a topology can actually connect; every other device is
+        drawn unlinked. Counted in SQL (no row materialisation).
+        """
+        from sqlalchemy import union
+
+        from app.models.topology_link import TopologyLink
+
+        rel = (ResourceRelationship.tenant_id == tenant_id, ResourceRelationship.is_deleted.is_(False))
+        link = (TopologyLink.tenant_id == tenant_id, TopologyLink.is_deleted.is_(False))
+        ends = union(
+            select(ResourceRelationship.source_resource_id.label("device_id")).where(*rel),
+            select(ResourceRelationship.target_resource_id.label("device_id")).where(*rel),
+            select(TopologyLink.device_a_id.label("device_id")).where(*link),
+            select(TopologyLink.device_b_id.label("device_id")).where(*link),
+        ).subquery()
+        stmt = select(func.count()).select_from(Device).where(
+            Device.tenant_id == tenant_id,
+            Device.is_deleted.is_(False),
+            Device.id.in_(select(ends.c.device_id)),
+        )
+        return int((await self.db.execute(stmt)).scalar_one())
+
     async def count(
         self,
         tenant_id: uuid.UUID,

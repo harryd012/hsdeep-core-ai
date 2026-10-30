@@ -34,6 +34,7 @@ import {
 } from "@/lib/commandCenter/format";
 import { CardShell, DonutRing, KpiTile, Legend, type CardState } from "./primitives";
 import SiteHoneycomb from "./SiteHoneycomb";
+import CoverageRow from "./CoverageRow";
 import AppearanceMenu from "@/components/AppearanceMenu";
 import SituationBriefing from "./SituationBriefing";
 import { getAlertSummary } from "@/lib/api";
@@ -563,6 +564,8 @@ export default function ExecutiveCommandCenter() {
       <SituationBriefing input={briefingInput} loading={brief.isLoading && !brief.data} />
 
       <KpiStrip brief={brief.data} loading={brief.isLoading && !brief.data} error={!!brief.error} />
+
+      <CoverageRow />
 
       <div className="ecc-row">
         <CardShell
