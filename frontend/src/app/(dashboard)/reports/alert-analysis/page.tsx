@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import ReportsBackButton from "@/components/reports/ReportsBackButton";
-import { apiFetch, DEFAULT_TENANT_ID } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 
 interface AlertStats {
   total: number;
@@ -19,7 +19,7 @@ export default function AlertAnalysisPage() {
     let cancelled = false;
     async function load() {
       try {
-        const data = await apiFetch<AlertStats>(`/api/alerts/summary?tenant_id=${DEFAULT_TENANT_ID}`);
+        const data = await apiFetch<AlertStats>(`/api/alerts/summary`);
         if (!cancelled) {
           setStats(data);
           setError(null);

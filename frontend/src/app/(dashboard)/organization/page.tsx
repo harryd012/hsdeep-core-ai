@@ -57,7 +57,7 @@ export default function OrganizationPage() {
 
   const tree = useMemo((): OrgNode[] => {
     const tenantId = getTenantId();
-    const tenantName = user?.tenant_name ?? (tenantId === "00000000-0000-0000-0000-000000000000" ? "Default Organization" : `Tenant ${tenantId.slice(0, 8)}`);
+    const tenantName = user?.tenant_name ?? (tenantId ? `Tenant ${tenantId.slice(0, 8)}` : "—");
     const tenants = user?.accessible_tenants ?? [];
     return [{
       id: "root",

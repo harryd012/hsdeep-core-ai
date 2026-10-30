@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import ReportsBackButton from "@/components/reports/ReportsBackButton";
-import { apiFetch, DEFAULT_TENANT_ID } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 
 interface CollectorRun {
   id: string;
@@ -24,7 +24,7 @@ export default function CollectorPerformancePage() {
     let cancelled = false;
     async function load() {
       try {
-        const data = await apiFetch<CollectorRun[]>(`/api/collector-runs?tenant_id=${DEFAULT_TENANT_ID}&limit=100`);
+        const data = await apiFetch<CollectorRun[]>(`/api/collector-runs?limit=100`);
         if (!cancelled) {
           setRuns(data);
           setError(null);

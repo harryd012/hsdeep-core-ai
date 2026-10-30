@@ -40,7 +40,10 @@ export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost
  * - Server-side rendering contexts
  * - Transitional migration period
  */
-export const DEFAULT_TENANT_ID = process.env.NEXT_PUBLIC_DEFAULT_TENANT_ID ?? "00000000-0000-0000-0000-000000000000";
+// No fallback tenant: the backend derives the tenant from the signed-in
+// principal (get_tenant_id) and never reads a tenant from the query string,
+// so an unset value stays empty instead of pretending to be a tenant.
+export const DEFAULT_TENANT_ID = process.env.NEXT_PUBLIC_DEFAULT_TENANT_ID ?? "";
 
 const AUTH_TOKEN_KEY = "hsdeep_auth_token";
 const REFRESH_TOKEN_KEY = "hsdeep_refresh_token";
@@ -73,7 +76,6 @@ export const AUTH_BOOTSTRAP = process.env.NEXT_PUBLIC_AUTH_DEV_BOOTSTRAP === "tr
 // bundle, so a fallback password here would ship to every browser.
 export const AUTH_EMAIL = process.env.NEXT_PUBLIC_AUTH_EMAIL ?? "";
 export const AUTH_PASSWORD = process.env.NEXT_PUBLIC_AUTH_PASSWORD ?? "";
-export const AUTH_TENANT_ID = process.env.NEXT_PUBLIC_AUTH_TENANT_ID ?? DEFAULT_TENANT_ID;
 
 // ---------------------------------------------------------------------------
 // Auth token management
@@ -1247,8 +1249,14 @@ async function apiFetchWithRetry<T>(
   return (await res.json()) as T;
 }
 
-export function withTenant(tenantId: string, extra?: Record<string, string>): URLSearchParams {
-  return new URLSearchParams({ tenant_id: tenantId, ...extra });
+/**
+ * Query parameters for a tenant-scoped read. The tenant is NOT sent: the
+ * server takes it from the authenticated principal, and a superuser's tenant
+ * switch travels in the validated, audited X-Tenant-Id header. `tenantId` is
+ * kept in the signature so existing callers compile unchanged.
+ */
+export function withTenant(_tenantId: string, extra?: Record<string, string>): URLSearchParams {
+  return new URLSearchParams(extra ?? {});
 }
 
 // ---------------------------------------------------------------------------

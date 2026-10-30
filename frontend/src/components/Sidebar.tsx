@@ -185,7 +185,7 @@ export default function Sidebar() {
             title={activeTenant?.name ?? activeTenant?.id ?? getTenantId()}
             onClick={() => { if (canSwitch) setTenantOpen((o) => !o); }}
           >
-            {activeTenant?.name ?? (activeTenant?.id === "00000000-0000-0000-0000-000000000000" ? "Default" : (activeTenant?.id?.slice(0, 8) ?? getTenantId().slice(0, 8)))}
+            {activeTenant?.name ?? (activeTenant?.id?.slice(0, 8) || getTenantId().slice(0, 8) || "—")}
           </button>
 
           {canSwitch && tenantOpen && (

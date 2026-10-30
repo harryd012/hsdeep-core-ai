@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import ReportsBackButton from "@/components/reports/ReportsBackButton";
-import { apiFetch, DEFAULT_TENANT_ID } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 
 interface SOPVersion {
   id: string;
@@ -29,7 +29,7 @@ export default function SOPExecutionLogPage() {
     let cancelled = false;
     async function load() {
       try {
-        const data = await apiFetch<SOP[]>(`/api/sops?tenant_id=${DEFAULT_TENANT_ID}&limit=50`);
+        const data = await apiFetch<SOP[]>(`/api/sops?limit=50`);
         if (!cancelled) {
           setSOPs(data);
           setError(null);

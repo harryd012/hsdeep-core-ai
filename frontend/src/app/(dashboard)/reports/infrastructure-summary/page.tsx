@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import ReportsBackButton from "@/components/reports/ReportsBackButton";
-import { apiFetch, DEFAULT_TENANT_ID } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 
 interface Site { id: string; name: string; }
 interface Device { id: string; name: string; device_type: string; status: string; }
@@ -18,8 +18,8 @@ export default function InfrastructureSummaryPage() {
     async function load() {
       try {
         const [sitesData, devicesData] = await Promise.all([
-          apiFetch<Site[]>(`/api/infrastructure/sites?tenant_id=${DEFAULT_TENANT_ID}`),
-          apiFetch<Device[]>(`/api/devices?tenant_id=${DEFAULT_TENANT_ID}&limit=500`),
+          apiFetch<Site[]>(`/api/infrastructure/sites`),
+          apiFetch<Device[]>(`/api/devices?limit=500`),
         ]);
         if (!cancelled) {
           setSites(sitesData);
