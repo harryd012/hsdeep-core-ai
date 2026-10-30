@@ -318,7 +318,7 @@ function KpiStrip({ brief, loading, error }: { brief: CommandCenterBrief | undef
         delta={kpis && prev ? computeDelta(kpis.mtta_minutes, prev.mtta_minutes, "lower-is-better") : null}
         deltaSuffix="vs prev 24h"
         loading={loading}
-        naText={naText}
+        naText={brief ? "None acknowledged in 24h" : naText}
         unavailableReason={brief ? "No incident was acknowledged in the last 24h" : reason}
       />
       <KpiTile
@@ -330,7 +330,7 @@ function KpiStrip({ brief, loading, error }: { brief: CommandCenterBrief | undef
         delta={kpis && prev ? computeDelta(kpis.mttr_minutes, prev.mttr_minutes, "lower-is-better") : null}
         deltaSuffix="vs prev 24h"
         loading={loading}
-        naText={naText}
+        naText={brief ? "None resolved in 24h" : naText}
         unavailableReason={brief ? "No incident was resolved in the last 24h" : reason}
       />
     </div>
@@ -660,12 +660,13 @@ export default function ExecutiveCommandCenter() {
           {a &&
             (siteHealth.data && sites.length === 0 ? (
               <div className="ecc-quiet" role="status">
-                <p className="ecc-quiet__title">No sites defined</p>
+                <p className="ecc-quiet__title">Ranked by site once sites exist</p>
                 <p className="ecc-quiet__detail">
-                  Incidents can only be ranked by site once devices belong to one.
-                  {siteHealth.data.unassigned_devices ? ` ${siteHealth.data.unassigned_devices} devices are unassigned.` : ""}
+                  {a.total_opened
+                    ? `${a.total_opened.toLocaleString("en-US")} incident${a.total_opened === 1 ? "" : "s"} opened in this window, none attributable to a site yet.`
+                    : "No incidents opened in this window either."}{" "}
+                  See Infrastructure Overview to set sites up.
                 </p>
-                <a className="ecc-quiet__action" href="/organization">Set up sites</a>
               </div>
             ) : a.total_opened === 0 ? (
               quiet("incidents opened")
@@ -678,12 +679,28 @@ export default function ExecutiveCommandCenter() {
           title="Infrastructure Overview (Sites)"
           info="Each site's worst device state and its active incident count. Select a site to filter the dashboard."
           aside={siteHealth.data?.unassigned_devices ? `${siteHealth.data.unassigned_devices} devices unassigned` : undefined}
-          state={stateOf(siteHealth, sites.length === 0)}
-          emptyText="No sites defined yet."
+          state={stateOf(siteHealth, false)}
           onRetry={() => siteHealth.refetch()}
           className="ecc-span-3"
         >
-          <SiteHoneycomb sites={sites} selectedSiteId={filters.siteId} onSelect={(siteId) => update({ siteId })} />
+          {siteHealth.data && sites.length === 0 ? (
+            <div className="ecc-quiet" role="status">
+              <p className="ecc-quiet__title">No sites yet</p>
+              <p className="ecc-quiet__detail">
+                {siteHealth.data.unassigned_devices
+                  ? `${siteHealth.data.unassigned_devices} devices are monitored but belong to no site. `
+                  : ""}
+                Sites unlock per-location health, the site filter on this page and site impact on incidents.
+              </p>
+              <ol className="ecc-quiet__steps">
+                <li>Create your locations in Organization</li>
+                <li>Assign devices to them</li>
+              </ol>
+              <a className="ecc-quiet__action" href="/organization">Set up sites</a>
+            </div>
+          ) : (
+            <SiteHoneycomb sites={sites} selectedSiteId={filters.siteId} onSelect={(siteId) => update({ siteId })} />
+          )}
         </CardShell>
 
         <CollectorHealthCard q={brief} />
@@ -711,7 +728,19 @@ export default function ExecutiveCommandCenter() {
           onRetry={() => analytics.refetch()}
           className="ecc-span-4"
         >
-          {a && <Heatmap grid={a.heatmap} />}
+          {a &&
+            (a.heatmap.every((row) => row.every((n) => n === 0)) ? (
+              <div className="ecc-quiet" role="status">
+                <p className="ecc-quiet__title">No incidents opened in the last {a.heatmap_days / 7} weeks</p>
+                <p className="ecc-quiet__detail">
+                  {lastIncidentAt
+                    ? `Last incident activity ${new Date(lastIncidentAt).toLocaleDateString()}. The heatmap fills in as incidents open, revealing recurring load windows.`
+                    : "The heatmap fills in as incidents open, revealing recurring load windows."}
+                </p>
+              </div>
+            ) : (
+              <Heatmap grid={a.heatmap} />
+            ))}
         </CardShell>
 
         <CardShell
