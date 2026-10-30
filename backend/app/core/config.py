@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 30
+    # How long one process trusts a positive "session is live" check. Bounds
+    # how long a revoked session's access token can still be used on another
+    # process. 0 checks the database on every request.
+    session_check_cache_seconds: int = 10
     # Master switch for the phased auth cutover. While False (default), the
     # `require_permission`/`get_current_user` dependencies still authenticate
     # a presented token but routes that have NOT yet been migrated keep their

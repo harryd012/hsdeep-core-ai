@@ -96,6 +96,7 @@ class AccountService:
         await self.users.set_password(user, password_hash=auth.hash_password(password))
         await self.users.clear_lockout(user)
         await RefreshTokenRepository(self.db).revoke_all_for_user(user.id)
+        auth.forget_session()  # access tokens of the ended sessions stop at once
 
     # -- password reset -------------------------------------------------------
 

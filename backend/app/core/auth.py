@@ -112,9 +112,10 @@ def create_access_token(
     email: str,
     is_superuser: bool,
     permissions: frozenset[str],
+    session_id: uuid.UUID | None = None,
 ) -> str:
     now = datetime.now(timezone.utc)
-    claims = {
+    claims: dict = {
         "sub": str(user_id),
         "tid": str(tenant_id),
         "email": email,
@@ -124,6 +125,8 @@ def create_access_token(
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=settings.access_token_expire_minutes)).timestamp()),
     }
+    if session_id is not None:
+        claims["sid"] = str(session_id)
     return jwt.encode(claims, settings.effective_jwt_secret, algorithm=settings.jwt_algorithm)
 
 
@@ -345,6 +348,48 @@ def _override_applied(principal: Principal, payload: dict) -> bool:
     return principal.tenant_id != uuid.UUID(payload["tid"])
 
 
+# -- Session liveness -------------------------------------------------------
+# Positive results are cached per process for SESSION_CHECK_CACHE_SECONDS so
+# an authenticated request does not always pay a database round trip. A
+# revocation in this process clears the entry at once; in another process it
+# takes effect within the cache window (default 10 s, 0 disables caching).
+_live_sessions: dict[str, float] = {}
+
+
+def forget_session(session_id: uuid.UUID | str | None = None) -> None:
+    """Drop one cached session, or all of them when no id is given."""
+    if session_id is None:
+        _live_sessions.clear()
+    else:
+        _live_sessions.pop(str(session_id), None)
+
+
+async def session_is_live(session_id: str) -> bool:
+    import time
+
+    from app.core.db import AsyncSessionLocal
+    from app.repositories.refresh_token_repository import RefreshTokenRepository
+
+    ttl = settings.session_check_cache_seconds
+    now = time.monotonic()
+    cached = _live_sessions.get(session_id)
+    if ttl > 0 and cached is not None and now - cached < ttl:
+        return True
+    try:
+        sid = uuid.UUID(session_id)
+    except ValueError:
+        return False
+    async with AsyncSessionLocal() as db:
+        live = await RefreshTokenRepository(db).session_is_live(sid)
+    if live and ttl > 0:
+        if len(_live_sessions) > 50_000:
+            _live_sessions.clear()
+        _live_sessions[session_id] = now
+    else:
+        _live_sessions.pop(session_id, None)
+    return live
+
+
 def _publish_principal(request: Request, principal: Principal) -> None:
     """Expose the successfully-resolved principal on ``request.state``.
 
@@ -379,7 +424,7 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Try JWT first (fast path - no DB round-trip).
+    # Try JWT first.
     try:
         payload = _decode_access_token(token)
         principal = _principal_from_payload(payload, x_tenant_id)
@@ -387,6 +432,15 @@ async def get_current_user(
         # Not a valid JWT - fall through to API key resolution.
         pass
     else:
+        # Server-side revocation: an access token bound to a sign-in session
+        # stops working as soon as the session is revoked (logout, password
+        # reset, refresh-token replay) or the user is disabled.
+        if payload.get("sid") and not await session_is_live(payload["sid"]):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session has ended. Sign in again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         # P0 hardening: validate the override target before trusting it.
         if _override_applied(principal, payload):
             await _validate_override_tenant(principal.tenant_id)

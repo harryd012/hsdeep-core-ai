@@ -74,10 +74,11 @@ class AuthService:
 
     # -- Token minting ----------------------------------------------------
 
-    async def _issue_tokens(self, user: User) -> tuple[str, str, int]:
+    async def _issue_tokens(self, user: User, session_id: uuid.UUID | None = None) -> tuple[str, str, int]:
         """Mint an access JWT + a rotated refresh token for `user`. The
         refresh token plaintext is returned to the caller and only its hash is
-        persisted."""
+        persisted. A new sign-in starts a session; a refresh keeps it."""
+        session_id = session_id or uuid.uuid4()
         perms = UserRepository.resolved_permissions(user)
         access = auth.create_access_token(
             user_id=user.id,
@@ -85,6 +86,7 @@ class AuthService:
             email=user.email,
             is_superuser=user.is_superuser,
             permissions=perms,
+            session_id=session_id,
         )
         refresh_plain = auth.generate_refresh_token()
         await self.refresh_tokens.create(
@@ -93,6 +95,7 @@ class AuthService:
             token_hash=auth.hash_refresh_token(refresh_plain),
             expires_at=datetime.now(timezone.utc)
             + timedelta(days=settings.refresh_token_expire_days),
+            session_id=session_id,
         )
         expires_in = settings.access_token_expire_minutes * 60
         return access, refresh_plain, expires_in
@@ -156,20 +159,42 @@ class AuthService:
 
     async def refresh(self, *, refresh_token: str) -> tuple[str, str, int]:
         token_hash = auth.hash_refresh_token(refresh_token)
-        row = await self.refresh_tokens.get_active_by_hash(token_hash)
-        if row is None:
+        row = await self.refresh_tokens.get_by_hash(token_hash)
+        if row is not None and row.revoked_at is not None and row.session_id is not None:
+            # Replay: a rotated (already used) token was presented again, so
+            # the token may be stolen. End the whole session, attacker and
+            # legitimate holder alike; the user signs in again.
+            await self.refresh_tokens.revoke_session(row.session_id)
+            auth.forget_session(row.session_id)
+            raise InvalidRefreshToken("Refresh token was already used; the session has been ended")
+        if row is None or row.revoked_at is not None or row.expires_at <= datetime.now(timezone.utc):
             raise InvalidRefreshToken("Invalid or expired refresh token")
         user = await self.users.get_by_id_any_tenant(row.user_id)
         if user is None or not user.is_active:
             raise InvalidRefreshToken("Invalid or expired refresh token")
-        # Rotate: revoke the presented token before issuing the replacement.
+        # Rotate: revoke the presented token before issuing the replacement,
+        # keeping the session so access tokens in flight stay valid.
         await self.refresh_tokens.revoke(row)
-        return await self._issue_tokens(user)
+        return await self._issue_tokens(user, session_id=row.session_id)
 
-    async def logout(self, *, refresh_token: str) -> None:
+    async def logout(self, *, refresh_token: str) -> uuid.UUID | None:
+        """End the sign-in session the refresh token belongs to; its access
+        tokens stop working at once. Returns the session id, if any."""
         row = await self.refresh_tokens.get_active_by_hash(auth.hash_refresh_token(refresh_token))
-        if row is not None:
+        if row is None:
+            return None
+        if row.session_id is not None:
+            await self.refresh_tokens.revoke_session(row.session_id)
+            auth.forget_session(row.session_id)
+        else:
             await self.refresh_tokens.revoke(row)
+        return row.session_id
+
+    async def logout_everywhere(self, user_id: uuid.UUID) -> int:
+        """End every session of a user (all devices)."""
+        count = await self.refresh_tokens.revoke_all_for_user(user_id)
+        auth.forget_session()
+        return count
 
     # -- Tenant RBAC provisioning ----------------------------------------
 
@@ -226,9 +251,9 @@ class AuthService:
         await self.users.set_password(user, password_hash=auth.hash_password(password))
         # An admin reset is the unlock path for a locked-out user.
         await self.users.clear_lockout(user)
-        # Force re-auth everywhere: a password change should invalidate
-        # outstanding refresh tokens.
-        await self.refresh_tokens.revoke_all_for_user(user.id)
+        # Force re-auth everywhere: a password change ends every session, so
+        # outstanding access tokens stop working too.
+        await self.logout_everywhere(user.id)
         return user
 
     async def assign_roles(self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, role_ids: list[uuid.UUID]) -> User:
@@ -236,7 +261,11 @@ class AuthService:
         if user is None:
             raise NotFound("User not found")
         roles = await self.roles.get_many_by_ids(tenant_id, role_ids)
-        return await self.users.assign_roles(user, roles)
+        user = await self.users.assign_roles(user, roles)
+        # Permissions are carried in the access token, so a role change ends
+        # the user's sessions: a removed permission cannot outlive the change.
+        await self.logout_everywhere(user.id)
+        return user
 
     async def list_users(self, tenant_id: uuid.UUID, *, limit: int, offset: int) -> list[User]:
         return await self.users.list(tenant_id, limit=limit, offset=offset)
@@ -246,7 +275,7 @@ class AuthService:
         if user is None:
             raise NotFound("User not found")
         await self.users.soft_delete(user)
-        await self.refresh_tokens.revoke_all_for_user(user.id)
+        await self.logout_everywhere(user.id)
 
     # -- Role administration ---------------------------------------------
 

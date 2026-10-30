@@ -230,6 +230,9 @@ async def refresh(
     try:
         access, refresh_token, expires_in = await service.refresh(refresh_token=payload.refresh_token)
     except AuthError as exc:
+        # Commit even on failure: a replayed refresh token revokes its whole
+        # session, and that revocation must persist.
+        await db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     await db.commit()
     return TokenResponse(access_token=access, refresh_token=refresh_token, expires_in=expires_in)
@@ -242,6 +245,20 @@ async def logout(
     service: AuthService = Depends(get_auth_service),
 ):
     await service.logout(refresh_token=payload.refresh_token)
+    await db.commit()
+
+
+@router.post("/logout-all", status_code=status.HTTP_204_NO_CONTENT)
+async def logout_all(
+    principal: Principal = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    service: AuthService = Depends(get_auth_service),
+):
+    """End every session of the signed-in user (all devices). API keys are
+    not sessions and are revoked separately."""
+    if principal.user_id.int == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="API keys have no sessions to end")
+    await service.logout_everywhere(principal.user_id)
     await db.commit()
 
 
