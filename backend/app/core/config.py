@@ -195,6 +195,12 @@ class Settings(BaseSettings):
     source_rate_limit_rpm: int = 0
     source_rate_limit_ttl_seconds: int = 120
 
+    # Per-user fair-use cap for session-JWT (web UI) requests, per minute
+    # (app/main.py _RateLimiter). Session traffic is never metered against the
+    # plan's API allowance, so this is what stops scripting against a session
+    # token. Over the cap -> 429 + Retry-After. Nonpositive -> built-in 600.
+    session_rpm_per_user: int = 600
+
     # Local LLM (Ollama) — used by the AI Copilot for intent classification
     # and context summarization only. Defaults suit a local dev Ollama
     # instance; override OLLAMA_HOST / OLLAMA_MODEL in the environment or

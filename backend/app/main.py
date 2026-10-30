@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import asyncio
 import hmac
+import math
 import time
 from collections import defaultdict
 from collections import deque
@@ -322,22 +323,35 @@ async def metrics(request: Request):
 # ---------------------------------------------------
 
 class _RateLimiter:
-    """Sliding-window rate limiter keyed by an arbitrary scope key
-    (``tenant:<uuid>`` for authenticated callers, ``ip:<addr>`` otherwise).
-    The limit itself is supplied per acquire() so authenticated tenants get
-    their plan's api_rate_limit instead of the flat default."""
+    """Sliding-window rate limiter keyed by an arbitrary scope key:
+    ``user:<tid>:<sub>`` for session-JWT (web UI) callers, ``ip:<addr>``
+    otherwise (anonymous, login/refresh, API-key traffic).
 
-    def __init__(self, requests_per_minute: int = 60) -> None:
-        self._default_rpm = requests_per_minute
+    Session keys get the per-user fair-use cap (``session_rpm_per_user``) and
+    are rejected with 429 when over it (``try_acquire``). IP keys keep the flat
+    default and the historical behaviour of waiting for a free slot
+    (``acquire``). The lock is never held across a sleep, so one throttled key
+    cannot stall every other caller."""
+
+    # Measured 2026-10-29: a page load is ~12 calls, steady state 13-30 rpm per
+    # tab (the 5s NOC/SOC pollers are the heaviest, ~50 rpm worst case), so a
+    # 6-tab NOC wall is ~180-300 rpm. 600 leaves ~2x headroom for one human
+    # while capping a script driving its own session token.
+    DEFAULT_SESSION_RPM = 600
+
+    def __init__(self, requests_per_minute: int = 60, session_rpm_per_user: int | None = None) -> None:
+        self._default_rpm = max(requests_per_minute, 1)
+        if session_rpm_per_user is None:
+            session_rpm_per_user = settings.session_rpm_per_user
+        # A missing/nonpositive value falls back to the built-in cap rather
+        # than producing an unbounded or zero limit.
+        self._session_rpm = session_rpm_per_user if session_rpm_per_user > 0 else self.DEFAULT_SESSION_RPM
         self._lock = asyncio.Lock()
         self._windows: dict[str, deque[float]] = defaultdict(deque)
-        # tenant_id -> (expires_at_monotonic, rpm) - avoids a DB hit per request.
-        self._plan_cache: dict[str, tuple[float, int]] = {}
-        self._plan_ttl = 60.0
 
     def key_for_request(self, request) -> str:
-        """Tenant-scoped key when a valid JWT bearer token is present,
-        IP-scoped otherwise (login/refresh/anonymous traffic)."""
+        """User-scoped key when a valid session JWT bearer token is present,
+        IP-scoped otherwise (login/refresh/anonymous/API-key traffic)."""
         auth = request.headers.get("authorization", "")
         if auth.lower().startswith("bearer "):
             try:
@@ -345,98 +359,108 @@ class _RateLimiter:
 
                 payload = _decode_access_token(auth[7:].strip())
                 tid = payload.get("tid")
-                if tid:
-                    return f"tenant:{tid}"
+                sub = payload.get("sub")
+                if tid and sub:
+                    return f"user:{tid}:{sub}"
             except Exception:  # noqa: BLE001 - invalid/expired token falls back to IP
                 pass
         client_ip = request.client.host if request.client else "unknown"
         return f"ip:{client_ip}"
 
     async def rpm_for(self, key: str) -> int:
-        """Requests-per-minute for this key: the tenant plan's
-        api_rate_limit for tenant keys (cached 60s), the flat default
-        otherwise. A missing/nonpositive plan value falls back to the
-        default rather than producing an unbounded or zero limit."""
-        self._default_rpm = max(self._default_rpm, 1)
-        if not key.startswith("tenant:"):
-            return self._default_rpm
-        now = time.monotonic()
-        cached = self._plan_cache.get(key)
-        if cached and cached[0] > now:
-            return cached[1]
-        rpm: int | None = None
-        try:
-            import uuid as _uuid
+        """Requests-per-minute for this key: the per-user session cap for
+        ``user:`` keys, the flat default otherwise."""
+        if key.startswith("user:"):
+            return self._session_rpm
+        return self._default_rpm
 
-            from app.core.db import AsyncSessionLocal
-            from app.repositories.subscription_repository import SubscriptionRepository
-
-            async with AsyncSessionLocal() as db:
-                sub = await SubscriptionRepository(db).get_active(_uuid.UUID(key.split(":", 1)[1]))
-                if sub is not None and sub.plan is not None:
-                    rpm = int(sub.plan.api_rate_limit)
-        except Exception:  # noqa: BLE001 - never let limiter config break requests
-            rpm = None
-        if not rpm or rpm <= 0:
-            rpm = self._default_rpm
-        self._plan_cache[key] = (now + self._plan_ttl, rpm)
-        return rpm
-
-    async def acquire(self, key: str, rpm: int) -> None:
+    async def try_acquire(self, key: str, rpm: int) -> float | None:
+        """Record a request if the key is under ``rpm`` in the last 60s and
+        return None; otherwise record nothing and return the seconds until a
+        slot frees up."""
         now = time.monotonic()
         cutoff = now - 60.0
         async with self._lock:
             window = self._windows[key]
-            while window and window[0] < cutoff:
+            while window and window[0] <= cutoff:
                 window.popleft()
             if len(window) >= rpm:
-                wait = window[0] + 60.0 - now
-                if wait > 0:
-                    await asyncio.sleep(wait)
-                while window and window[0] < now:
-                    window.popleft()
+                return max(window[0] + 60.0 - now, 0.001)
             window.append(now)
+            return None
+
+    async def acquire(self, key: str, rpm: int) -> None:
+        """Wait (outside the lock) until the key has a free slot, then record."""
+        while (wait := await self.try_acquire(key, rpm)) is not None:
+            await asyncio.sleep(wait)
 
 
 class _RateLimitMiddleware(BaseHTTPMiddleware):
-    """Middleware enforcing a sliding-window rate limit scoped per tenant
-    (plan.api_rate_limit) for authenticated traffic and per IP otherwise.
+    """Middleware enforcing a sliding-window rate limit: a per-user fair-use
+    cap for session-JWT (web UI) traffic, rejected with 429 + Retry-After when
+    exceeded, and a flat per-IP limit (waits for a slot) otherwise.
 
     It additionally meters and enforces the tenant's PER-BILLING-PERIOD API
-    quota (``Plan.api_rate_limit``), which is what the plan actually sells and
-    what the Usage UI displays. See ``app/services/metering/api_quota.py``: the
+    quota (``Plan.api_rate_limit``) for API-key requests only - session JWT
+    (web UI) traffic and control-plane paths are never counted. That quota is
+    what the plan actually sells and what the Usage UI displays. See ``app/services/metering/api_quota.py``: the
     same plan field used to be applied only as a per-minute burst ceiling, so a
     50_000/month allowance never blocked anything, and the ``api.call`` meter
     had no callers so usage always read 0.
 
-    The burst window below is deliberately left as-is: it is generous (it uses
-    the period allowance as a per-minute ceiling) and changing it would alter
-    existing behaviour for every tenant. The period quota is the real limit.
+    Session traffic is never metered against that quota, so the per-user cap
+    is what stops a user scripting against their own session token. It no
+    longer uses ``Plan.api_rate_limit`` as a per-minute ceiling (~50_000 rpm on
+    Starter, which never limited anything).
     """
 
-    def __init__(self, app, requests_per_minute: int = 60) -> None:
+    def __init__(self, app, requests_per_minute: int = 60, session_rpm_per_user: int | None = None) -> None:
         super().__init__(app)
-        self._limiter = _RateLimiter(requests_per_minute)
+        self._limiter = _RateLimiter(requests_per_minute, session_rpm_per_user)
 
     async def dispatch(self, request: Request, call_next):
         key = self._limiter.key_for_request(request)
         rpm = await self._limiter.rpm_for(key)
-        await self._limiter.acquire(key, rpm)
+        if key.startswith("user:"):
+            retry_after = await self._limiter.try_acquire(key, rpm)
+            if retry_after is not None:
+                seconds = max(1, math.ceil(retry_after))
+                return JSONResponse(
+                    status_code=HTTP_429_TOO_MANY_REQUESTS,
+                    headers={"Retry-After": str(seconds)},
+                    content={
+                        "error": "rate_limited",
+                        "limit": rpm,
+                        "window_seconds": 60,
+                        "retry_after": seconds,
+                        "message": (
+                            f"Too many requests: the limit is {rpm} per minute per "
+                            f"user. Retry in {seconds}s."
+                        ),
+                    },
+                )
+        else:
+            await self._limiter.acquire(key, rpm)
 
-        if key.startswith("tenant:"):
-            import uuid as _uuid
+        from app.services.metering.api_quota import (
+            api_allowance,
+            api_key_tenant,
+            is_control_plane_path,
+            pending_for,
+            record_api_call,
+        )
 
-            from app.services.metering.api_quota import (
-                api_allowance,
-                pending_for,
-                record_api_call,
-            )
-
-            try:
-                tenant_id = _uuid.UUID(key.split(":", 1)[1])
-            except ValueError:
-                return await call_next(request)
-
+        # Only API-key traffic is metered (see api_quota "Who is metered"):
+        # a session JWT - HSDEEP's own web UI - already got a ``user:`` key
+        # above and is never counted. Session endpoints stay reachable for
+        # everyone so a locked-out tenant can still log in to /usage.
+        if key.startswith("user:") or is_control_plane_path(request.url.path):
+            return await call_next(request)
+        auth = request.headers.get("authorization", "")
+        if not auth.lower().startswith("bearer ") or not auth[7:].strip():
+            return await call_next(request)
+        tenant_id = await api_key_tenant(auth[7:].strip())
+        if tenant_id is not None:
             # Meter the request, then enforce the period allowance. Metering
             # failures are swallowed inside the meter and never break a request.
             await record_api_call(tenant_id)
