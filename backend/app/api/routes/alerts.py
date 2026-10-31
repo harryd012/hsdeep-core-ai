@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from app.core.auth import get_tenant_id
+from app.core.auth import get_actor_user_id, get_tenant_id, require_permission
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -117,23 +117,24 @@ async def get_alert(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/{alert_id}/acknowledge", dependencies=[_active_sub_guard], response_model=AlertOut)
+@router.post("/{alert_id}/acknowledge", dependencies=[Depends(require_permission("alerts.acknowledge")), _active_sub_guard], response_model=AlertOut)
 async def acknowledge_alert(
     alert_id: uuid.UUID,
-    payload: AlertAcknowledge,
+    payload: AlertAcknowledge = AlertAcknowledge(),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
+    actor_id: uuid.UUID | None = Depends(get_actor_user_id),
     db: AsyncSession = Depends(get_db),
     service: AlertService = Depends(get_alert_service),
 ):
     try:
-        alert = await service.acknowledge(alert_id, tenant_id, payload.acknowledged_by)
+        alert = await service.acknowledge(alert_id, tenant_id, actor_id)
     except AlertNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     await db.commit()
     return alert
 
 
-@router.post("/{alert_id}/resolve", dependencies=[_active_sub_guard], response_model=AlertOut)
+@router.post("/{alert_id}/resolve", dependencies=[Depends(require_permission("alerts.resolve")), _active_sub_guard], response_model=AlertOut)
 async def resolve_alert(
     alert_id: uuid.UUID,
     payload: AlertResolve,

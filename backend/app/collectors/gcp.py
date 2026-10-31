@@ -62,6 +62,7 @@ def _import_compute() -> Any:
 class GcpCollector(BaseCollector):
     display_name = "Google Cloud Platform"
     implemented = True
+    category = "cloud"
 
     # -- config helpers -------------------------------------------------------
 

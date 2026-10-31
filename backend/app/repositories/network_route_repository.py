@@ -8,12 +8,27 @@ at every query.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.network_route import NetworkRoute
+
+
+@dataclass(frozen=True)
+class RouteInput:
+    destination: str
+    protocol: str
+    prefix_length: int | None = None
+    next_hop: str | None = None
+    outgoing_interface: str | None = None
+    interface_id: uuid.UUID | None = None
+    metric: int | None = None
+    administrative_distance: int | None = None
+    vrf: str = "-"
+    is_best: bool = True
 
 
 class NetworkRouteRepository:
@@ -186,3 +201,102 @@ class NetworkRouteRepository:
             NetworkRoute.is_deleted.is_(False),
         )
         return (await self.db.execute(stmt)).scalar_one()
+
+    async def sync_for_resource(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        resource_id: uuid.UUID,
+        provider: str | None,
+        routes: list[RouteInput],
+        retire_missing: bool,
+        seen_at: datetime | None = None,
+    ) -> tuple[int, int]:
+        """Make one device's routes from ``provider`` match a polled table.
+
+        One SELECT per device instead of one per route. Stored routes from the
+        same provider that the poll did not report are marked ``withdrawn`` and
+        soft-deleted, but only when ``retire_missing`` (the table was really
+        read). A route that reappears is restored. Returns (upserted, retired).
+        """
+        now = seen_at or datetime.now(timezone.utc)
+        stmt = select(NetworkRoute).where(
+            NetworkRoute.tenant_id == tenant_id,
+            NetworkRoute.resource_id == resource_id,
+        )
+        existing = {
+            (row.vrf, row.destination, row.next_hop, row.protocol): row
+            for row in (await self.db.execute(stmt)).scalars().all()
+        }
+
+        upserted = 0
+        seen: set[tuple] = set()
+        for item in routes:
+            key = (item.vrf or "-", item.destination, item.next_hop, item.protocol)
+            if key in seen:
+                continue
+            seen.add(key)
+            row = existing.get(key)
+            if row is None:
+                row = NetworkRoute(
+                    tenant_id=tenant_id,
+                    resource_id=resource_id,
+                    vrf=key[0],
+                    destination=item.destination,
+                    next_hop=item.next_hop,
+                    protocol=item.protocol,
+                    first_seen_at=now,
+                    last_change_at=now,
+                    attributes={},
+                )
+                self.db.add(row)
+                existing[key] = row
+            elif (
+                row.is_deleted
+                or row.metric != item.metric
+                or row.administrative_distance != item.administrative_distance
+            ):
+                row.last_change_at = now
+            row.prefix_length = item.prefix_length
+            row.outgoing_interface = item.outgoing_interface
+            row.interface_id = item.interface_id
+            row.metric = item.metric
+            row.administrative_distance = item.administrative_distance
+            row.is_best = item.is_best
+            row.state = "active"
+            row.provider = provider
+            row.last_seen_at = now
+            row.is_deleted = False
+            row.deleted_at = None
+            upserted += 1
+
+        retired = 0
+        if retire_missing:
+            for key, row in existing.items():
+                if key in seen or row.is_deleted or row.provider != provider:
+                    continue
+                row.state = "withdrawn"
+                row.is_deleted = True
+                row.deleted_at = now
+                row.last_change_at = now
+                retired += 1
+
+        await self.db.flush()
+        return upserted, retired
+
+    async def list_for_tenant(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        resource_ids: list[uuid.UUID] | None = None,
+    ) -> list[NetworkRoute]:
+        stmt = select(NetworkRoute).where(
+            NetworkRoute.tenant_id == tenant_id,
+            NetworkRoute.is_deleted.is_(False),
+        )
+        if resource_ids is not None:
+            if not resource_ids:
+                return []
+            stmt = stmt.where(NetworkRoute.resource_id.in_(resource_ids))
+        stmt = stmt.order_by(NetworkRoute.resource_id, NetworkRoute.destination)
+        return list((await self.db.execute(stmt)).scalars().all())

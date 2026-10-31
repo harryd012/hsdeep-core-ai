@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
-from app.core.auth import get_tenant_id
+from app.core.auth import get_tenant_id, require_permission
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -51,6 +51,9 @@ from app.services.alert_service import AlertService
 from app.services.monitoring.bundle_saver import BundleSaver
 from app.services.monitoring.collection_orchestrator import CollectionOrchestrator
 from app.services.monitoring.monitoring_service import MonitoringService, MonitoringSourceNotFound
+from app.services.monitoring.source_health_manager import SourceHealthManager
+from app.repositories.source_health_audit_repository import SourceHealthAuditRepository
+from app.services.events.event_bus import get_event_bus
 from app.core.auth import Principal, generate_refresh_token, get_current_user, hash_refresh_token
 from app.core.entitlements import evaluate_resource_limit, get_billing_service
 from app.models.collector_credential import CollectorCredential
@@ -85,6 +88,11 @@ def get_collection_orchestrator(db: AsyncSession = Depends(get_db)) -> Collectio
         ),
         alert_service=AlertService(AlertRepository(db)),
         source_repo=MonitoringSourceRepository(db),
+        health_manager=SourceHealthManager(
+            MonitoringSourceRepository(db),
+            SourceHealthAuditRepository(db),
+            get_event_bus(),
+        ),
     )
 
 
@@ -95,7 +103,7 @@ def list_source_types(service: MonitoringService = Depends(get_monitoring_servic
     return service.supported_source_types()
 
 
-@router.post("/sources", dependencies=[_active_sub_guard, Depends(require_entitlement("collectors"))], response_model=MonitoringSourceOut, status_code=201)
+@router.post("/sources", dependencies=[Depends(require_permission("monitoring.create")), _active_sub_guard, Depends(require_entitlement("collectors"))], response_model=MonitoringSourceOut, status_code=201)
 async def create_source(
     payload: MonitoringSourceCreate,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -139,7 +147,7 @@ async def get_source(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.patch("/sources/{source_id}", dependencies=[_active_sub_guard], response_model=MonitoringSourceOut)
+@router.patch("/sources/{source_id}", dependencies=[Depends(require_permission("monitoring.update")), _active_sub_guard], response_model=MonitoringSourceOut)
 async def update_source(
     source_id: uuid.UUID,
     payload: MonitoringSourceUpdate,
@@ -158,7 +166,7 @@ async def update_source(
     return source
 
 
-@router.delete("/sources/{source_id}", dependencies=[_active_sub_guard], status_code=204)
+@router.delete("/sources/{source_id}", dependencies=[Depends(require_permission("monitoring.delete")), _active_sub_guard], status_code=204)
 async def delete_source(
     source_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -173,7 +181,7 @@ async def delete_source(
     await db.commit()
 
 
-@router.post("/sources/{source_id}/test-connection", dependencies=[_active_sub_guard], response_model=ConnectionTestResult)
+@router.post("/sources/{source_id}/test-connection", dependencies=[Depends(require_permission("monitoring.update")), _active_sub_guard], response_model=ConnectionTestResult)
 async def test_connection(
     source_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -188,7 +196,7 @@ async def test_connection(
     return ConnectionTestResult(success=success, message=message, checked_at=datetime.now(timezone.utc))
 
 
-@router.post("/sources/{source_id}/readiness", dependencies=[_active_sub_guard], response_model=ReadinessResultOut)
+@router.post("/sources/{source_id}/readiness", dependencies=[Depends(require_permission("monitoring.update")), _active_sub_guard], response_model=ReadinessResultOut)
 async def source_readiness(
     source_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -228,7 +236,7 @@ async def readiness_report(
     )
 
 
-@router.post("/sources/{source_id}/sync", dependencies=[_active_sub_guard], response_model=SyncResult)
+@router.post("/sources/{source_id}/sync", dependencies=[Depends(require_permission("monitoring.update")), _active_sub_guard], response_model=SyncResult)
 async def sync_source(
     source_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -257,6 +265,18 @@ async def sync_source(
 
             logging.getLogger(__name__).exception(
                 "RCA trigger failed for committed incident %s", reference.incident_id
+            )
+    # Source-health domain events (SOURCE_RECOVERED / SOURCE_HEALTH_DEGRADED) are
+    # published AFTER the commit above so a rolled-back collection never emits a
+    # spurious recovery/degradation signal. Best-effort, like the RCA triggers.
+    for event in run.recovery_events:
+        try:
+            await get_event_bus().publish(event)
+        except Exception:  # noqa: BLE001 - health row is already committed
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "Source-health event publish failed for source %s", source_id
             )
     return SyncResult(
         source_id=source_id,
@@ -429,7 +449,7 @@ _INVALID_TOKEN_DETAIL = "Invalid or unusable enrollment token"
 
 @router.post(
     "/collectors/enrollment-tokens",
-    dependencies=[_active_sub_guard],
+    dependencies=[Depends(require_permission("monitoring.create")), _active_sub_guard],
     response_model=EnrollmentTokenCreated,
     status_code=201,
 )

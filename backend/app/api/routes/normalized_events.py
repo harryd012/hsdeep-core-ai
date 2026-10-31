@@ -13,7 +13,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_tenant_id
+from app.core.auth import get_tenant_id, require_permission
 from app.core.db import get_db
 from app.core.entitlements import require_active_subscription
 from app.repositories.normalized_event_repository import NormalizedEventRepository
@@ -121,7 +121,7 @@ async def get_normalized_event(
 # ---------------------------------------------------------------------------
 
 
-@router.post("", dependencies=[_active_sub_guard], response_model=NormalizedEventOut)
+@router.post("", dependencies=[Depends(require_permission("noc.write")), _active_sub_guard], response_model=NormalizedEventOut)
 async def create_normalized_event(
     payload: NormalizedEventCreate,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -150,7 +150,7 @@ async def create_normalized_event(
     return event
 
 
-@router.patch("/{event_id}", dependencies=[_active_sub_guard], response_model=NormalizedEventOut)
+@router.patch("/{event_id}", dependencies=[Depends(require_permission("noc.write")), _active_sub_guard], response_model=NormalizedEventOut)
 async def update_normalized_event(
     event_id: uuid.UUID,
     payload: NormalizedEventUpdate,

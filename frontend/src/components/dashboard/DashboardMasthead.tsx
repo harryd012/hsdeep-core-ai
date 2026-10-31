@@ -1,8 +1,10 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { API_BASE_URL, getTenantId } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { systemStatusText, systemTone, type SystemStatus } from "@/lib/health";
 import type { DashboardHeaderData } from "@/lib/dashboard/dashboardModels";
 
 /**
@@ -20,6 +22,14 @@ import type { DashboardHeaderData } from "@/lib/dashboard/dashboardModels";
  *   - API      → API_BASE_URL (existing build config)
  */
 
+function fmtClock(): string {
+  return new Date().toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 function apiHost(): string {
   try {
     return new URL(API_BASE_URL).host;
@@ -28,11 +38,33 @@ function apiHost(): string {
   }
 }
 
-export default function DashboardMasthead({ header }: { header?: DashboardHeaderData }) {
+/** GET /health result: null while the probe has not answered yet. */
+function apiStatusLabel(apiHealthy: boolean | null | undefined): string {
+  if (apiHealthy === true) return "REACHABLE";
+  if (apiHealthy === false) return "UNREACHABLE";
+  return "CHECKING";
+}
+
+export default function DashboardMasthead({
+  header,
+  apiHealthy,
+  apiHealth = null,
+}: {
+  header?: DashboardHeaderData;
+  apiHealthy?: boolean | null;
+  /** null = health check has not answered yet (pill renders neutral). */
+  apiHealth?: SystemStatus | null;
+}) {
   const tenantId = header?.tenantId ?? getTenantId();
   const user = header?.user ?? null;
   const { logout, isAuthenticated } = useAuth();
   const router = useRouter();
+  const [clock, setClock] = useState<string>(() => fmtClock());
+
+  useEffect(() => {
+    const id = window.setInterval(() => setClock(fmtClock()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
 
   function handleLogout() {
     logout();
@@ -74,13 +106,28 @@ export default function DashboardMasthead({ header }: { header?: DashboardHeader
         </div>
         <div>
           <dt>API</dt>
-          <dd title={API_BASE_URL}>{apiHost()}</dd>
+          <dd title={API_BASE_URL}>
+            {apiHost()} · {apiStatusLabel(apiHealthy)}
+          </dd>
         </div>
         <div>
           <dt>AUTO REFRESH</dt>
           <dd>ACTIVE · 5–60S PER PANEL</dd>
         </div>
       </dl>
+
+      <div className="hs-noc__status-cluster">
+        <span className="hs-noc__clock" suppressHydrationWarning>
+          {clock}
+        </span>
+        <span
+          className={`hs-noc__status-pill hs-noc__status-pill--${systemTone(apiHealth)}`}
+          role="status"
+        >
+          <i aria-hidden="true" />
+          {systemStatusText(apiHealth)}
+        </span>
+      </div>
 
       {isAuthenticated && (
         <button

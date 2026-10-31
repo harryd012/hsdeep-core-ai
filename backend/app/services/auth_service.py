@@ -42,6 +42,10 @@ class InvalidCredentials(AuthError):
     pass
 
 
+class EmailNotVerified(AuthError):
+    """Correct password, but a self-service sign-up has not confirmed its email."""
+
+
 class InvalidRefreshToken(AuthError):
     pass
 
@@ -70,10 +74,11 @@ class AuthService:
 
     # -- Token minting ----------------------------------------------------
 
-    async def _issue_tokens(self, user: User) -> tuple[str, str, int]:
+    async def _issue_tokens(self, user: User, session_id: uuid.UUID | None = None) -> tuple[str, str, int]:
         """Mint an access JWT + a rotated refresh token for `user`. The
         refresh token plaintext is returned to the caller and only its hash is
-        persisted."""
+        persisted. A new sign-in starts a session; a refresh keeps it."""
+        session_id = session_id or uuid.uuid4()
         perms = UserRepository.resolved_permissions(user)
         access = auth.create_access_token(
             user_id=user.id,
@@ -81,6 +86,7 @@ class AuthService:
             email=user.email,
             is_superuser=user.is_superuser,
             permissions=perms,
+            session_id=session_id,
         )
         refresh_plain = auth.generate_refresh_token()
         await self.refresh_tokens.create(
@@ -89,6 +95,7 @@ class AuthService:
             token_hash=auth.hash_refresh_token(refresh_plain),
             expires_at=datetime.now(timezone.utc)
             + timedelta(days=settings.refresh_token_expire_days),
+            session_id=session_id,
         )
         expires_in = settings.access_token_expire_minutes * 60
         return access, refresh_plain, expires_in
@@ -127,28 +134,67 @@ class AuthService:
         # Verify a password even when the user is missing to keep timing/shape
         # uniform, then reject with a single generic error either way.
         password_ok = auth.verify_password(password, user.password_hash if user else None)
-        if user is None or not user.is_active or not password_ok:
+        # A locked account is rejected even with the right password, with the
+        # same generic error, so the response never reveals which emails exist.
+        locked = (
+            user is not None
+            and user.locked_until is not None
+            and user.locked_until > datetime.now(timezone.utc)
+        )
+        if user is None or not user.is_active or locked or not password_ok:
+            if user is not None and not locked and not password_ok:
+                cfg = get_settings()
+                await self.users.record_failed_login(
+                    user,
+                    max_attempts=cfg.login_max_failed_attempts,
+                    lockout_minutes=cfg.login_lockout_minutes,
+                )
             raise InvalidCredentials("Invalid email or password")
+        # Only reached with the right password, so this reveals nothing new.
+        if user.requires_email_verification and user.email_verified_at is None:
+            raise EmailNotVerified("Confirm your email address before signing in. Check your inbox for the link.")
         await self.users.touch_last_login(user)
         access, refresh, expires_in = await self._issue_tokens(user)
         return access, refresh, expires_in, user.tenant_id
 
     async def refresh(self, *, refresh_token: str) -> tuple[str, str, int]:
         token_hash = auth.hash_refresh_token(refresh_token)
-        row = await self.refresh_tokens.get_active_by_hash(token_hash)
-        if row is None:
+        row = await self.refresh_tokens.get_by_hash(token_hash)
+        if row is not None and row.revoked_at is not None and row.session_id is not None:
+            # Replay: a rotated (already used) token was presented again, so
+            # the token may be stolen. End the whole session, attacker and
+            # legitimate holder alike; the user signs in again.
+            await self.refresh_tokens.revoke_session(row.session_id)
+            auth.forget_session(row.session_id)
+            raise InvalidRefreshToken("Refresh token was already used; the session has been ended")
+        if row is None or row.revoked_at is not None or row.expires_at <= datetime.now(timezone.utc):
             raise InvalidRefreshToken("Invalid or expired refresh token")
         user = await self.users.get_by_id_any_tenant(row.user_id)
         if user is None or not user.is_active:
             raise InvalidRefreshToken("Invalid or expired refresh token")
-        # Rotate: revoke the presented token before issuing the replacement.
+        # Rotate: revoke the presented token before issuing the replacement,
+        # keeping the session so access tokens in flight stay valid.
         await self.refresh_tokens.revoke(row)
-        return await self._issue_tokens(user)
+        return await self._issue_tokens(user, session_id=row.session_id)
 
-    async def logout(self, *, refresh_token: str) -> None:
+    async def logout(self, *, refresh_token: str) -> uuid.UUID | None:
+        """End the sign-in session the refresh token belongs to; its access
+        tokens stop working at once. Returns the session id, if any."""
         row = await self.refresh_tokens.get_active_by_hash(auth.hash_refresh_token(refresh_token))
-        if row is not None:
+        if row is None:
+            return None
+        if row.session_id is not None:
+            await self.refresh_tokens.revoke_session(row.session_id)
+            auth.forget_session(row.session_id)
+        else:
             await self.refresh_tokens.revoke(row)
+        return row.session_id
+
+    async def logout_everywhere(self, user_id: uuid.UUID) -> int:
+        """End every session of a user (all devices)."""
+        count = await self.refresh_tokens.revoke_all_for_user(user_id)
+        auth.forget_session()
+        return count
 
     # -- Tenant RBAC provisioning ----------------------------------------
 
@@ -177,17 +223,19 @@ class AuthService:
         *,
         tenant_id: uuid.UUID,
         email: str,
-        password: str,
+        password: str | None,
         full_name: str | None,
         is_superuser: bool,
         role_ids: list[uuid.UUID],
     ) -> User:
+        """password=None creates the user without a password (they cannot sign
+        in until they accept an invitation and set one)."""
         if await self.users.get_by_email(tenant_id, email) is not None:
             raise Conflict(f"A user with email {email!r} already exists in this tenant")
         user = await self.users.create(
             tenant_id=tenant_id,
             email=email,
-            password_hash=auth.hash_password(password),
+            password_hash=auth.hash_password(password) if password else None,
             full_name=full_name,
             is_superuser=is_superuser,
         )
@@ -201,9 +249,11 @@ class AuthService:
         if user is None:
             raise NotFound("User not found")
         await self.users.set_password(user, password_hash=auth.hash_password(password))
-        # Force re-auth everywhere: a password change should invalidate
-        # outstanding refresh tokens.
-        await self.refresh_tokens.revoke_all_for_user(user.id)
+        # An admin reset is the unlock path for a locked-out user.
+        await self.users.clear_lockout(user)
+        # Force re-auth everywhere: a password change ends every session, so
+        # outstanding access tokens stop working too.
+        await self.logout_everywhere(user.id)
         return user
 
     async def assign_roles(self, *, tenant_id: uuid.UUID, user_id: uuid.UUID, role_ids: list[uuid.UUID]) -> User:
@@ -211,7 +261,11 @@ class AuthService:
         if user is None:
             raise NotFound("User not found")
         roles = await self.roles.get_many_by_ids(tenant_id, role_ids)
-        return await self.users.assign_roles(user, roles)
+        user = await self.users.assign_roles(user, roles)
+        # Permissions are carried in the access token, so a role change ends
+        # the user's sessions: a removed permission cannot outlive the change.
+        await self.logout_everywhere(user.id)
+        return user
 
     async def list_users(self, tenant_id: uuid.UUID, *, limit: int, offset: int) -> list[User]:
         return await self.users.list(tenant_id, limit=limit, offset=offset)
@@ -221,7 +275,7 @@ class AuthService:
         if user is None:
             raise NotFound("User not found")
         await self.users.soft_delete(user)
-        await self.refresh_tokens.revoke_all_for_user(user.id)
+        await self.logout_everywhere(user.id)
 
     # -- Role administration ---------------------------------------------
 

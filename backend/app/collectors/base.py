@@ -158,6 +158,161 @@ class NormalizedNeighbor:
 
 
 @dataclass
+class NormalizedInterfaceAddress:
+    """One IP address configured on a device interface (L3 topology).
+
+    ``address``/``prefix_length`` are already normalised by
+    ``app.core.ip_addressing.parse_interface_address``; the saver derives the
+    subnet from them, never from a vendor-supplied network string.
+    """
+
+    device_external_id: str
+    address: str
+    prefix_length: int
+    #: Matches ``NormalizedInterface.external_id`` (SNMP ifIndex, FortiGate
+    #: interface name) when the collector knows it.
+    interface_external_id: str | None = None
+    interface_name: str | None = None
+    vrf: str = "-"
+    is_primary: bool = True
+
+
+@dataclass
+class NormalizedRoute:
+    """One routing-table entry reported by the device itself."""
+
+    device_external_id: str
+    #: Normalised CIDR (``0.0.0.0/0``), from ``parse_route_destination``.
+    destination: str
+    prefix_length: int
+    #: connected | static | bgp | ospf | other
+    protocol: str
+    next_hop: str | None = None
+    outgoing_interface: str | None = None
+    metric: int | None = None
+    administrative_distance: int | None = None
+    vrf: str = "-"
+    is_best: bool = True
+
+
+@dataclass
+class NormalizedFirewallStatus:
+    """Firewall state reported by the device itself (one per firewall).
+
+    Every field the device did not report stays None: "HA not reported" is not
+    "standalone", and a missing session count is not 0.
+    """
+
+    device_external_id: str
+    #: standalone | active-passive | active-active
+    ha_mode: str | None = None
+    #: active | passive | primary | secondary
+    ha_role: str | None = None
+    #: in_sync | out_of_sync
+    ha_sync: str | None = None
+    ha_peer_serial: str | None = None
+    session_count: int | None = None
+    session_limit: int | None = None
+    cpu_percent: float | None = None
+    memory_percent: float | None = None
+    firmware_version: str | None = None
+
+
+@dataclass
+class NormalizedVpnTunnel:
+    device_external_id: str
+    name: str
+    #: up | down
+    status: str
+    #: ipsec | ssl
+    tunnel_type: str = "ipsec"
+    remote_gateway: str | None = None
+    phase2_up: int | None = None
+    phase2_total: int | None = None
+    bytes_in: float | None = None
+    bytes_out: float | None = None
+
+
+@dataclass
+class NormalizedLicence:
+    device_external_id: str
+    #: Vendor's own feature name ("Threat Prevention", "antivirus", ...).
+    feature: str
+    #: None when the licence never expires or the device gave no date.
+    expires_at: datetime | None = None
+    #: The device's own verdict when it gives one; otherwise derived from
+    #: expires_at by the saver.
+    expired: bool | None = None
+
+
+#: Firewall tables a collector can read; keys of NormalizedBundle.firewall_status.
+FIREWALL_TABLES = ("status", "vpn", "licences")
+
+
+@dataclass
+class NormalizedBackupVault:
+    """A backup vault (Azure Recovery Services vault) and its security posture.
+
+    The vault itself is also reported as a `NormalizedDevice` (cloud_resource)
+    with the same external_id, so it appears in inventory and alerts link to it.
+    Settings the provider did not report stay None.
+    """
+
+    external_id: str
+    name: str
+    provider: str = "azure"
+    location: str | None = None
+    resource_group: str | None = None
+    subscription_id: str | None = None
+    #: enabled | disabled | always_on
+    soft_delete_state: str | None = None
+    #: unlocked | locked | disabled
+    immutability_state: str | None = None
+    #: locally_redundant | geo_redundant | zone_redundant
+    storage_redundancy: str | None = None
+
+
+@dataclass
+class NormalizedBackupItem:
+    """One protected item (VM, SQL database, file share ...) in a vault."""
+
+    external_id: str
+    vault_external_id: str
+    name: str
+    workload_type: str | None = None
+    #: protected | protection_stopped | protection_paused | protection_error | ir_pending | other
+    protection_state: str | None = None
+    #: completed | completed_with_warnings | failed | in_progress | other (provider's last backup verdict)
+    last_backup_status: str | None = None
+    last_backup_at: datetime | None = None
+    #: The protected resource (e.g. the VM's resource id).
+    source_resource_id: str | None = None
+    policy_name: str | None = None
+    health_status: str | None = None
+
+
+@dataclass
+class NormalizedBackupJob:
+    """One backup/restore job run by a vault."""
+
+    external_id: str
+    vault_external_id: str
+    item_name: str | None
+    operation: str | None
+    #: completed | completed_with_warnings | failed | in_progress | cancelled | other
+    status: str
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    duration_seconds: float | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+#: Backup tables a collector can read; keys of NormalizedBundle.backup_status.
+BACKUP_TABLES = ("vaults", "items", "jobs")
+
+
+@dataclass
 class NormalizedBundle:
     devices: list[NormalizedDevice] = field(default_factory=list)
     interfaces: list[NormalizedInterface] = field(default_factory=list)
@@ -171,6 +326,30 @@ class NormalizedBundle:
     #: Per-protocol collection outcome so "SNMP failed" is never reported as
     #: "no neighbours found". Values: collected | empty | unavailable | failed.
     neighbor_status: dict[str, str] = field(default_factory=dict)
+    #: Interface addresses and routes (L3 topology). Persisted by BundleSaver.
+    addresses: list[NormalizedInterfaceAddress] = field(default_factory=list)
+    routes: list[NormalizedRoute] = field(default_factory=list)
+    #: Outcome per table, keys "addresses" / "routes", same values as
+    #: ``neighbor_status``. Stored rows the poll did not see are retired ONLY
+    #: when the table was "collected" or "empty" - a failed or unsupported read
+    #: never wipes what an earlier poll stored. A missing key means the
+    #: collector does not read that table at all.
+    l3_status: dict[str, str] = field(default_factory=dict)
+    #: Firewall state, VPN tunnels and licences (firewall gateway).
+    firewalls: list[NormalizedFirewallStatus] = field(default_factory=list)
+    vpn_tunnels: list[NormalizedVpnTunnel] = field(default_factory=list)
+    licences: list[NormalizedLicence] = field(default_factory=list)
+    #: Outcome per firewall table ("status", "vpn", "licences"), same values
+    #: and retirement rule as ``l3_status``. A missing key means the
+    #: collector does not read that table.
+    firewall_status: dict[str, str] = field(default_factory=dict)
+    #: Backup vaults, protected items and jobs (Azure Backup).
+    backup_vaults: list[NormalizedBackupVault] = field(default_factory=list)
+    backup_items: list[NormalizedBackupItem] = field(default_factory=list)
+    backup_jobs: list[NormalizedBackupJob] = field(default_factory=list)
+    #: Outcome per backup table ("vaults", "items", "jobs"), same values and
+    #: retirement rule as ``l3_status``. A missing key means not read.
+    backup_status: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -245,6 +424,11 @@ class BaseCollector(abc.ABC):
     source_type: ClassVar[str]
     display_name: ClassVar[str]
     implemented: ClassVar[bool] = True
+    #: Gateway grouping: firewall | network | server | cloud | monitoring.
+    category: ClassVar[str] = "other"
+    #: Firewall tables (FIREWALL_TABLES) this collector reads, so the UI can
+    #: say "not supported by this adapter" instead of "no data".
+    firewall_capabilities: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, source: "MonitoringSourceConnectionInfo"):
         """`source` exposes the typed columns (hostname, ip_address, port,

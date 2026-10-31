@@ -98,6 +98,10 @@ class MonitoringSourceOut(BaseModel):
     snmp_version: str | None
     username: str | None
     poll_interval_seconds: int
+    #: Collection health (healthy | degraded | failing | unknown) and the last
+    #: run that succeeded, so a UI can say "connected" only on fresh evidence.
+    health_status: str | None = None
+    last_successful_run_at: datetime | None = None
 
     # INTENTIONAL OMISSION - do not add these fields: api_key, password,
     # api_key_encrypted, password_encrypted, or any other credential-derived
@@ -151,6 +155,10 @@ class SupportedSourceType(BaseModel):
     source_type: str
     display_name: str
     implemented: bool
+    #: Gateway grouping: firewall | network | server | cloud | monitoring | other.
+    category: str = "other"
+    #: Firewall tables this collector reads (status, vpn, licences).
+    firewall_capabilities: list[str] = []
 
 
 # ---------------------------------------------------------------------------

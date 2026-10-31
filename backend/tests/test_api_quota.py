@@ -11,6 +11,11 @@ declared, priced, displayed in the Usage UI, and never enforceable:
     ceiling instead of the per-billing-period quota it actually is, so the
     monthly allowance could never trip.
 
+Only API-key traffic is metered and enforced. HSDEEP's own web UI (session
+JWT) polling is never counted - it used to exhaust a Starter tenant's
+allowance from one open dashboard tab - and control-plane (login/session)
+paths stay exempt for everyone.
+
 Runs against the real Postgres DB per project convention (conftest.py).
 """
 from __future__ import annotations
@@ -22,9 +27,10 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 
-from app.core.auth import create_access_token
+from app.core.auth import create_access_token, hash_api_key
 from app.core.db import AsyncSessionLocal
 from app.main import app
+from app.models.api_key import ApiKey
 from app.models.knowledge_audit import AuditEvent
 from app.models.plan import Plan
 from app.models.subscription import Subscription
@@ -87,6 +93,7 @@ async def _cleanup(tenant_id: uuid.UUID, plan_ids: list[uuid.UUID]) -> None:
     async with AsyncSessionLocal() as db:
         await db.execute(UsageCounter.__table__.delete().where(UsageCounter.tenant_id == tenant_id))
         await db.execute(AuditEvent.__table__.delete().where(AuditEvent.tenant_id == tenant_id))
+        await db.execute(ApiKey.__table__.delete().where(ApiKey.tenant_id == tenant_id))
         await db.execute(Subscription.__table__.delete().where(Subscription.tenant_id == tenant_id))
         for pid in plan_ids:
             await db.execute(Plan.__table__.delete().where(Plan.id == pid))
@@ -121,6 +128,31 @@ def _jwt(tenant_id: uuid.UUID, user_id: uuid.UUID) -> str:
         is_superuser=False,
         permissions=frozenset({"tasks.read"}),
     )
+
+
+async def _api_key(tenant_id: uuid.UUID) -> str:
+    """A real active API key for the tenant. Returns the raw key."""
+    import secrets
+
+    raw = secrets.token_urlsafe(24)
+    async with AsyncSessionLocal() as db:
+        db.add(
+            ApiKey(
+                tenant_id=tenant_id,
+                name="quota-test",
+                key_prefix=raw[:12],
+                key_hash=hash_api_key(raw),
+                scopes=["tasks.read"],
+                is_active=True,
+            )
+        )
+        await db.commit()
+    return raw
+
+
+async def _get(path: str, bearer: str) -> httpx.Response:
+    async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+        return await client.get(path, headers={"Authorization": f"Bearer {bearer}"})
 
 
 @pytest.fixture(autouse=True)
@@ -211,22 +243,18 @@ class TestApiQuotaEnforcement:
         finally:
             await _cleanup(tenant.id, plan_ids)
 
-    async def test_request_over_quota_is_rejected_429(self):
-        """A tenant past its period allowance must be refused, not just slowed."""
+    async def test_api_key_request_over_quota_is_rejected_429(self):
+        """An API key past its tenant's period allowance must be refused, not just slowed."""
         tenant, plan_ids = await _seed_tenant_with_plan(api_rate_limit=1)
         try:
-            user = await _actor_user(tenant.id)
+            raw_key = await _api_key(tenant.id)
 
             # Real persisted usage already exceeds the plan allowance.
             await api_quota.record_api_call(tenant.id, 3)
             await api_quota.flush_api_calls(tenant.id)
             api_quota.reset_state()  # force a fresh allowance read
 
-            async with httpx.AsyncClient(app=app, base_url="http://test") as client:
-                resp = await client.get(
-                    "/api/tasks/counts",
-                    headers={"Authorization": f"Bearer {_jwt(tenant.id, user.id)}"},
-                )
+            resp = await _get("/api/tasks/counts", raw_key)
 
             assert resp.status_code == 429, resp.text
             body = resp.json()
@@ -240,5 +268,146 @@ class TestApiQuotaEnforcement:
             assert "password" not in blob
             assert "redis://" not in blob
             assert "postgresql" not in blob
+            assert raw_key.lower() not in blob
+        finally:
+            await _cleanup(tenant.id, plan_ids)
+
+
+class TestWhoIsMetered:
+    """Only API-key traffic counts against the allowance."""
+
+    async def test_api_key_request_is_counted(self):
+        tenant, plan_ids = await _seed_tenant_with_plan(api_rate_limit=1000)
+        try:
+            raw_key = await _api_key(tenant.id)
+
+            resp = await _get("/api/tasks/counts", raw_key)
+
+            assert resp.status_code == 200, resp.text
+            assert api_quota.pending_for(tenant.id) == 1
+        finally:
+            await _cleanup(tenant.id, plan_ids)
+
+    async def test_session_request_is_not_counted(self):
+        """The web UI's own polling (session JWT) must not use the allowance."""
+        tenant, plan_ids = await _seed_tenant_with_plan(api_rate_limit=1000)
+        try:
+            user = await _actor_user(tenant.id)
+
+            for _ in range(3):
+                resp = await _get("/api/tasks/counts", _jwt(tenant.id, user.id))
+                assert resp.status_code == 200, resp.text
+
+            assert api_quota.pending_for(tenant.id) == 0
+            await api_quota.flush_api_calls()
+            assert await _persisted_api_calls(tenant.id) == 0
+        finally:
+            await _cleanup(tenant.id, plan_ids)
+
+    async def test_session_request_served_when_tenant_over_quota(self):
+        """An over-quota tenant can still use the product it pays for."""
+        tenant, plan_ids = await _seed_tenant_with_plan(api_rate_limit=1)
+        try:
+            user = await _actor_user(tenant.id)
+            await api_quota.record_api_call(tenant.id, 3)
+            await api_quota.flush_api_calls(tenant.id)
+            api_quota.reset_state()
+
+            resp = await _get("/api/tasks/counts", _jwt(tenant.id, user.id))
+
+            assert resp.status_code == 200, resp.text
+        finally:
+            await _cleanup(tenant.id, plan_ids)
+
+    async def test_control_plane_path_exempt_for_api_key_over_quota(self):
+        """Session endpoints are never metered nor blocked, whoever calls them."""
+        tenant, plan_ids = await _seed_tenant_with_plan(api_rate_limit=1)
+        try:
+            raw_key = await _api_key(tenant.id)
+            await api_quota.record_api_call(tenant.id, 3)
+            await api_quota.flush_api_calls(tenant.id)
+            api_quota.reset_state()
+
+            resp = await _get("/api/auth/me/", raw_key)
+
+            assert resp.status_code != 429, resp.text
+            assert api_quota.pending_for(tenant.id) == 0
+        finally:
+            await _cleanup(tenant.id, plan_ids)
+
+    async def test_unknown_bearer_is_not_metered(self):
+        resp = await _get("/api/tasks/counts", "not-a-real-key")
+        assert resp.status_code == 401, resp.text
+
+    async def test_control_plane_paths(self):
+        assert api_quota.is_control_plane_path("/api/auth/me")
+        assert api_quota.is_control_plane_path("/api/auth/refresh/")
+        assert not api_quota.is_control_plane_path("/api/tasks/counts")
+
+
+class TestCorsOnQuotaResponses:
+    """A quota 429 must still carry CORS headers for an allowed origin, or the
+    browser reports a CORS failure instead of the quota error. CORS is
+    registered outside the rate limiter for exactly this reason."""
+
+    async def _over_quota_tenant(self):
+        tenant, plan_ids = await _seed_tenant_with_plan(api_rate_limit=1)
+        await api_quota.record_api_call(tenant.id, 3)
+        await api_quota.flush_api_calls(tenant.id)
+        api_quota.reset_state()
+        return tenant, plan_ids
+
+    async def test_cors_preflight_not_blocked_when_over_quota(self):
+        """OPTIONS preflight carries no credentials: never metered or blocked."""
+        from app.main import _cors_origins
+
+        tenant, plan_ids = await self._over_quota_tenant()
+        try:
+            origin = _cors_origins[0] if _cors_origins else "http://localhost:3000"
+            async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+                resp = await client.options(
+                    "/api/tasks/counts",
+                    headers={"Origin": origin, "Access-Control-Request-Method": "GET"},
+                )
+
+            assert resp.status_code == 200, resp.text
+            assert api_quota.pending_for(tenant.id) == 0
+        finally:
+            await _cleanup(tenant.id, plan_ids)
+
+    async def test_over_quota_429_includes_allow_origin_for_allowed_origin(self):
+        from app.main import _cors_origins
+
+        tenant, plan_ids = await self._over_quota_tenant()
+        try:
+            raw_key = await _api_key(tenant.id)
+            origin = _cors_origins[0] if _cors_origins else "http://localhost:3000"
+            async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+                resp = await client.get(
+                    "/api/tasks/counts",
+                    headers={"Authorization": f"Bearer {raw_key}", "Origin": origin},
+                )
+
+            assert resp.status_code == 429, resp.text
+            assert resp.headers.get("access-control-allow-origin") == origin
+            assert resp.headers.get("access-control-allow-credentials") == "true"
+        finally:
+            await _cleanup(tenant.id, plan_ids)
+
+    async def test_disallowed_origin_gets_no_allow_origin(self):
+        tenant, plan_ids = await self._over_quota_tenant()
+        try:
+            raw_key = await _api_key(tenant.id)
+            async with httpx.AsyncClient(app=app, base_url="http://test") as client:
+                resp = await client.get(
+                    "/api/tasks/counts",
+                    headers={
+                        "Authorization": f"Bearer {raw_key}",
+                        "Origin": "https://evil.example.com",
+                    },
+                )
+
+            assert resp.status_code == 429, resp.text
+            assert "access-control-allow-origin" not in resp.headers
         finally:
             await _cleanup(tenant.id, plan_ids)

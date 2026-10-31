@@ -327,6 +327,23 @@ class TestEndToEndDiscovery:
         # A different tenant must not resolve this device.
         assert await DeviceRepository(service.db).get(device_id, uuid.uuid4()) is None
 
+    async def test_zero_results_is_empty_not_success(self, discovery):
+        """A clean run that recognises nothing must not report SUCCESS.
+
+        Regresses the misleading "SUCCESS with 0 created devices" state: when
+        the probe produced no evidence at all (nothing reachable/identifiable),
+        the job must surface as EMPTY rather than SUCCESS, which would imply
+        devices were discovered.
+        """
+        service, source, tenant = discovery
+        result = await service.discover(
+            tenant_id=tenant.id, monitoring_source_id=source.id, evidence=[],
+        )
+        assert result.status == "EMPTY"
+        assert result.created == 0
+        assert result.updated == 0
+        assert result.resources == []
+
 
 async def _edges_from(service, tenant_id, source_id):
     """Read edges through the repository's own query surface."""

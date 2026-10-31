@@ -1,135 +1,92 @@
 "use client";
 
-import Link from "next/link";
-import { ShieldCheck, UserCheck, UserX, AlertTriangle } from "lucide-react";
 import { useSocAnalysts, useSocAnalystSummary } from "@/hooks/useNocQueries";
+import type { SocAnalyst } from "@/lib/noc";
+import { DataTable, Panel, Pill, StatStrip, StatTile, ago, statusTone, titleCaseWords, type Column } from "@/components/ui/PageKit";
 
-function AvailabilityBadge({ availability }: { availability: string }) {
-  const color =
-    availability === "available"
-      ? "var(--green, #2ecc71)"
-      : availability === "busy"
-        ? "var(--amber, #f5a623)"
-        : "var(--muted)";
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, color }}>
-      <span style={{ width: 6, height: 6, borderRadius: "50%", background: color }} />
-      {availability}
-    </span>
-  );
+/** Success rate only means something once an analyst has finished a task;
+ *  the backend reports 0 for "no tasks", which would read as "always fails". */
+export function analystSuccess(a: Pick<SocAnalyst, "tasks_completed" | "tasks_failed" | "success_rate">): string {
+  return a.tasks_completed + a.tasks_failed === 0 ? "—" : `${Math.round(a.success_rate)}%`;
 }
 
+export const ANALYST_COLUMNS: Column<SocAnalyst>[] = [
+  {
+    key: "name",
+    header: "Analyst",
+    sortValue: (a) => a.name.toLowerCase(),
+    render: (a) => (
+      <>
+        <span className="pk-cell-main">{a.name}</span>
+        <span className="pk-cell-sub">{a.agent_id} · {titleCaseWords(a.level)}</span>
+      </>
+    ),
+  },
+  { key: "availability", header: "Availability", sortValue: (a) => a.availability, render: (a) => <Pill tone={statusTone(a.availability)}>{titleCaseWords(a.availability)}</Pill> },
+  {
+    key: "workload",
+    header: "Workload",
+    numeric: true,
+    sortValue: (a) => (a.max_workload ? a.current_workload / a.max_workload : 0),
+    render: (a) => `${a.current_workload} / ${a.max_workload}`,
+  },
+  { key: "active", header: "Active events", numeric: true, sortValue: (a) => a.open_noc_events + a.acknowledged_noc_events, render: (a) => a.open_noc_events + a.acknowledged_noc_events },
+  { key: "resolved", header: "Resolved today", numeric: true, sortValue: (a) => a.resolved_today, render: (a) => a.resolved_today },
+  { key: "total", header: "Assigned (all time)", numeric: true, sortValue: (a) => a.total_assigned_events, render: (a) => a.total_assigned_events },
+  {
+    key: "success",
+    header: "Success rate",
+    numeric: true,
+    sortValue: (a) => (a.tasks_completed + a.tasks_failed ? a.success_rate : null),
+    render: (a) => <span title={`${a.tasks_completed} completed · ${a.tasks_failed} failed`}>{analystSuccess(a)}</span>,
+  },
+  { key: "last", header: "Last assigned", sortValue: (a) => (a.last_assigned_at ? new Date(a.last_assigned_at).getTime() : null), render: (a) => <span className="pk-muted">{a.last_assigned_at ? ago(a.last_assigned_at) : "Never"}</span> },
+];
+
+/** SOC analyst roster: summary strip + sortable roster table (polled every 5 s). */
 export default function SocAnalystRoster() {
-  const { data: analysts, isLoading, isError, refetch } = useSocAnalysts();
-  const { data: summary } = useSocAnalystSummary();
-
-  if (isLoading && !analysts) {
-    return <p style={{ color: "var(--muted)" }}>Loading SOC roster…</p>;
-  }
-
-  if (isError && !analysts) {
-    return (
-      <div>
-        <p style={{ color: "var(--red, #ff5c5c)" }}>SOC roster unavailable.</p>
-        <button
-          onClick={() => refetch()}
-          style={{
-            border: "1px solid var(--line)",
-            background: "rgba(1,10,17,0.8)",
-            color: "var(--cyan)",
-            padding: "8px 16px",
-            cursor: "pointer",
-            marginTop: 12,
-          }}
-        >
-          Retry
-        </button>
-      </div>
-    );
-  }
-
-  const items = analysts ?? [];
+  const analysts = useSocAnalysts();
+  const summary = useSocAnalystSummary();
+  const s = summary.data;
+  const items = analysts.data ?? [];
+  const v = (x: number | undefined) => (s && x !== undefined ? x.toLocaleString("en-US") : "—");
+  const anySample = items.some((a) => a.tasks_completed + a.tasks_failed > 0);
 
   return (
-    <div className="soc-analyst-roster">
-      {/* Summary strip */}
-      {summary && (
-        <div
-          style={{
-            display: "flex",
-            gap: 16,
-            flexWrap: "wrap",
-            marginBottom: 12,
-            padding: "8px 12px",
-            border: "1px solid var(--line)",
-            borderRadius: 6,
-            background: "rgba(1,10,17,0.55)",
-          }}
-        >
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <ShieldCheck size={13} style={{ color: "var(--cyan)" }} />
-            <span style={{ color: "var(--muted)", fontSize: 11 }}>TOTAL </span>
-            <span style={{ color: "var(--cyan)", fontWeight: 700 }}>{summary.total_analysts}</span>
-          </div>
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <UserCheck size={13} style={{ color: "var(--green, #2ecc71)" }} />
-            <span style={{ color: "var(--muted)", fontSize: 11 }}>AVAILABLE </span>
-            <span style={{ color: "var(--green, #2ecc71)", fontWeight: 700 }}>{summary.available_analysts}</span>
-          </div>
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <UserX size={13} style={{ color: "var(--amber, #f5a623)" }} />
-            <span style={{ color: "var(--muted)", fontSize: 11 }}>BUSY </span>
-            <span style={{ color: "var(--amber, #f5a623)", fontWeight: 700 }}>{summary.busy_analysts}</span>
-          </div>
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <AlertTriangle size={13} style={{ color: "var(--red, #ff5c5c)" }} />
-            <span style={{ color: "var(--muted)", fontSize: 11 }}>UNASSIGNED EVENTS </span>
-            <span style={{ color: "var(--red, #ff5c5c)", fontWeight: 700 }}>{summary.unassigned_open_events}</span>
-          </div>
-        </div>
-      )}
+    <>
+      <StatStrip>
+        <StatTile label="Analysts" value={v(s?.total_analysts)} info="SOC analysts registered for this tenant." loading={summary.isLoading} />
+        <StatTile label="Available" value={v(s?.available_analysts)} info="Analysts available to take new events." loading={summary.isLoading} />
+        <StatTile label="Busy" value={v(s?.busy_analysts)} info="Analysts currently working events." loading={summary.isLoading} />
+        <StatTile label="Offline" value={v(s?.offline_analysts)} info="Analysts not on shift." loading={summary.isLoading} />
+        <StatTile label="Unassigned events" value={v(s?.unassigned_open_events)} alarm={!!s?.unassigned_open_events} info="Open events with no analyst assigned." loading={summary.isLoading} />
+        <StatTile
+          label="Avg success rate"
+          value={s && anySample ? `${s.avg_success_rate}%` : "—"}
+          info="Average task success rate across analysts. Not measured until an analyst completes or fails a task."
+          loading={summary.isLoading}
+        />
+      </StatStrip>
 
-      {/* Roster list */}
-      {items.length === 0 ? (
-        <p style={{ color: "var(--muted)" }}>No SOC analysts registered.</p>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {items.map((analyst) => (
-            <Link
-              key={analyst.id}
-              href={`/soc-analyst-roster/${analyst.id}`}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                padding: "8px 12px",
-                border: "1px solid var(--line)",
-                borderRadius: 6,
-                background: "rgba(1,10,17,0.55)",
-                textDecoration: "none",
-                color: "inherit",
-                transition: "border-color 0.15s",
-              }}
-            >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, color: "#ccecf4" }}>{analyst.name}</div>
-                <div style={{ fontSize: 11, color: "var(--muted)" }}>
-                  {analyst.agent_id} · {analyst.level} · {analyst.tasks_completed} resolved
-                </div>
-              </div>
-              <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 12, color: "var(--cyan)", fontWeight: 700 }}>
-                  {analyst.open_noc_events + analyst.acknowledged_noc_events} active
-                </div>
-                <div style={{ fontSize: 11, color: "var(--muted)" }}>
-                  {analyst.total_assigned_events} total
-                </div>
-              </div>
-              <AvailabilityBadge availability={analyst.availability} />
-            </Link>
-          ))}
-        </div>
-      )}
-    </div>
+      <Panel
+        title="Roster"
+        info="Every SOC analyst with their live workload. Select a row for the analyst's assigned events."
+        aside={analysts.data ? `${items.length} analysts · refreshes every 5 s` : undefined}
+        state={analysts.data ? "ready" : analysts.isError ? "error" : "loading"}
+        errorText="The SOC roster could not be loaded."
+        onRetry={() => analysts.refetch()}
+        skeletonHeight={240}
+      >
+        <DataTable
+          caption="SOC analyst roster"
+          columns={ANALYST_COLUMNS}
+          rows={items}
+          rowKey={(a) => a.id}
+          rowHref={(a) => `/soc-analyst-roster/${a.id}`}
+          emptyText="No SOC analysts registered."
+          defaultSort={{ key: "active", dir: "desc" }}
+        />
+      </Panel>
+    </>
   );
 }

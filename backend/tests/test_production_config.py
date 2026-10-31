@@ -30,6 +30,8 @@ def _base_kwargs(**overrides):
         jwt_secret_key="a-completely-different-real-jwt-signing-secret",
         database_url="postgresql+asyncpg://produser:realpassword@prod-db.internal:5432/hsdeep",
         debug=False,
+        # Production must choose email explicitly ("log" is refused).
+        email_transport="none",
     )
     kwargs.update(overrides)
     return kwargs

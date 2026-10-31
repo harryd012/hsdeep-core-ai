@@ -1,0 +1,101 @@
+name: ci
+
+# Phase 9A: the pipeline must fail when a core quality/security gate fails.
+# `ci/quality_gates.sh` carries the gate definitions so the same checks can be
+# run locally and on any CI provider - this file only wires up services + steps.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      with_browser:
+        description: "Also run the browser regression (needs a seeded dev stack)"
+        type: boolean
+        default: false
+
+jobs:
+  gates:
+    # Pinned: ubuntu-latest moves to Ubuntu 26 from 2026-10-19
+    # (actions/runner-images#14748). Upgrade deliberately, not mid-run.
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: hsdeep
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      APP_ENV: development
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/hsdeep
+      TEST_DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/hsdeep_test
+      REDIS_URL: redis://localhost:6379/0
+      # CI-only placeholder. Real secrets are injected by the deployment's secret
+      # manager; ci/secret_scan.py fails the build if credential material is
+      # committed to a shipping path.
+      SECRET_ENCRYPTION_KEY: ci-placeholder-key-not-a-real-secret
+      LOG_LEVEL: INFO
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # Node 24 LTS: Node 20 reached end of life on 2026-04-30. Next 16.2
+      # supports >=20.9; 24 also runs the TypeScript unit tests natively.
+      # Keep in step with frontend/Dockerfile and .nvmrc.
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Install backend dependencies (runtime + dev)
+        run: pip install -r backend/requirements-dev.txt
+
+      - name: Apply database migrations
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Provision and migrate the isolated test database
+        working-directory: backend
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          export PGPASSWORD=postgres
+          psql -h localhost -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='hsdeep_test'" | grep -q 1 || createdb -h localhost -U postgres hsdeep_test
+          psql -h localhost -U postgres -tc "SELECT 1 FROM pg_roles WHERE rolname='test'" | grep -q 1 || psql -h localhost -U postgres -c "CREATE ROLE test LOGIN PASSWORD 'test'"
+          DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/hsdeep_test alembic upgrade head
+          psql -h localhost -U postgres -d hsdeep_test -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO test; GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO test; GRANT USAGE ON SCHEMA public TO test;"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: |
+          if [ -f pnpm-lock.yaml ]; then npm install -g pnpm && pnpm install --frozen-lockfile; \
+          elif [ -f package-lock.json ]; then npm ci; \
+          else npm install; fi
+
+      - name: Quality, security and build gates
+        run: bash ci/quality_gates.sh --with-containers
+
+      - name: Upload playwright failure artifacts (if any)
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: frontend-test-artifacts
+          path: frontend/tests/_artifacts
+          if-no-files-found: ignore

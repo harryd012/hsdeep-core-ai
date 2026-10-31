@@ -1,0 +1,21 @@
+allowBuilds:
+  sharp: true
+  unrs-resolver: true
+
+# `three@0.185.1` ships no bundled type declarations (no .d.ts, no "types"
+# field), so the app's `import ... from "three"` relies on the transitive
+# @types/three (pulled in by @react-three/fiber / stats-gl) plus sibling
+# transitive @types/* packages (draco3d, webxr, stats.js, offscreencanvas,
+# react-reconciler). npm's flat install hoists those to node_modules/@types,
+# which is how the local build type-checks; pnpm's isolated layout keeps
+# transitive packages out of the root, so `next build` fails with
+# "Could not find a declaration file for module 'three'".
+# Hoisting the @types scope publicly reproduces the known-good local layout
+# without touching package.json or pnpm-lock.yaml. The eslint/prettier
+# patterns are pnpm's own defaults, repeated here because setting this option
+# replaces them.
+publicHoistPattern:
+  - '@types/*'
+  - '*eslint*'
+  - '*prettier*'
+

@@ -44,7 +44,7 @@ def _analyst_to_out(analyst, event_counts: dict | None = None) -> SocAnalystOut:
     """Convert an Agent ORM row + event counts to SocAnalystOut."""
     counts = event_counts or {}
     data = {
-        **AgentRead.model_dump(analyst),
+        **AgentRead.model_validate(analyst).model_dump(),
         "open_noc_events": counts.get("open", 0),
         "acknowledged_noc_events": counts.get("acknowledged", 0),
         "total_assigned_events": counts.get("total", 0),
@@ -110,7 +110,7 @@ async def get_soc_analyst(
     event_counts = await noc_repo.count_by_analyst(tenant_id)
     counts = event_counts.get(analyst.id, {})
 
-    base_data = AgentRead.model_dump(analyst)
+    base_data = AgentRead.model_validate(analyst).model_dump()
     detail_data = {
         **base_data,
         "open_noc_events": counts.get("open", 0),

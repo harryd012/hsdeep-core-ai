@@ -127,6 +127,25 @@ class SaveResult:
     #: Per-protocol collection outcome, copied from the bundle so callers can
     #: tell "SNMP poll failed" apart from "no neighbours reported" (Step 10).
     neighbor_status: dict[str, str] = field(default_factory=dict)
+    # -- L3 topology: interface addresses and routes ---------------------------
+    addresses_upserted: int = 0
+    addresses_retired: int = 0
+    routes_upserted: int = 0
+    routes_retired: int = 0
+    #: Dynamic routes dropped by ``l3_max_dynamic_routes_per_device``.
+    routes_capped: int = 0
+    l3_status: dict[str, str] = field(default_factory=dict)
+    # -- Firewall gateway -------------------------------------------------------
+    firewalls_updated: int = 0
+    vpn_tunnels_upserted: int = 0
+    vpn_tunnels_retired: int = 0
+    firewall_status: dict[str, str] = field(default_factory=dict)
+    # -- Backup monitoring --------------------------------------------------
+    backup_vaults_updated: int = 0
+    backup_items_upserted: int = 0
+    backup_items_retired: int = 0
+    backup_jobs_upserted: int = 0
+    backup_status: dict[str, str] = field(default_factory=dict)
     # -- Universal infrastructure layer (spec: canonical telemetry) -----------
     #: Availability observations written for this bundle (one per device, from
     #: the device's own reported status).
@@ -225,6 +244,128 @@ class BundleSaver:
                     )
         return (device_allowance, sensor_allowance)
 
+    async def _save_l3(
+        self,
+        source: MonitoringSource,
+        bundle: NormalizedBundle,
+        result: SaveResult,
+        *,
+        provider: str | None,
+        device_id_by_external: dict[str, object],
+        interface_id_by_key: dict[tuple[str, str], object],
+        interface_id_by_name: dict[tuple[str, str], object],
+    ) -> None:
+        """Sync interface addresses and routes for every device in the bundle.
+
+        Runs only for the tables the collector says it read (``l3_status``),
+        so collectors that know nothing about L3 are untouched. Stored rows are
+        retired only when the read succeeded ("collected" or "empty").
+        """
+        from app.core.config import get_settings
+        from app.repositories.interface_address_repository import (
+            AddressInput,
+            InterfaceAddressRepository,
+        )
+        from app.repositories.network_route_repository import (
+            NetworkRouteRepository,
+            RouteInput,
+        )
+
+        result.l3_status = dict(bundle.l3_status)
+        address_status = bundle.l3_status.get("addresses")
+        route_status = bundle.l3_status.get("routes")
+        if address_status is None and route_status is None:
+            return
+
+        db = self.device_repo.db
+        device_ext_ids = [
+            nd.external_id for nd in bundle.devices if nd.external_id in device_id_by_external
+        ]
+
+        def _interface_id(device_ext: str, external_id: str | None, name: str | None):
+            if external_id is not None:
+                found = interface_id_by_key.get((device_ext, external_id))
+                if found is not None:
+                    return found
+            if name is not None:
+                return interface_id_by_name.get((device_ext, name))
+            return None
+
+        if address_status is not None:
+            retire = address_status in ("collected", "empty")
+            by_device: dict[str, list] = {ext: [] for ext in device_ext_ids}
+            for na in bundle.addresses:
+                if na.device_external_id in by_device:
+                    by_device[na.device_external_id].append(AddressInput(
+                        address=na.address,
+                        prefix_length=na.prefix_length,
+                        vrf=na.vrf,
+                        interface_id=_interface_id(
+                            na.device_external_id, na.interface_external_id, na.interface_name
+                        ),
+                        interface_name=na.interface_name,
+                        is_primary=na.is_primary,
+                    ))
+            repo = InterfaceAddressRepository(db)
+            for ext, items in by_device.items():
+                if not items and not retire:
+                    continue
+                synced = await repo.sync_for_device(
+                    tenant_id=source.tenant_id,
+                    device_id=device_id_by_external[ext],
+                    addresses=items,
+                    monitoring_source_id=source.id,
+                    provider=provider,
+                    retire_missing=retire,
+                )
+                result.addresses_upserted += synced.upserted
+                result.addresses_retired += synced.retired
+
+        if route_status is not None:
+            retire = route_status in ("collected", "empty")
+            cap = get_settings().l3_max_dynamic_routes_per_device
+            routes_by_device: dict[str, list] = {ext: [] for ext in device_ext_ids}
+            dynamic_kept: dict[str, int] = {}
+            for nr in bundle.routes:
+                if nr.device_external_id not in routes_by_device:
+                    continue
+                if nr.protocol not in ("connected", "static"):
+                    kept = dynamic_kept.get(nr.device_external_id, 0)
+                    if kept >= cap:
+                        result.routes_capped += 1
+                        continue
+                    dynamic_kept[nr.device_external_id] = kept + 1
+                routes_by_device[nr.device_external_id].append(RouteInput(
+                    destination=nr.destination,
+                    prefix_length=nr.prefix_length,
+                    protocol=nr.protocol,
+                    next_hop=nr.next_hop,
+                    outgoing_interface=nr.outgoing_interface,
+                    interface_id=_interface_id(nr.device_external_id, None, nr.outgoing_interface),
+                    metric=nr.metric,
+                    administrative_distance=nr.administrative_distance,
+                    vrf=nr.vrf,
+                    is_best=nr.is_best,
+                ))
+            if result.routes_capped:
+                logger.warning(
+                    "L3: dropped %d dynamic routes over the per-device cap of %d (source %s)",
+                    result.routes_capped, cap, source.id,
+                )
+            route_repo = NetworkRouteRepository(db)
+            for ext, items in routes_by_device.items():
+                if not items and not retire:
+                    continue
+                upserted, retired = await route_repo.sync_for_resource(
+                    tenant_id=source.tenant_id,
+                    resource_id=device_id_by_external[ext],
+                    provider=provider,
+                    routes=items,
+                    retire_missing=retire,
+                )
+                result.routes_upserted += upserted
+                result.routes_retired += retired
+
     async def save(self, source: MonitoringSource, bundle: NormalizedBundle) -> SaveResult:
         """Persist every entity in `bundle`, in device -> interface ->
         sensor -> metric -> event order, resolving cross-entity references
@@ -302,6 +443,9 @@ class BundleSaver:
         # (device_external_id, interface_external_id) -> Interface.id, for
         # sensor interface_id resolution in step 3.
         interface_id_by_key: dict[tuple[str, str], object] = {}
+        # (device external_id, interface NAME) -> Interface.id: routes and some
+        # address tables name the interface rather than giving its external id.
+        interface_id_by_name: dict[tuple[str, str], object] = {}
 
         # Phase 9.8: previous counter sample per (device, interface), read in ONE
         # query so a two-sample rate can be derived. A missing previous row just
@@ -368,13 +512,63 @@ class BundleSaver:
             if rate.measured:
                 result.rates_measured += 1
             interface_id_by_key[(ni.device_external_id, ni.external_id)] = interface.id
+            interface_id_by_name[(ni.device_external_id, ni.name)] = interface.id
             result.interfaces_upserted += 1
+
+        # -- 2b. Firewall state, VPN tunnels and licences --------------------
+        # Stored in their own tables; what the device reported also becomes
+        # sensor readings below, so firewall alerts open and auto-resolve
+        # through the same sensor path as every other threshold.
+        firewall_readings: list = []
+        if bundle.firewall_status:
+            from app.services.monitoring.firewall_saver import save_firewall
+
+            fw_result = await save_firewall(
+                self.device_repo.db,
+                tenant_id=source.tenant_id,
+                source_id=source.id,
+                bundle=bundle,
+                device_id_by_external=device_id_by_external,
+                now=collected_at,
+            )
+            firewall_readings = fw_result.readings
+            result.firewalls_updated = fw_result.firewalls_updated
+            result.vpn_tunnels_upserted = fw_result.tunnels_upserted
+            result.vpn_tunnels_retired = fw_result.tunnels_retired
+            result.firewall_status = dict(bundle.firewall_status)
+        firewall_reading_ids = {r.external_id for r in firewall_readings}
+
+        # -- 2c. Backup vaults, protected items and jobs ----------------------
+        # Same shape as the firewall tables: own tables, and what the provider
+        # reported becomes sensor readings so backup alerts open and resolve
+        # through the sensor path.
+        backup_readings: list = []
+        if bundle.backup_status:
+            from app.services.monitoring.backup_saver import save_backup
+
+            bk_result = await save_backup(
+                self.device_repo.db,
+                tenant_id=source.tenant_id,
+                source_id=source.id,
+                bundle=bundle,
+                device_id_by_external=device_id_by_external,
+                now=collected_at,
+            )
+            backup_readings = bk_result.readings
+            result.backup_vaults_updated = bk_result.vaults_updated
+            result.backup_items_upserted = bk_result.items_upserted
+            result.backup_items_retired = bk_result.items_retired
+            result.backup_jobs_upserted = bk_result.jobs_upserted
+            result.backup_status = dict(bundle.backup_status)
+        # Firewall and backup readings always name their device (the firewall /
+        # the vault), so their alerts are linked to it below.
+        device_linked_reading_ids = firewall_reading_ids | {r.external_id for r in backup_readings}
 
         # -- 3. Sensors ------------------------------------------------------
         # external_id -> Sensor.id, for metric sensor_id resolution in step 4.
         sensor_id_by_external: dict[str, object] = {}
 
-        for reading in bundle.sensors:
+        for reading in [*bundle.sensors, *firewall_readings, *backup_readings]:
             interface_id = None
             if reading.device_external_id is not None and reading.interface_external_id is not None:
                 interface_id = interface_id_by_key.get(
@@ -416,6 +610,13 @@ class BundleSaver:
                 interface_id=interface_id,
             )
             sensor_id_by_external[reading.external_id] = sensor.id
+            # Firewall readings always name their device, so their alerts
+            # carry it for correlation and health (KNOWN GAP #2 is about the
+            # repository signature; the link is set on the row directly).
+            if reading.external_id in device_linked_reading_ids:
+                fw_device_id = device_id_by_external.get(reading.device_external_id)
+                if fw_device_id is not None and sensor.device_id != fw_device_id:
+                    sensor.device_id = fw_device_id
 
             if created:
                 result.sensors_created += 1
@@ -555,6 +756,17 @@ class BundleSaver:
                     )
                     result.neighbors_written += written
                     result.neighbors_unresolved += unresolved
+
+        # -- 7b. L3 addressing and routes ------------------------------------
+        await self._save_l3(
+            source,
+            bundle,
+            result,
+            provider=provider_token,
+            device_id_by_external=device_id_by_external,
+            interface_id_by_key=interface_id_by_key,
+            interface_id_by_name=interface_id_by_name,
+        )
 
         # -- 8. Universal infrastructure layer (provider-neutral) -------------
         # Feeds the canonical telemetry/capability model from the SAME bundle:

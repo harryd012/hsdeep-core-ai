@@ -12,7 +12,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_tenant_id
+from app.core.auth import get_tenant_id, require_permission
 from app.core.db import get_db
 from app.core.entitlements import require_active_subscription
 from app.repositories.integration_repository import IntegrationRepository
@@ -102,7 +102,7 @@ async def get_integration(
 # ---------------------------------------------------------------------------
 
 
-@router.post("", dependencies=[_active_sub_guard], response_model=IntegrationOut)
+@router.post("", dependencies=[Depends(require_permission("integrations.write")), _active_sub_guard], response_model=IntegrationOut)
 async def create_integration(
     payload: IntegrationCreate,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -123,7 +123,7 @@ async def create_integration(
     return integration
 
 
-@router.patch("/{integration_id}", dependencies=[_active_sub_guard], response_model=IntegrationOut)
+@router.patch("/{integration_id}", dependencies=[Depends(require_permission("integrations.write")), _active_sub_guard], response_model=IntegrationOut)
 async def update_integration(
     integration_id: uuid.UUID,
     payload: IntegrationUpdate,

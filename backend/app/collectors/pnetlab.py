@@ -167,6 +167,7 @@ class PNETLabLink:
 class PNETLabCollector(BaseCollector):
     display_name = "PNETLab (lab topology)"
     implemented = True
+    category = "network"
 
     def __init__(self, source) -> None:
         super().__init__(source)

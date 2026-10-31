@@ -346,7 +346,7 @@ const DIAGNOSTIC_CATALOGUE: {
  * an actor id, which this view does not hold, so it is never sent from here.
  */
 const TRANSITIONS: Omit<AvailableTransition, "isExpectedNext">[] = [
-  { key: "acknowledge", label: "Acknowledge", method: "POST", endpoint: "/api/incidents/{id}/acknowledge", requiredInputs: ["acknowledged_by (actor id)"], expectedFrom: ["open"] },
+  { key: "acknowledge", label: "Acknowledge", method: "POST", endpoint: "/api/incidents/{id}/acknowledge", requiredInputs: [], expectedFrom: ["open"] },
   { key: "investigate", label: "Start investigation", method: "POST", endpoint: "/api/incidents/{id}/investigate", requiredInputs: [], expectedFrom: ["open", "acknowledged"] },
   { key: "monitor", label: "Set to monitoring", method: "POST", endpoint: "/api/incidents/{id}/monitor", requiredInputs: [], expectedFrom: ["investigating", "recovered"] },
   { key: "recover", label: "Record recovery", method: "POST", endpoint: "/api/incidents/{id}/recover", requiredInputs: [], expectedFrom: ["investigating", "monitoring"] },

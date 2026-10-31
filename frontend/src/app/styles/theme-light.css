@@ -1,0 +1,121 @@
+/* ==================================================================== */
+/* Light theme — `<html data-theme="light">`.                             */
+/* One override layer: it re-points the platform tokens (dashboard.css)  */
+/* and the Command Center / page-kit tokens (--ecc-*), then patches the  */
+/* few shell rules that hard-code dark gradients. Dark stays the default */
+/* stylesheet; nothing here applies unless the attribute is set.         */
+/* ==================================================================== */
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* platform tokens */
+  --bg: #f3f5f9;
+  --bg-raised: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f7f9fc;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --cyan: #2563eb;
+  --information: #0284c7;
+  --green: #16a34a;
+  --amber: #d97706;
+  --red: #dc2626;
+  --violet: #7c3aed;
+  --teal: #0d9488;
+  --muted: #64748b;
+  --text: #0f172a;
+  --text-dim: #475569;
+  --fg: #0f172a;
+  --border: #e2e8f0;
+
+  /* Command Center + page kit */
+  --ecc-surface: #ffffff;
+  --ecc-surface-raised: #f7f9fc;
+  --ecc-border: #e2e8f0;
+  --ecc-border-strong: #cbd5e1;
+  --ecc-text: #0f172a;
+  --ecc-text-muted: #64748b;
+  --ecc-accent: #2563eb;
+  --ecc-good: #16a34a;
+  --ecc-warn: #d97706;
+  --ecc-bad: #dc2626;
+  --ecc-down: #991b1b;
+  --ecc-unknown: #94a3b8;
+  --ecc-track: #e9eef5;
+  --ecc-skeleton: #eef2f7;
+}
+
+/* -- shell ----------------------------------------------------------------- */
+:root[data-theme="light"] body { background: var(--bg); color: var(--text); }
+:root[data-theme="light"] .hs-app { background: var(--bg); }
+:root[data-theme="light"] .hs-sidebar {
+  background: #ffffff;
+  border-right: 1px solid var(--line);
+  box-shadow: 1px 0 0 rgba(15, 23, 42, 0.02);
+}
+:root[data-theme="light"] .hs-sidebar__group > button { color: #334155; }
+:root[data-theme="light"] .hs-sidebar__group > button:hover { color: #0f172a; background: #f1f5f9; }
+:root[data-theme="light"] .hs-sidebar__group > button.active { color: color-mix(in srgb, var(--ecc-accent) 85%, #000000); background: color-mix(in srgb, var(--ecc-accent) 10%, #ffffff); }
+:root[data-theme="light"] .hs-sidebar__child:hover { color: #0f172a; background: #f1f5f9; }
+:root[data-theme="light"] .hs-sidebar__child[aria-current=page] { color: color-mix(in srgb, var(--ecc-accent) 85%, #000000); }
+:root[data-theme="light"] .hs-sidebar__ctx-value.switchable:hover,
+:root[data-theme="light"] .hs-sidebar__tenant-item:hover { background: #f1f5f9; }
+
+:root[data-theme="light"] .command-center__chat {
+  background: rgba(255, 255, 255, 0.96);
+  border-color: var(--line);
+  box-shadow: 0 8px 24px -12px rgba(15, 23, 42, 0.25);
+}
+:root[data-theme="light"] .command-center__chat input { background: #f8fafc; color: var(--text); }
+:root[data-theme="light"] .command-center__chat button:not([type=button]) {
+  color: color-mix(in srgb, var(--ecc-accent) 85%, #000000);
+  background: color-mix(in srgb, var(--ecc-accent) 10%, #ffffff);
+  border-color: color-mix(in srgb, var(--ecc-accent) 30%, #ffffff);
+}
+
+/* -- cards, tiles, tables -------------------------------------------------- */
+:root[data-theme="light"] .ecc-card,
+:root[data-theme="light"] .ecc-kpi {
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+:root[data-theme="light"] a.ecc-kpi:hover {
+  box-shadow: 0 6px 16px -8px color-mix(in srgb, var(--ecc-accent) 40%, transparent);
+}
+:root[data-theme="light"] .pk-table thead th { background: #f8fafc; color: #475569; }
+:root[data-theme="light"] .pk-table tbody tr:hover,
+:root[data-theme="light"] .ecc-table tbody tr:hover { background: #f8fafc; }
+
+/* Pills on white: tinted fills instead of outline-only, as in the reference. */
+:root[data-theme="light"] .pk-pill,
+:root[data-theme="light"] .ecc-pill {
+  background: color-mix(in srgb, currentColor 10%, #ffffff);
+  border-color: color-mix(in srgb, currentColor 30%, #ffffff);
+}
+:root[data-theme="light"] .pk-pill--warn,
+:root[data-theme="light"] .ecc-delta--warn { color: #b45309; }
+
+:root[data-theme="light"] .pk-title__icon,
+:root[data-theme="light"] .ecc-header__icon {
+  background: color-mix(in srgb, var(--ecc-accent) 10%, #ffffff);
+  border-color: color-mix(in srgb, var(--ecc-accent) 30%, #ffffff);
+  color: color-mix(in srgb, var(--ecc-accent) 85%, #000000);
+}
+:root[data-theme="light"] .pk-button--primary { color: #ffffff; }
+
+/* Legacy panels still on the old classes keep readable contrast. */
+:root[data-theme="light"] .hud-panel {
+  background: #ffffff;
+  border-color: var(--line);
+  color: var(--text);
+}
+
+/* -- theme toggle (both themes) --------------------------------------------- */
+.theme-toggle {
+  display: inline-flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 10px; border-radius: 8px; cursor: pointer;
+  font: inherit; font-size: 13px; color: var(--text-dim);
+  background: transparent; border: 1px solid var(--line);
+}
+.theme-toggle:hover { color: var(--text); border-color: var(--line-strong); }

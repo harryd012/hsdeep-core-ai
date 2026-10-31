@@ -112,9 +112,10 @@ def create_access_token(
     email: str,
     is_superuser: bool,
     permissions: frozenset[str],
+    session_id: uuid.UUID | None = None,
 ) -> str:
     now = datetime.now(timezone.utc)
-    claims = {
+    claims: dict = {
         "sub": str(user_id),
         "tid": str(tenant_id),
         "email": email,
@@ -124,6 +125,8 @@ def create_access_token(
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=settings.access_token_expire_minutes)).timestamp()),
     }
+    if session_id is not None:
+        claims["sid"] = str(session_id)
     return jwt.encode(claims, settings.effective_jwt_secret, algorithm=settings.jwt_algorithm)
 
 
@@ -248,34 +251,6 @@ class Principal:
         return self.is_superuser or code in self.permissions
 
 
-async def _audit_impersonation(
-    actor_user_id: uuid.UUID, actor_email: str, target_tenant_id: uuid.UUID
-) -> None:
-    """Best-effort audit of a superuser cross-tenant (X-Tenant-Id) override.
-    Opens its own session so it can never break or slow the request."""
-    try:
-        from app.core.db import AsyncSessionLocal
-        from app.services.audit_service import AuditService
-
-        async with AsyncSessionLocal() as db:
-            await AuditService(db).record(
-                tenant_id=target_tenant_id,
-                action="tenant.impersonation",
-                actor_id=actor_user_id,
-                actor_email=actor_email,
-                entity_type="tenant",
-                entity_id=target_tenant_id,
-                description=(
-                    f"Superuser {actor_email} acted on tenant "
-                    f"{target_tenant_id} via X-Tenant-Id override"
-                ),
-                context={"target_tenant_id": str(target_tenant_id)},
-            )
-            await db.commit()
-    except Exception:  # noqa: BLE001 - auditing must never break auth
-        logger.exception("Failed to audit tenant impersonation for actor %s", actor_email)
-
-
 def _principal_from_payload(payload: dict, x_tenant_id: uuid.UUID | None) -> Principal:
     is_superuser = bool(payload.get("su", False))
     token_tenant = uuid.UUID(payload["tid"])
@@ -288,19 +263,9 @@ def _principal_from_payload(payload: dict, x_tenant_id: uuid.UUID | None) -> Pri
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="X-Tenant-Id override is not permitted for this user",
             )
+        # Allowed only with a live break-glass grant, checked in
+        # get_current_user (_require_support_grant), which also logs the use.
         effective_tenant = x_tenant_id
-        # Security audit: every cross-tenant override is recorded
-        # (fire-and-forget; never blocks or fails the request). Skipped when
-        # no event loop is running (e.g. direct unit-test invocation).
-        try:
-            _loop = asyncio.get_running_loop()
-            _loop.create_task(
-                _audit_impersonation(
-                    uuid.UUID(payload["sub"]), payload.get("email", ""), effective_tenant
-                )
-            )
-        except RuntimeError:
-            logger.debug("Impersonation audit skipped: no running event loop")
     else:
         effective_tenant = token_tenant
 
@@ -338,11 +303,75 @@ async def _validate_override_tenant(target_tenant_id: uuid.UUID) -> None:
         )
 
 
+SUPPORT_GRANT_REQUIRED = (
+    "Support access to this tenant needs an active break-glass grant "
+    "(POST /api/support-access/grants with a reason)."
+)
+
+
+async def _require_support_grant(principal: Principal) -> None:
+    """403 unless the superuser holds an unrevoked, unexpired grant for the
+    target tenant. Every allowed use is logged with the grant id."""
+    from app.core.db import AsyncSessionLocal
+    from app.services.support_access import SupportAccessService
+
+    async with AsyncSessionLocal() as db:
+        grant = await SupportAccessService(db).live_grant(principal.user_id, principal.tenant_id)
+    if grant is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=SUPPORT_GRANT_REQUIRED)
+    logger.info(
+        "support access: user=%s tenant=%s grant=%s expires=%s",
+        principal.user_id, principal.tenant_id, grant.id, grant.expires_at.isoformat(),
+    )
+
+
 def _override_applied(principal: Principal, payload: dict) -> bool:
     """True when the request's effective tenant came from an X-Tenant-Id
     override rather than the token's own tenant claim (only possible for a
     superuser — `_principal_from_payload` already 403s everyone else)."""
     return principal.tenant_id != uuid.UUID(payload["tid"])
+
+
+# -- Session liveness -------------------------------------------------------
+# Positive results are cached per process for SESSION_CHECK_CACHE_SECONDS so
+# an authenticated request does not always pay a database round trip. A
+# revocation in this process clears the entry at once; in another process it
+# takes effect within the cache window (default 10 s, 0 disables caching).
+_live_sessions: dict[str, float] = {}
+
+
+def forget_session(session_id: uuid.UUID | str | None = None) -> None:
+    """Drop one cached session, or all of them when no id is given."""
+    if session_id is None:
+        _live_sessions.clear()
+    else:
+        _live_sessions.pop(str(session_id), None)
+
+
+async def session_is_live(session_id: str) -> bool:
+    import time
+
+    from app.core.db import AsyncSessionLocal
+    from app.repositories.refresh_token_repository import RefreshTokenRepository
+
+    ttl = settings.session_check_cache_seconds
+    now = time.monotonic()
+    cached = _live_sessions.get(session_id)
+    if ttl > 0 and cached is not None and now - cached < ttl:
+        return True
+    try:
+        sid = uuid.UUID(session_id)
+    except ValueError:
+        return False
+    async with AsyncSessionLocal() as db:
+        live = await RefreshTokenRepository(db).session_is_live(sid)
+    if live and ttl > 0:
+        if len(_live_sessions) > 50_000:
+            _live_sessions.clear()
+        _live_sessions[session_id] = now
+    else:
+        _live_sessions.pop(session_id, None)
+    return live
 
 
 def _publish_principal(request: Request, principal: Principal) -> None:
@@ -379,17 +408,31 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Try JWT first (fast path - no DB round-trip).
+    # Try JWT first.
     try:
         payload = _decode_access_token(token)
-        principal = _principal_from_payload(payload, x_tenant_id)
     except HTTPException:
         # Not a valid JWT - fall through to API key resolution.
         pass
     else:
-        # P0 hardening: validate the override target before trusting it.
+        # A valid JWT: authorization failures (e.g. a forbidden X-Tenant-Id)
+        # are final here, never retried as an API key.
+        principal = _principal_from_payload(payload, x_tenant_id)
+        # Server-side revocation: an access token bound to a sign-in session
+        # stops working as soon as the session is revoked (logout, password
+        # reset, refresh-token replay) or the user is disabled.
+        if payload.get("sid") and not await session_is_live(payload["sid"]):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session has ended. Sign in again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        # Superuser acting in another tenant: the target must exist AND the
+        # caller must hold a live break-glass grant for it (R1.2).
         if _override_applied(principal, payload):
             await _validate_override_tenant(principal.tenant_id)
+            await _require_support_grant(principal)
+        request.state.token_tenant_id = uuid.UUID(payload["tid"])
         _publish_principal(request, principal)
         return principal
 
@@ -474,6 +517,32 @@ def get_tenant_id(principal: Principal = Depends(get_current_user)) -> uuid.UUID
             ...
     """
     return principal.tenant_id
+
+
+# API keys authenticate with this nil user id (see _resolve_api_key_principal).
+_NO_USER_ID = uuid.UUID(int=0)
+
+
+def get_actor_user_id(principal: Principal = Depends(get_current_user)) -> uuid.UUID | None:
+    """The signed-in user an action (acknowledge, assign) is attributed to,
+    or None for an API key, which has no user identity. Never taken from the
+    request body."""
+    return None if principal.user_id == _NO_USER_ID else principal.user_id
+
+
+def get_acting_user_id(principal: Principal = Depends(get_current_user)) -> uuid.UUID:
+    """The signed-in user an approval or rejection is attributed to.
+
+    Approver identity always comes from the authenticated principal, never
+    from the request body (a client could otherwise name any approver).
+    API keys carry no user identity, so they cannot approve or reject.
+    """
+    if principal.user_id == _NO_USER_ID:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Approvals require a signed-in user; API keys cannot approve or reject.",
+        )
+    return principal.user_id
 
 
 def require_admin(principal: Principal = Depends(get_current_user)) -> Principal:

@@ -10,18 +10,13 @@
  * The canvas owns no data and no viewport state: the panel passes both in, which
  * is what lets a refresh keep zoom, pan, layout and selection.
  */
-import {
-  useCallback,
-  useMemo,
-  useRef,
-  type PointerEvent as ReactPointerEvent,
-  type WheelEvent,
-} from "react";
+import { useCallback, useMemo, useRef } from "react";
 
 import type { Viewport } from "../../lib/topology/layout";
 import { DEVICE_STATE_VISUALS, LINK_STATE_VISUALS } from "../../lib/topology/status";
 import type { RenderEdge, RenderNode, TopologyGraphData } from "./topologyRenderTypes";
 import { ResourceIcon } from "./TopologyVisuals";
+import { usePanZoom } from "./usePanZoom";
 
 const NODE_WIDTH = 176;
 const NODE_HEIGHT = 56;
@@ -67,13 +62,6 @@ export default function TopologyCanvas({
   animateEnabled,
   animatedEdgeIds,
 }: TopologyCanvasProps) {
-  const drag = useRef<{
-    x: number;
-    y: number;
-    offsetX: number;
-    offsetY: number;
-    active: boolean;
-  } | null>(null);
   const layerRef = useRef<HTMLDivElement | null>(null);
 
   const point = useCallback(
@@ -101,71 +89,14 @@ export default function TopologyCanvas({
     return boxes;
   }, [model.nodes, point]);
 
-  const onWheel = (event: WheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const rect = event.currentTarget.getBoundingClientRect();
-    const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
-    const next = Math.min(3, Math.max(0.15, viewport.scale * factor));
-    const ratio = next / viewport.scale;
-    const pointerX = event.clientX - rect.left;
-    const pointerY = event.clientY - rect.top;
-    onViewportChange({
-      scale: next,
-      offsetX: pointerX - (pointerX - viewport.offsetX) * ratio,
-      offsetY: pointerY - (pointerY - viewport.offsetY) * ratio,
-    });
-  };
-
-  /**
-   * Panning starts only once the pointer has actually moved.
-   *
-   * Capturing the pointer on pointerdown (the obvious implementation) retargets
-   * the compatibility click to the container, so a plain click on a node or a
-   * link never reaches its handler and the detail drawer never opens. The
-   * threshold keeps clicks as clicks and drags as drags.
-   */
-  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    drag.current = {
-      x: event.clientX,
-      y: event.clientY,
-      offsetX: viewport.offsetX,
-      offsetY: viewport.offsetY,
-      active: false,
-    };
-  };
-
-  const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const state = drag.current;
-    if (!state) return;
-    const dx = event.clientX - state.x;
-    const dy = event.clientY - state.y;
-    if (!state.active) {
-      if (Math.hypot(dx, dy) < 4) return;
-      state.active = true;
-      event.currentTarget.setPointerCapture(event.pointerId);
-    }
-    onViewportChange({
-      scale: viewport.scale,
-      offsetX: state.offsetX + dx,
-      offsetY: state.offsetY + dy,
-    });
-  };
-
-  const endDrag = () => {
-    drag.current = null;
-  };
+  const panZoom = usePanZoom(viewport, onViewportChange);
 
   const opacityFor = (inHighlight: boolean) =>
     highlight !== null && !inHighlight ? 0.25 : 1;
 
   return (
     <div
-      onWheel={onWheel}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={endDrag}
-      onPointerLeave={endDrag}
+      {...panZoom}
       onClick={(event) => {
         // Background click (the container itself or the transformed layer, i.e.
         // empty canvas) clears the selection. A click on a node/link targets

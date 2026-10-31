@@ -5,7 +5,26 @@ from functools import lru_cache
 from typing import ClassVar
 import os
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+#: URL schemes managed Postgres providers hand out (Render, Heroku, Railway...).
+#: The app runs on SQLAlchemy's async engine, which needs the asyncpg driver
+#: named explicitly; a bare scheme would select psycopg2, which is not installed.
+_SYNC_POSTGRES_SCHEMES = ("postgres://", "postgresql://")
+
+
+def normalize_database_url(url: str | None) -> str | None:
+    """``postgres://`` / ``postgresql://`` -> ``postgresql+asyncpg://``.
+
+    URLs that already name a driver are returned unchanged.
+    """
+    if not url:
+        return url
+    for scheme in _SYNC_POSTGRES_SCHEMES:
+        if url.startswith(scheme):
+            return "postgresql+asyncpg://" + url[len(scheme):]
+    return url
 
 
 class Settings(BaseSettings):
@@ -27,6 +46,37 @@ class Settings(BaseSettings):
     # non-wildcard allow-list (enforced at startup in main.py).
     cors_origins: str = ""  # comma-separated allow-list; "" = dev localhost default
     force_https: bool = False
+    # Prometheus /metrics. When set, scrapers must send
+    # `Authorization: Bearer <token>`. When unset, /metrics is open outside
+    # production and answers 404 in production (not published by default).
+    metrics_bearer_token: str = ""
+    # POST /api/billing/signup. Off for an invite-only pilot: tenants are then
+    # created by an operator (scripts/seed_admin.py), never by the public.
+    public_signup_enabled: bool = True
+    # Per-account lockout: this many consecutive failed logins lock the
+    # account for login_lockout_minutes (0 attempts disables the lockout).
+    login_max_failed_attempts: int = 5
+    login_lockout_minutes: int = 15
+    # Automated remediation is only "resolved" after fresh telemetry confirms
+    # recovery (app/services/events/recovery_validator.py): this many
+    # consecutive recovered checks, re-checked every interval, at most
+    # `attempts` times before escalating.
+    recovery_validation_attempts: int = 10
+    recovery_validation_interval_seconds: float = 60.0
+    recovery_validation_consecutive_passes: int = 2
+    # Outbound email (app/services/email). "smtp" sends through SMTP_*;
+    # "log" logs the message metadata instead of sending (development only,
+    # refused in production because reset links would silently vanish);
+    # "none" disables email: password reset and invitations then answer 503.
+    email_transport: str = "log"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_starttls: bool = True
+    email_from: str = ""
+    # Public web origin used to build links in emails (never the request Host).
+    app_public_url: str = "http://localhost:3000"
 
     # Server
     host: str = "0.0.0.0"
@@ -39,6 +89,11 @@ class Settings(BaseSettings):
     # instead of `database_url`, so DB-writing tests never mutate the dev DB.
     # The test suite refuses to run (see tests/conftest.py) when this is unset.
     test_database_url: str | None = None
+
+    @field_validator("database_url", "test_database_url", mode="before")
+    @classmethod
+    def _asyncpg_driver(cls, value):
+        return normalize_database_url(value) if isinstance(value, str) else value
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
@@ -60,6 +115,14 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 30
+    # How long one process trusts a positive "session is live" check. Bounds
+    # how long a revoked session's access token can still be used on another
+    # process. 0 checks the database on every request.
+    session_check_cache_seconds: int = 10
+    # Break-glass support access (R1.2): longest grant a superuser may open
+    # on another tenant, and the default when none is requested.
+    support_grant_max_minutes: int = 480
+    support_grant_default_minutes: int = 60
     # Master switch for the phased auth cutover. While False (default), the
     # `require_permission`/`get_current_user` dependencies still authenticate
     # a presented token but routes that have NOT yet been migrated keep their
@@ -70,6 +133,22 @@ class Settings(BaseSettings):
     # Collectors / Scheduler
     max_concurrent_collections: int = 10
     collector_run_stale_minutes: int = 10
+    # L3 topology: dynamic (BGP/OSPF/other) routes kept per device per poll.
+    # Connected and static routes are always kept; a full BGP table is not.
+    l3_max_dynamic_routes_per_device: int = 500
+    # Firewall gateway alert thresholds (percent, and days before licence
+    # expiry). Applied to what the device itself reports; a value the device
+    # did not report never alerts.
+    firewall_session_warning_pct: float = 80.0
+    firewall_session_critical_pct: float = 95.0
+    firewall_resource_warning_pct: float = 85.0
+    firewall_resource_critical_pct: float = 95.0
+    firewall_licence_warning_days: int = 30
+    # Backup monitoring: a protected item with no successful backup for longer
+    # than this recovery-point objective alerts (hours). Job history read per
+    # poll covers this many hours back.
+    backup_rpo_hours: int = 24
+    backup_job_lookback_hours: int = 72
 
     # Correlation: how long an open incident may be quiet before a new alert
     # starts a fresh incident instead of reopening it. Replaces the hardcoded
@@ -128,6 +207,12 @@ class Settings(BaseSettings):
     # leftover Redis keys after a crash. Redis failures fail OPEN.
     source_rate_limit_rpm: int = 0
     source_rate_limit_ttl_seconds: int = 120
+
+    # Per-user fair-use cap for session-JWT (web UI) requests, per minute
+    # (app/main.py _RateLimiter). Session traffic is never metered against the
+    # plan's API allowance, so this is what stops scripting against a session
+    # token. Over the cap -> 429 + Retry-After. Nonpositive -> built-in 600.
+    session_rpm_per_user: int = 600
 
     # Local LLM (Ollama) — used by the AI Copilot for intent classification
     # and context summarization only. Defaults suit a local dev Ollama
@@ -235,6 +320,15 @@ class Settings(BaseSettings):
             return problems
 
         # --- production-only contract (Phase 9A) --------------------------
+        if self.email_transport == "log":
+            problems.append(
+                "EMAIL_TRANSPORT=log only logs messages; in production password "
+                "reset and invitation links would never arrive. Use smtp, or "
+                "none to switch email off."
+            )
+        if self.email_transport == "smtp" and not (self.smtp_host and self.email_from):
+            problems.append("EMAIL_TRANSPORT=smtp needs SMTP_HOST and EMAIL_FROM.")
+
         if not self.force_https:
             problems.append(
                 "FORCE_HTTPS must be true in production - plaintext requests "

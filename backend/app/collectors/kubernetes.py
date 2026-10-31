@@ -45,6 +45,7 @@ _DEFAULT_PORT = 6443
 class KubernetesCollector(BaseCollector):
     display_name = "Kubernetes Cluster"
     implemented = True
+    category = "cloud"
 
     # -- config helpers -------------------------------------------------------
 

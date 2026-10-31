@@ -140,7 +140,7 @@ async def run_discovery(
     )
 
     job.status = {
-        "SUCCESS": "success", "PARTIAL": "partial", "FAILED": "error",
+        "SUCCESS": "success", "PARTIAL": "partial", "FAILED": "error", "EMPTY": "empty",
     }.get(result.status, "partial")
     job.devices_upserted = result.created
     job.finished_at = datetime.now(timezone.utc)

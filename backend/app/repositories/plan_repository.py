@@ -55,6 +55,9 @@ class PlanRepository:
         seats: int,
         features_json: dict,
         is_public: bool = True,
+        alert_limit: int = 0,
+        collector_run_limit: int = 0,
+        display_order: int = 0,
     ) -> Plan:
         plan = Plan(
             name=name,
@@ -69,6 +72,9 @@ class PlanRepository:
             seats=seats,
             features_json=features_json,
             is_public=is_public,
+            alert_limit=alert_limit,
+            collector_run_limit=collector_run_limit,
+            display_order=display_order,
         )
         self.db.add(plan)
         await self.db.flush()

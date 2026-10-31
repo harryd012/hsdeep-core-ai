@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -33,7 +34,18 @@ from app.collectors.base import (
     ConnectionCheck,
     NormalizedBundle,
     NormalizedDevice,
+    NormalizedFirewallStatus,
     NormalizedInterface,
+    NormalizedInterfaceAddress,
+    NormalizedLicence,
+    NormalizedRoute,
+    NormalizedVpnTunnel,
+)
+from app.core.ip_addressing import (
+    normalise_vrf,
+    parse_interface_address,
+    parse_next_hop,
+    parse_route_destination,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,6 +60,8 @@ _RETRY_DELAY_SECONDS = 1.0
 class FortiGateCollector(BaseCollector):
     display_name = "Fortinet FortiGate"
     implemented = True
+    category = "firewall"
+    firewall_capabilities = ("status", "vpn", "licences")
 
     # -- config / URL helpers -------------------------------------------------
 
@@ -161,6 +175,36 @@ class FortiGateCollector(BaseCollector):
         except (httpx.TransportError, httpx.TimeoutException, httpx.HTTPStatusError) as exc:
             logger.warning("FortiGate collect(): system/interface failed: source_id=%s error_type=%s", self.source.id, type(exc).__name__)
             result["interfaces"] = {"results": []}
+            result["interfaces_failed"] = True
+
+        # Routing table (L3 topology). Optional: a missing permission or an
+        # older FortiOS without the endpoint is "unavailable", never an error.
+        try:
+            route_resp = await self._request("/api/v2/monitor/router/ipv4", timeout=_TABLE_TIMEOUT)
+            if route_resp.status_code == 200:
+                result["routes"] = route_resp.json()
+                result["routes_status"] = "collected"
+            else:
+                result["routes_status"] = "unavailable"
+        except (httpx.TransportError, httpx.TimeoutException) as exc:
+            logger.warning("FortiGate collect(): router/ipv4 failed: source_id=%s error_type=%s", self.source.id, type(exc).__name__)
+            result["routes_status"] = "failed"
+
+        # Firewall gateway tables. Each is independently statused: a missing
+        # permission or endpoint is "unavailable", a transport error "failed".
+        result["fw"], result["fw_status"] = {}, {}
+        for key, path, params in _FIREWALL_READS:
+            try:
+                resp = await self._request(path, params=params, timeout=_TABLE_TIMEOUT)
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                logger.warning("FortiGate collect(): %s failed: source_id=%s error_type=%s", path, self.source.id, type(exc).__name__)
+                result["fw_status"][key] = "failed"
+                continue
+            if resp.status_code == 200:
+                result["fw"][key] = resp.json()
+                result["fw_status"][key] = "collected"
+            else:
+                result["fw_status"][key] = "unavailable"
 
         return result
 
@@ -213,7 +257,31 @@ class FortiGateCollector(BaseCollector):
             )
             interfaces.append(interface)
 
-        return NormalizedBundle(devices=devices, interfaces=interfaces)
+        addresses = _parse_addresses(iface_results)
+        routes = _parse_routes(raw.get("routes", {}).get("results", []))
+
+        l3_status: dict[str, str] = {}
+        if "interfaces" in raw:
+            if raw.get("interfaces_failed"):
+                l3_status["addresses"] = "failed"
+            else:
+                l3_status["addresses"] = "collected" if addresses else "empty"
+        routes_status = raw.get("routes_status")
+        if routes_status == "collected":
+            l3_status["routes"] = "collected" if routes else "empty"
+        elif routes_status is not None:
+            l3_status["routes"] = routes_status
+
+        bundle = NormalizedBundle(
+            devices=devices,
+            interfaces=interfaces,
+            addresses=addresses,
+            routes=routes,
+            l3_status=l3_status,
+        )
+        if "fw_status" in raw:
+            _normalize_firewall(raw, bundle, local_serial=raw.get("status", {}).get("serial"))
+        return bundle
 
 
 def _parse_speed(speed_str: str | None) -> float | None:
@@ -224,3 +292,191 @@ def _parse_speed(speed_str: str | None) -> float | None:
         return float(speed_str)
     except (ValueError, TypeError):
         return None
+
+
+def _vrf(value: Any) -> str:
+    """FortiOS VRF ids are integers; 0 is the global table."""
+    return normalise_vrf(value)
+
+
+def _fortios_address(value: Any, netmask: Any = None):
+    """FortiOS writes ``"192.168.1.1 255.255.255.0"`` in one field; some
+    exports split the mask into ``netmask``. Both are accepted."""
+    if isinstance(value, list) and len(value) == 2:
+        value, netmask = value
+    if not isinstance(value, str):
+        return None
+    return parse_interface_address(value, netmask if " " not in value.strip() else None)
+
+
+def _parse_addresses(iface_results: list[dict[str, Any]]) -> list[NormalizedInterfaceAddress]:
+    out: list[NormalizedInterfaceAddress] = []
+    for row in iface_results:
+        name = row.get("name")
+        if not name:
+            continue
+        vrf = _vrf(row.get("vrf"))
+        candidates = [(row.get("ip"), row.get("netmask"), True)]
+        for secondary in row.get("secondaryip") or []:
+            if isinstance(secondary, dict):
+                candidates.append((secondary.get("ip"), secondary.get("netmask"), False))
+        for value, netmask, primary in candidates:
+            parsed = _fortios_address(value, netmask)
+            if parsed is None or parsed.address == "0.0.0.0":
+                continue
+            out.append(NormalizedInterfaceAddress(
+                device_external_id="1",
+                interface_external_id=name,
+                interface_name=name,
+                address=parsed.address,
+                prefix_length=parsed.prefix_length,
+                vrf=vrf,
+                is_primary=primary,
+            ))
+    return out
+
+
+_FORTIOS_ROUTE_TYPES = {
+    "connect": "connected",
+    "connected": "connected",
+    "static": "static",
+    "bgp": "bgp",
+    "ospf": "ospf",
+}
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_routes(route_results: list[dict[str, Any]]) -> list[NormalizedRoute]:
+    """``/api/v2/monitor/router/ipv4`` rows: ``ip_mask`` "0.0.0.0/0",
+    ``type`` connect|static|bgp|ospf|kernel, ``gateway``, ``interface``."""
+    out: list[NormalizedRoute] = []
+    for row in route_results:
+        if not isinstance(row, dict):
+            continue
+        destination = parse_route_destination(row.get("ip_mask"))
+        if destination is None:
+            continue
+        protocol = _FORTIOS_ROUTE_TYPES.get(str(row.get("type", "")).lower(), "other")
+        out.append(NormalizedRoute(
+            device_external_id="1",
+            destination=destination[0],
+            prefix_length=destination[1],
+            protocol=protocol,
+            next_hop=parse_next_hop(row.get("gateway")),
+            outgoing_interface=row.get("interface") or None,
+            metric=_int_or_none(row.get("metric")),
+            administrative_distance=_int_or_none(row.get("distance")),
+            vrf=_vrf(row.get("vrf")),
+        ))
+    return out
+
+
+# -- Firewall gateway ---------------------------------------------------------
+
+#: (raw key, read-only monitor/cmdb path, query params)
+_FIREWALL_READS: tuple[tuple[str, str, dict[str, str] | None], ...] = (
+    ("ha", "/api/v2/cmdb/system/ha", None),
+    ("ha_checksums", "/api/v2/monitor/system/ha-checksums", None),
+    ("resources", "/api/v2/monitor/system/resource/usage", {"interval": "1-min"}),
+    ("vpn", "/api/v2/monitor/vpn/ipsec", None),
+    ("licences", "/api/v2/monitor/license/status", None),
+)
+
+_HA_MODES = {"standalone": "standalone", "a-p": "active-passive", "a-a": "active-active"}
+
+
+def _results(payload: Any) -> Any:
+    return payload.get("results") if isinstance(payload, dict) else None
+
+
+def _current(resources: Any, key: str) -> float | None:
+    """``resource/usage`` -> ``{"cpu": [{"interval": "1-min", "current": 3}]}``."""
+    rows = resources.get(key) if isinstance(resources, dict) else None
+    if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+        try:
+            return float(rows[0]["current"])
+        except (KeyError, TypeError, ValueError):
+            return None
+    return None
+
+
+def _table(statuses: list[str | None], has_rows: bool) -> str:
+    if has_rows:
+        return "collected"
+    if any(s == "failed" for s in statuses):
+        return "failed"
+    if any(s == "collected" for s in statuses):
+        return "empty"
+    return "unavailable"
+
+
+def _normalize_firewall(raw: dict[str, Any], bundle: NormalizedBundle, *, local_serial: str | None) -> None:
+    fw, st = raw.get("fw", {}), raw.get("fw_status", {})
+
+    # -- status: HA, resources, firmware ----------------------------------
+    ha = _results(fw.get("ha"))
+    ha = ha[0] if isinstance(ha, list) and ha else ha
+    mode = _HA_MODES.get(str(ha.get("mode", "")).lower()) if isinstance(ha, dict) else None
+    ha_sync = peer_serial = None
+    members = _results(fw.get("ha_checksums"))
+    if mode not in (None, "standalone") and st.get("ha_checksums") == "collected":
+        members = [m for m in members or [] if isinstance(m, dict)]
+        sums = [m.get("checksum") for m in members]
+        # A cluster with one visible member has lost its peer.
+        ha_sync = "in_sync" if len(members) >= 2 and all(c == sums[0] for c in sums) else "out_of_sync"
+        peer_serial = next((m.get("serial_no") for m in members if m.get("serial_no") != local_serial), None)
+    resources = _results(fw.get("resources"))
+    sessions = _current(resources, "session")
+    status = NormalizedFirewallStatus(
+        device_external_id="1",
+        ha_mode=mode,
+        ha_sync=ha_sync,
+        ha_peer_serial=peer_serial,
+        session_count=int(sessions) if sessions is not None else None,
+        cpu_percent=_current(resources, "cpu"),
+        memory_percent=_current(resources, "mem"),
+        firmware_version=raw.get("status", {}).get("version"),
+    )
+    reported = any(getattr(status, f) is not None for f in ("ha_mode", "session_count", "cpu_percent", "memory_percent"))
+    bundle.firewall_status["status"] = _table([st.get("ha"), st.get("resources")], reported)
+    if reported:
+        bundle.firewalls.append(status)
+
+    # -- VPN tunnels --------------------------------------------------------
+    for row in _results(fw.get("vpn")) or []:
+        if not isinstance(row, dict) or not row.get("name"):
+            continue
+        selectors = [p for p in row.get("proxyid") or [] if isinstance(p, dict)]
+        up = sum(1 for p in selectors if p.get("status") == "up")
+        bundle.vpn_tunnels.append(NormalizedVpnTunnel(
+            device_external_id="1",
+            name=str(row["name"]),
+            status="up" if up else "down",
+            remote_gateway=row.get("rgwy") or None,
+            phase2_up=up,
+            phase2_total=len(selectors),
+            bytes_in=row.get("incoming_bytes"),
+            bytes_out=row.get("outgoing_bytes"),
+        ))
+    bundle.firewall_status["vpn"] = _table([st.get("vpn")], bool(bundle.vpn_tunnels))
+
+    # -- Licences -----------------------------------------------------------
+    lic = _results(fw.get("licences"))
+    for feature, info in (lic.items() if isinstance(lic, dict) else []):
+        if not isinstance(info, dict) or ("expires" not in info and "status" not in info):
+            continue
+        expires = _int_or_none(info.get("expires"))
+        state = str(info.get("status", "")).lower()
+        bundle.licences.append(NormalizedLicence(
+            device_external_id="1",
+            feature=str(feature),
+            expires_at=datetime.fromtimestamp(expires, timezone.utc) if expires and expires > 0 else None,
+            expired=True if state == "expired" else (False if state in ("licensed", "valid") else None),
+        ))
+    bundle.firewall_status["licences"] = _table([st.get("licences")], bool(bundle.licences))

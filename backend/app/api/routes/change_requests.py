@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_tenant_id
+from app.core.auth import get_tenant_id, require_permission
 from app.core.db import get_db
 from app.core.entitlements import require_active_subscription
 from app.repositories.change_request_repository import ChangeRequestRepository
@@ -30,7 +30,7 @@ def get_change_service(session: AsyncSession = Depends(get_db)) -> ChangeRequest
     return ChangeRequestService(ChangeRequestRepository(session))
 
 
-@router.post("/", response_model=ChangeRequestRead, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=ChangeRequestRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_permission("changes.write"))])
 async def create_change_request(
     change_data: ChangeRequestCreate,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -96,7 +96,7 @@ async def get_change_request(
         raise HTTPException(status_code=404, detail="Change request not found")
 
 
-@router.patch("/{change_id}", response_model=ChangeRequestRead)
+@router.patch("/{change_id}", response_model=ChangeRequestRead, dependencies=[Depends(require_permission("changes.write"))])
 async def update_change_request(
     change_id: uuid.UUID,
     change_data: ChangeRequestUpdate,
@@ -110,7 +110,7 @@ async def update_change_request(
         raise HTTPException(status_code=404, detail="Change request not found")
 
 
-@router.post("/{change_id}/status")
+@router.post("/{change_id}/status", dependencies=[Depends(require_permission("changes.write"))])
 async def update_change_status(
     change_id: uuid.UUID,
     new_status: str = Query(...),
@@ -139,7 +139,7 @@ async def update_change_status(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.delete("/{change_id}")
+@router.delete("/{change_id}", dependencies=[Depends(require_permission("changes.write"))])
 async def delete_change_request(
     change_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),

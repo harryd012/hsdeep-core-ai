@@ -109,6 +109,76 @@ async def tenant():
         await db.commit()
 
 
+# Fixed tenant that a few API suites (test_agent_api, test_task_api,
+# test_incident_lifecycle) address directly. It used to exist only because a
+# long-lived local test database happened to contain it, so those suites
+# failed on a fresh database such as CI's.
+DEV_TENANT_ID = uuid.UUID("54dd0ca8-873f-4b8e-bb54-c4f45f64d0b3")
+# A real user in that tenant: actions are attributed to the token's user,
+# and the *_by columns reference users.id.
+DEV_USER_ID = uuid.UUID("54dd0ca8-0000-4000-8000-00000000d001")
+
+
+@pytest_asyncio.fixture
+async def dev_tenant() -> uuid.UUID:
+    """Ensure the fixed dev tenant exists with an active subscription and
+    the fixed dev user (DEV_USER_ID).
+
+    Idempotent and left in place: the suites that use it share it across
+    tests, and an existing row (local databases) is reused untouched.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from app.models.plan import Plan
+    from app.models.subscription import Subscription
+    from app.models.user import User
+
+    async with AsyncSessionLocal() as db:
+        if await db.get(Tenant, DEV_TENANT_ID) is None:
+            db.add(Tenant(id=DEV_TENANT_ID, name="Dev Tenant", slug=f"dev-{DEV_TENANT_ID.hex[:8]}"))
+            await db.flush()
+        if await db.get(User, DEV_USER_ID) is None:
+            db.add(User(id=DEV_USER_ID, tenant_id=DEV_TENANT_ID, email="dev-operator@hsdeep.local"))
+            await db.flush()
+        active = (
+            await db.execute(
+                select(Subscription.id).where(
+                    Subscription.tenant_id == DEV_TENANT_ID, Subscription.status == "active"
+                )
+            )
+        ).first()
+        if active is None:
+            plan = Plan(
+                name=f"Dev-{uuid.uuid4().hex[:8]}",
+                tier=f"dev-{uuid.uuid4().hex[:8]}",
+                description="dev tenant test plan",
+                price_monthly=0,
+                price_annual=0,
+                device_limit=1000,
+                sensor_limit=10000,
+                api_rate_limit=100000,
+                collector_limit=100,
+                seats=25,
+                features_json={},
+                is_public=False,
+            )
+            db.add(plan)
+            await db.flush()
+            now = datetime.now(timezone.utc)
+            db.add(Subscription(
+                tenant_id=DEV_TENANT_ID,
+                plan_id=plan.id,
+                status="active",
+                current_period_start=now,
+                current_period_end=now + timedelta(days=30),
+                billing_interval="month",
+            ))
+        await db.commit()
+    return DEV_TENANT_ID
+
+
 @pytest_asyncio.fixture
 async def seeded_subscription(tenant: Tenant):
     """An active Plan + Subscription committed for the shared `tenant`.

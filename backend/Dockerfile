@@ -42,6 +42,9 @@ WORKDIR /app
 COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./
+# First-login bootstrap for a fresh database (deployment/RENDER.md). Run it once
+# from the platform shell: python scripts/seed_admin.py
+COPY scripts/__init__.py scripts/seed_admin.py ./scripts/
 # No .env and no credentials are copied: production configuration is injected by
 # the platform (secret manager / orchestrator), never baked into an image layer.
 USER app

@@ -81,7 +81,9 @@ export function useNocEventStatistics() {
 /**
  * SOC analyst roster with live NOC assignment counts.
  */
-export function useSocAnalysts(params: { availability?: string; level?: string } = {}) {
+export function useSocAnalysts(
+  params: { availability?: string; level?: string; limit?: number; offset?: number } = {},
+) {
   return useQuery<SocAnalyst[]>({
     queryKey: ["soc-analysts", params],
     queryFn: () => getSocAnalysts(params),

@@ -1,0 +1,10 @@
+{
+  "src": {
+    "errors": 13,
+    "warnings": 40
+  },
+  "repo": {
+    "errors": 62,
+    "warnings": 70
+  }
+}

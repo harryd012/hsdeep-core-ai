@@ -19,15 +19,24 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Loader2, Play, RefreshCw } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  ListTree,
+  Loader2,
+  Play,
+  RefreshCw,
+} from "lucide-react";
 
-import { getLiveTopology, type TopologyLive } from "../../lib/topologyApi";
+import { getL3Topology, getLiveTopology, type TopologyLive } from "../../lib/topologyApi";
+import { l3CoverageText } from "../../lib/topology/l3";
 import { buildEmptyState, isGraphEmpty } from "../../lib/topology/emptyState";
-import { buildKpis } from "../../lib/topology/kpis";
 import {
   fitViewport,
   layoutNodes,
-  type LayoutKind,
+  linkedNodeIds,
+  type ViewKind,
   type Viewport,
 } from "../../lib/topology/layout";
 import {
@@ -45,17 +54,25 @@ import {
   trafficDirection,
   utilizationBand,
 } from "../../lib/topology/traffic";
+import {
+  LARGE_TREE_THRESHOLD,
+  buildTreeLayout,
+  collapseBeyond,
+  type TreeLayout,
+} from "../../lib/topology/tree";
 import { isUnknownResource, resolveVendorVisual } from "../../lib/topology/vendors";
+import { buildL3RenderGraph } from "./l3RenderModel";
 import TopologyCanvas from "./TopologyCanvas";
 import TopologyDetailDrawer from "./TopologyDetailDrawer";
 import TopologyEmptyStatePanel from "./TopologyEmptyState";
-import TopologyKpiStrip from "./TopologyKpiStrip";
 import {
   TopologyCanvasControls,
   TopologyLegend,
   TopologyMinimap,
 } from "./TopologyOverlays";
 import TopologyToolbar from "./TopologyToolbar";
+import TopologyTreeCanvas from "./TopologyTreeCanvas";
+import { TopologyStatusLine, TopologyTreeLegend, UnconnectedRail } from "./TopologyTreeChrome";
 import type {
   FilterOptions,
   RenderEdge,
@@ -81,6 +98,24 @@ const EMPTY_FILTERS: TopologyFilters = {
 };
 
 const IDENTITY_VIEWPORT: Viewport = { scale: 1, offsetX: 60, offsetY: 60 };
+
+const NO_COLLAPSE: ReadonlySet<string> = new Set();
+const PROBLEM_STATES: DeviceState[] = ["WARNING", "OFFLINE"];
+
+/** Below this zoom tree labels are unreadable: anchor top-left instead of shrinking further. */
+const TREE_MIN_FIT_SCALE = 0.45;
+
+function fitTree(points: { x: number; y: number }[], size: { width: number; height: number }): Viewport | null {
+  const fitted = fitViewport(points, size);
+  if (!fitted || fitted.scale >= TREE_MIN_FIT_SCALE) return fitted;
+  const minX = Math.min(...points.map((point) => point.x));
+  const minY = Math.min(...points.map((point) => point.y));
+  return {
+    scale: TREE_MIN_FIT_SCALE,
+    offsetX: 60 - minX * TREE_MIN_FIT_SCALE,
+    offsetY: 48 - minY * TREE_MIN_FIT_SCALE,
+  };
+}
 
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 
@@ -393,7 +428,11 @@ function filterModel(model: RenderModel, filters: TopologyFilters, query: string
 export default function OperationalTopologyPanel() {
   // View state lives here, so a refresh updates DATA without resetting the view.
   const [viewportOverride, setViewportOverride] = useState<Viewport | null>(null);
-  const [layout, setLayout] = useState<LayoutKind>("hierarchical");
+  const [layout, setLayout] = useState<ViewKind>("tree");
+  // Null until the operator expands/collapses; then their choice wins.
+  const [collapsedOverride, setCollapsedOverride] = useState<Set<string> | null>(null);
+  const [labelAll, setLabelAll] = useState(false);
+  const [showUnconnected, setShowUnconnected] = useState(true);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [queryText, setQueryText] = useState("");
@@ -403,6 +442,7 @@ export default function OperationalTopologyPanel() {
   const [animateEnabled, setAnimateEnabled] = useState(true);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const shellRef = useRef<HTMLDivElement | null>(null);
 
   // Server state lives in React Query (the app's convention, same as the
   // discovery page and useNetworkIntelligence): cached, deduplicated, and
@@ -414,6 +454,16 @@ export default function OperationalTopologyPanel() {
     refetchOnWindowFocus: false,
   });
   const payload = query.data ?? null;
+  const isTree = layout === "tree" || layout === "l3";
+  // The L3 structure is fetched only while the L3 view is open.
+  const l3Query = useQuery({
+    queryKey: ["topology-l3", siteFilter || null],
+    queryFn: () => getL3Topology({ siteId: siteFilter || null }),
+    enabled: layout === "l3",
+    refetchInterval: refreshSeconds > 0 ? refreshSeconds * 1000 : false,
+    refetchOnWindowFocus: false,
+  });
+  const l3Payload = layout === "l3" ? l3Query.data ?? null : null;
   const error =
     query.error instanceof Error
       ? query.error.message
@@ -446,14 +496,90 @@ export default function OperationalTopologyPanel() {
     [model, filters, queryText]
   );
 
+  /**
+   * The tree is built from the FILTERED graph but not the search: searching
+   * highlights matches in place instead of re-rooting the tree around them.
+   */
+  const l3Graph = useMemo(
+    () => (model && l3Payload ? buildL3RenderGraph(l3Payload, filterModel(model, filters, "").nodes) : null),
+    [model, l3Payload, filters]
+  );
+  const treeGraph = useMemo(() => {
+    if (l3Graph) return { nodes: l3Graph.nodes, edges: l3Graph.edges };
+    return model && layout === "tree" ? filterModel(model, filters, "") : { nodes: [], edges: [] };
+  }, [model, filters, layout, l3Graph]);
+  const treeInput = useMemo(
+    () => ({
+      nodes: treeGraph.nodes
+        .filter((node) => node.kind !== "site")
+        .map((node) => ({ id: node.id, iconKey: node.l3Kind ? null : node.visual.iconKey })),
+      edges: treeGraph.edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target })),
+      rootOrder: l3Graph?.rootOrder,
+    }),
+    [treeGraph, l3Graph]
+  );
+  const fullTree = useMemo<TreeLayout | null>(
+    () =>
+      isTree && (layout === "tree" || l3Graph)
+        ? buildTreeLayout(treeInput.nodes, treeInput.edges, { rootOrder: treeInput.rootOrder })
+        : null,
+    [isTree, layout, l3Graph, treeInput]
+  );
+  const collapsed = useMemo<ReadonlySet<string>>(() => {
+    if (!fullTree || queryText.trim()) return NO_COLLAPSE;
+    if (collapsedOverride) return collapsedOverride;
+    // A very large network opens two hops deep, like Meraki's large-network guard.
+    return fullTree.positions.size > LARGE_TREE_THRESHOLD ? collapseBeyond(fullTree, 2) : NO_COLLAPSE;
+  }, [fullTree, collapsedOverride, queryText]);
+  const tree = useMemo<TreeLayout | null>(() => {
+    if (!fullTree) return null;
+    if (!collapsed.size) return fullTree;
+    return buildTreeLayout(treeInput.nodes, treeInput.edges, { collapsed, rootOrder: treeInput.rootOrder });
+  }, [fullTree, collapsed, treeInput]);
+  const treeNodeMap = useMemo(
+    () => new Map(treeGraph.nodes.map((node) => [node.id, node])),
+    [treeGraph.nodes]
+  );
+  const treeEdgeMap = useMemo(
+    () => new Map(treeGraph.edges.map((edge) => [edge.id, edge])),
+    [treeGraph.edges]
+  );
+  const unconnectedDevices = useMemo(
+    () =>
+      tree
+        ? tree.unlinked
+            .map((id) => treeNodeMap.get(id))
+            .filter((node): node is RenderNode => Boolean(node))
+        : [],
+    [tree, treeNodeMap]
+  );
+
+  const toggleCollapse = (id: string) =>
+    setCollapsedOverride(() => {
+      const next = new Set(collapsed);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
   const positions = useMemo(() => {
+    if (tree) return tree.positions;
     const placed = layoutNodes(
-      visible.nodes.map((node) => ({ id: node.id, siteId: node.siteId, type: node.kind })),
+      visible.nodes.map((node) => ({ id: node.id, siteId: node.siteId, type: node.kind, group: node.state })),
       visible.edges.map((edge) => ({ source: edge.source, target: edge.target })),
-      layout
+      isTree ? "connected-first" : layout,
+      {},
+      // Worst first, so the devices that need attention sit right under the map.
+      ["OFFLINE", "WARNING", "STALE", "UNKNOWN", "MAINTENANCE", "ONLINE"]
     );
     return new Map(placed.map((entry) => [entry.id, { x: entry.x, y: entry.y }]));
-  }, [visible, layout]);
+  }, [tree, visible, layout, isTree]);
+
+  const fitPoints = useCallback(
+    (points: { x: number; y: number }[]) =>
+      isTree ? fitTree(points, size) : fitViewport(points, size),
+    [isTree, size]
+  );
 
   /**
    * The viewport is DERIVED until an operator moves it: with no explicit
@@ -462,8 +588,8 @@ export default function OperationalTopologyPanel() {
    * refresh keeps it — which is what preserves the view across refreshes.
    */
   const viewport = useMemo(
-    () => viewportOverride ?? fitViewport([...positions.values()], size) ?? IDENTITY_VIEWPORT,
-    [viewportOverride, positions, size]
+    () => viewportOverride ?? fitPoints([...positions.values()]) ?? IDENTITY_VIEWPORT,
+    [viewportOverride, positions, fitPoints]
   );
 
   const animatedEdgeIds = useMemo(() => {
@@ -490,12 +616,21 @@ export default function OperationalTopologyPanel() {
     if (selectedNodeId) {
       const nodes = new Set<string>([selectedNodeId]);
       const edges = new Set<string>();
-      for (const edge of visible.edges) {
+      for (const edge of layout === "l3" ? treeGraph.edges : visible.edges) {
         if (edge.source === selectedNodeId || edge.target === selectedNodeId) {
           edges.add(edge.id);
           nodes.add(edge.source);
           nodes.add(edge.target);
         }
+      }
+      return { nodes, edges };
+    }
+    if (queryText.trim() && isTree) {
+      // Tree search highlights matches (and their uplinks) without re-rooting.
+      const nodes = new Set(visible.nodes.map((node) => node.id));
+      const edges = new Set<string>();
+      for (const link of tree?.links ?? []) {
+        if (nodes.has(link.child)) edges.add(link.id);
       }
       return { nodes, edges };
     }
@@ -506,12 +641,12 @@ export default function OperationalTopologyPanel() {
       };
     }
     return null;
-  }, [selectedNodeId, queryText, visible]);
+  }, [selectedNodeId, queryText, visible, layout, isTree, tree, treeGraph.edges]);
 
   const fit = useCallback(() => {
-    const fitted = fitViewport([...positions.values()], size);
+    const fitted = fitPoints([...positions.values()]);
     if (fitted) setViewportOverride(fitted);
-  }, [positions, size]);
+  }, [positions, fitPoints]);
 
   const zoomBy = (factor: number) => {
     if (!size.width || !size.height) return;
@@ -567,9 +702,12 @@ export default function OperationalTopologyPanel() {
     cursor: "pointer",
   });
 
-  const kpis = useMemo(() => (model ? buildKpis(model.summary) : []), [model]);
-
   const nodeCount = visible.nodes.length;
+  const unlinkedCount = useMemo(() => {
+    const devices = visible.nodes.filter((node) => node.kind !== "site");
+    const linked = linkedNodeIds(devices, visible.edges);
+    return devices.filter((node) => !linked.has(node.id)).length;
+  }, [visible]);
   const edgeCount = visible.edges.length;
   /**
    * Zero relationships means the honest empty state applies. Real device nodes
@@ -756,7 +894,46 @@ export default function OperationalTopologyPanel() {
         </div>
       ) : null}
 
-      {model ? <TopologyKpiStrip cards={kpis} /> : null}
+      {model ? (
+        <div
+          style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}
+          data-testid="topology-status-row"
+        >
+          <TopologyStatusLine summary={model.summary} active={filters.states} onToggle={toggleState} />
+          <button
+            type="button"
+            onClick={() =>
+              setFilters((previous) => ({
+                ...previous,
+                states: PROBLEM_STATES.every((state) => previous.states.includes(state)) &&
+                  previous.states.length === PROBLEM_STATES.length
+                  ? []
+                  : PROBLEM_STATES,
+              }))
+            }
+            aria-pressed={
+              filters.states.length === PROBLEM_STATES.length &&
+              PROBLEM_STATES.every((state) => filters.states.includes(state))
+            }
+            title="Show only alerting and offline devices"
+            style={chip(
+              filters.states.length === PROBLEM_STATES.length &&
+                PROBLEM_STATES.every((state) => filters.states.includes(state))
+            )}
+            data-testid="topology-only-problems"
+          >
+            Only problems
+          </button>
+          <span style={{ fontSize: 11, color: "var(--muted)" }}>
+            {model.summary.links} link{model.summary.links === 1 ? "" : "s"} ·{" "}
+            {model.summary.interfacesTotal} interface{model.summary.interfacesTotal === 1 ? "" : "s"}
+            {model.summary.unidentified ? ` · ${model.summary.unidentified} unclassified` : ""}
+            {model.summary.trafficMeasured
+              ? ` · ↓ ${model.summary.rxLabel ?? "—"} ↑ ${model.summary.txLabel ?? "—"}`
+              : " · traffic not measured"}
+          </span>
+        </div>
+      ) : null}
 
       {model ? (
         <TopologyToolbar
@@ -797,6 +974,52 @@ export default function OperationalTopologyPanel() {
             setQueryText("");
           }}
           layout={layout}
+          showStateChips={false}
+          viewControls={
+            isTree ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setCollapsedOverride(new Set())}
+                  style={{ ...chip(false), display: "inline-flex", gap: 4, alignItems: "center" }}
+                  title="Expand every branch"
+                  data-testid="topology-expand-all"
+                >
+                  <ChevronsUpDown size={11} /> Expand
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fullTree && setCollapsedOverride(collapseBeyond(fullTree, 1))}
+                  style={{ ...chip(false), display: "inline-flex", gap: 4, alignItems: "center" }}
+                  title="Collapse to the first hop"
+                  data-testid="topology-collapse-all"
+                >
+                  <ChevronsDownUp size={11} /> Collapse
+                </button>
+                <label
+                  style={{ fontSize: 11, color: "var(--muted)", display: "inline-flex", gap: 4, alignItems: "center" }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={labelAll}
+                    onChange={(event) => setLabelAll(event.target.checked)}
+                    data-testid="topology-label-all"
+                  />
+                  Label all devices
+                </label>
+                {!showUnconnected && unconnectedDevices.length ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowUnconnected(true)}
+                    style={{ ...chip(false), display: "inline-flex", gap: 4, alignItems: "center" }}
+                    data-testid="topology-show-unconnected"
+                  >
+                    <ListTree size={11} /> Not connected ({unconnectedDevices.length})
+                  </button>
+                ) : null}
+              </>
+            ) : null
+          }
           onLayoutChange={(next) => {
             setLayout(next);
             // A new layout has new coordinates: re-fit instead of keeping an
@@ -808,86 +1031,190 @@ export default function OperationalTopologyPanel() {
         />
       ) : null}
 
+      {model && layout === "l3" ? (
+        <p
+          role="status"
+          data-testid="topology-l3-coverage"
+          style={{ margin: "0 0 8px", fontSize: 12, color: "var(--ecc-text-muted, var(--muted))" }}
+        >
+          {l3Query.isError
+            ? `L3 topology unavailable: ${l3Query.error instanceof Error ? l3Query.error.message : "request failed"}`
+            : l3Payload
+              ? `${l3CoverageText(l3Payload.coverage)} Devices on the same subnet are joined; routes to unmonitored next hops end at a diamond.`
+              : "Loading L3 topology…"}
+        </p>
+      ) : null}
+
+      {model && layout === "connected-first" && unlinkedCount > 0 ? (
+        <p
+          role="status"
+          style={{ margin: "0 0 8px", fontSize: 12, color: "var(--ecc-text-muted, var(--muted))" }}
+        >
+          {unlinkedCount} of {visible.nodes.filter((node) => node.kind !== "site").length} devices have no recorded
+          relationship yet. Linked devices are drawn as a hierarchy at the top; unlinked devices are grouped
+          below by state, worst first. Run discovery with LLDP/CDP or add relationships to connect them.
+        </p>
+      ) : null}
+
       <div
-        ref={containerRef}
+        ref={shellRef}
         data-testid="topology-canvas-shell"
         style={{
           position: "relative",
-          height: "clamp(480px, calc(100vh - 336px), 1400px)",
+          display: "flex",
+          height: "clamp(480px, calc(100vh - 300px), 1400px)",
           border: "1px solid var(--border)",
           borderRadius: 10,
           overflow: "hidden",
-          background: "rgba(2,6,23,0.55)",
+          // The tree follows the theme; the card layouts keep their dark stage.
+          background: isTree ? "var(--ecc-surface, #0b1220)" : "rgba(2,6,23,0.55)",
         }}
       >
-        {!model ? (
-          <p style={{ padding: 16, fontSize: 12, color: "var(--muted)" }}>
-            Loading live topology…
-          </p>
-        ) : nodeCount === 0 ? (
-          <TopologyEmptyStatePanel state={emptyState} variant="full" />
-        ) : (
-          <>
-            <TopologyCanvas
-              model={visible}
-              positions={positions}
-              viewport={viewport}
-              onViewportChange={setViewportOverride}
-              selectedNodeId={selectedNodeId}
-              selectedEdgeId={selectedEdgeId}
-              onSelectNode={(id) => {
-                setSelectedEdgeId(null);
-                setSelectedNodeId(id);
-              }}
-              onSelectEdge={(id) => {
-                setSelectedNodeId(null);
-                setSelectedEdgeId(id);
-              }}
-              onClearSelection={() => {
-                setSelectedNodeId(null);
-                setSelectedEdgeId(null);
-              }}
-              highlight={highlight}
-              reducedMotion={reducedMotion}
-              animateEnabled={animateEnabled}
-              animatedEdgeIds={animatedEdgeIds}
-            />
-            {showEmptyState ? (
-              <TopologyEmptyStatePanel state={emptyState} variant="compact" />
-            ) : null}
-          </>
-        )}
+        <div ref={containerRef} style={{ position: "relative", flex: 1, minWidth: 0 }}>
+          {!model ? (
+            <p style={{ padding: 16, fontSize: 12, color: "var(--muted)" }}>
+              Loading live topology…
+            </p>
+          ) : nodeCount === 0 ? (
+            <TopologyEmptyStatePanel state={emptyState} variant="full" />
+          ) : layout === "l3" && (!tree || tree.positions.size === 0) ? (
+            <div data-testid="topology-l3-empty" style={{ padding: 24, fontSize: 12, color: "var(--muted)" }}>
+              {l3Payload
+                ? l3Payload.coverage.devices_with_addresses
+                  ? "No two devices in this view share a subnet or a route yet."
+                  : l3CoverageText(l3Payload.coverage)
+                : l3Query.isError
+                  ? "L3 topology unavailable."
+                  : "Loading L3 topology…"}
+            </div>
+          ) : tree ? (
+            tree.positions.size === 0 ? (
+              model.summary.links > 0 ? (
+                // Links exist; the filters hide every linked device. Say so,
+                // rather than claiming nothing was discovered.
+                <div
+                  data-testid="topology-tree-filtered-empty"
+                  style={{ padding: 24, fontSize: 12, color: "var(--muted)" }}
+                >
+                  No connected device matches the current filters.{" "}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFilters(EMPTY_FILTERS);
+                      setQueryText("");
+                    }}
+                    style={{ ...chip(false), marginLeft: 6 }}
+                  >
+                    Clear filters
+                  </button>
+                </div>
+              ) : (
+                <TopologyEmptyStatePanel state={emptyState} variant="full" />
+              )
+            ) : (
+              <TopologyTreeCanvas
+                tree={tree}
+                nodes={treeNodeMap}
+                edges={treeEdgeMap}
+                viewport={viewport}
+                onViewportChange={setViewportOverride}
+                selectedNodeId={selectedNodeId}
+                selectedEdgeId={selectedEdgeId}
+                onSelectNode={(id) => {
+                  setSelectedEdgeId(null);
+                  setSelectedNodeId(id);
+                }}
+                onSelectEdge={(id) => {
+                  setSelectedNodeId(null);
+                  setSelectedEdgeId(id);
+                }}
+                onClearSelection={() => {
+                  setSelectedNodeId(null);
+                  setSelectedEdgeId(null);
+                }}
+                collapsed={collapsed}
+                onToggleCollapse={toggleCollapse}
+                labelAll={labelAll}
+                highlight={highlight}
+                hoverRows={l3Graph?.hoverRows}
+              />
+            )
+          ) : (
+            <>
+              <TopologyCanvas
+                model={visible}
+                positions={positions}
+                viewport={viewport}
+                onViewportChange={setViewportOverride}
+                selectedNodeId={selectedNodeId}
+                selectedEdgeId={selectedEdgeId}
+                onSelectNode={(id) => {
+                  setSelectedEdgeId(null);
+                  setSelectedNodeId(id);
+                }}
+                onSelectEdge={(id) => {
+                  setSelectedNodeId(null);
+                  setSelectedEdgeId(id);
+                }}
+                onClearSelection={() => {
+                  setSelectedNodeId(null);
+                  setSelectedEdgeId(null);
+                }}
+                highlight={highlight}
+                reducedMotion={reducedMotion}
+                animateEnabled={animateEnabled}
+                animatedEdgeIds={animatedEdgeIds}
+              />
+              {showEmptyState ? (
+                <TopologyEmptyStatePanel state={emptyState} variant="compact" />
+              ) : null}
+            </>
+          )}
 
-        {model && nodeCount > 0 ? (
-          <>
-            <TopologyMinimap
-              nodes={visible.nodes}
-              positions={positions}
-              edgeCount={edgeCount}
-              viewport={viewport}
-              canvasSize={size}
-              onNavigate={navigateTo}
-            />
-            <TopologyCanvasControls
-              scale={viewport.scale}
-              onZoomIn={() => zoomBy(1.2)}
-              onZoomOut={() => zoomBy(1 / 1.2)}
-              onFit={fit}
-              onReset={() => setViewportOverride(IDENTITY_VIEWPORT)}
-              fullscreenTarget={containerRef}
-            />
-            <TopologyLegend />
-          </>
+          {model && nodeCount > 0 && positions.size > 0 ? (
+            <>
+              <TopologyMinimap
+                nodes={tree ? treeGraph.nodes : visible.nodes}
+                positions={positions}
+                edgeCount={tree ? tree.links.length + tree.crossLinks.length : edgeCount}
+                viewport={viewport}
+                canvasSize={size}
+                onNavigate={navigateTo}
+              />
+              <TopologyCanvasControls
+                scale={viewport.scale}
+                onZoomIn={() => zoomBy(1.2)}
+                onZoomOut={() => zoomBy(1 / 1.2)}
+                onFit={fit}
+                onReset={() => setViewportOverride(IDENTITY_VIEWPORT)}
+                fullscreenTarget={shellRef}
+              />
+              {tree ? <TopologyTreeLegend l3={layout === "l3"} /> : <TopologyLegend />}
+            </>
+          ) : null}
+
+          <TopologyDetailDrawer
+            node={selectedNode}
+            edge={selectedEdge}
+            onClose={() => {
+              setSelectedNodeId(null);
+              setSelectedEdgeId(null);
+            }}
+          />
+        </div>
+
+        {tree && showUnconnected && unconnectedDevices.length ? (
+          <UnconnectedRail
+            devices={unconnectedDevices}
+            selectedNodeId={selectedNodeId}
+            onSelect={(id) => {
+              setSelectedEdgeId(null);
+              setSelectedNodeId(id);
+            }}
+            onClose={() => setShowUnconnected(false)}
+            l3={layout === "l3"}
+          />
         ) : null}
-
-        <TopologyDetailDrawer
-          node={selectedNode}
-          edge={selectedEdge}
-          onClose={() => {
-            setSelectedNodeId(null);
-            setSelectedEdgeId(null);
-          }}
-        />
       </div>
 
       {model && model.scopeHiddenNodes > 0 ? (

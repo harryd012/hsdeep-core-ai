@@ -61,7 +61,7 @@ class AiDiagnosisRepository:
         return list(result.scalars().all())
 
     async def count(self, tenant_id: uuid.UUID, *, status: str | None = None) -> int:
-        stmt = select(func.count()).select_from(AiDiagnosis).where(AIDiagnosis.tenant_id == tenant_id, AIDiagnosis.is_deleted.is_(False))
+        stmt = select(func.count()).select_from(AIDiagnosis).where(AIDiagnosis.tenant_id == tenant_id, AIDiagnosis.is_deleted.is_(False))
         if status:
             stmt = stmt.where(AIDiagnosis.status == status)
         result = await self.session.execute(stmt)
@@ -73,13 +73,13 @@ class AiDiagnosisRepository:
         for status in ["pending", "analyzing", "completed", "failed", "insufficient_evidence"]:
             by_status[status] = await self.count(tenant_id, status=status)
         # Average confidence
-        stmt = select(func.avg(AIDiagnosis.overall_confidence)).select_from(AiDiagnosis).where(
+        stmt = select(func.avg(AIDiagnosis.overall_confidence)).select_from(AIDiagnosis).where(
             AIDiagnosis.tenant_id == tenant_id, AIDiagnosis.is_deleted.is_(False)
         )
         result = await self.session.execute(stmt)
         avg_confidence = result.scalar_one() or 0.0
         # Approval required count
-        stmt = select(func.count()).select_from(AiDiagnosis).where(
+        stmt = select(func.count()).select_from(AIDiagnosis).where(
             AIDiagnosis.tenant_id == tenant_id, AIDiagnosis.is_deleted.is_(False), AIDiagnosis.approval_required.is_(True)
         )
         result = await self.session.execute(stmt)
@@ -91,14 +91,14 @@ class AiDiagnosisRepository:
             "approval_required_count": approval_required_count,
         }
 
-    async def update(self, diagnosis: AiDiagnosis, **fields) -> AIDiagnosis:
+    async def update(self, diagnosis: AIDiagnosis, **fields) -> AIDiagnosis:
         for key, value in fields.items():
             setattr(diagnosis, key, value)
         diagnosis.updated_at = datetime.utcnow()
         await self.session.flush()
         return diagnosis
 
-    async def delete(self, diagnosis: AiDiagnosis) -> None:
+    async def delete(self, diagnosis: AIDiagnosis) -> None:
         diagnosis.is_deleted = True
         diagnosis.deleted_at = datetime.utcnow()
         diagnosis.updated_at = datetime.utcnow()

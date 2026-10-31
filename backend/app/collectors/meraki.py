@@ -47,6 +47,7 @@ _RETRY_DELAY_SECONDS = 1.0
 class MerakiCollector(BaseCollector):
     display_name = "Cisco Meraki Dashboard"
     implemented = True
+    category = "network"
 
     # -- config / validation -------------------------------------------------
 

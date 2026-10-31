@@ -49,7 +49,7 @@ _FORTIGATE = _ALL_COLLECTOR | {
 _SNMP = _ALL_COLLECTOR | {
     V.CAP_HEALTH, V.CAP_CPU, V.CAP_MEMORY, V.CAP_TEMPERATURE, V.CAP_UPTIME,
     V.CAP_INTERFACES, V.CAP_BANDWIDTH, V.CAP_PACKET_STATISTICS, V.CAP_ERRORS,
-    V.CAP_DISCARDS, V.CAP_VLAN, V.CAP_POE, V.CAP_TOPOLOGY,
+    V.CAP_DISCARDS, V.CAP_VLAN, V.CAP_POE, V.CAP_TOPOLOGY, V.CAP_ROUTING,
 }
 _SERVER_AGENT = _ALL_COLLECTOR | {
     V.CAP_HEALTH, V.CAP_CPU, V.CAP_MEMORY, V.CAP_DISK, V.CAP_UPTIME,
@@ -92,7 +92,7 @@ PROVIDER_CAPABILITIES: dict[str, frozenset[str]] = {
     V.PROVIDER_ICMP: frozenset(_ALL_COLLECTOR | {V.CAP_HEALTH}),
     V.PROVIDER_WINRM: frozenset(_SERVER_AGENT),
     V.PROVIDER_WMI: frozenset(_SERVER_AGENT),
-    V.PROVIDER_SSH: frozenset(_SERVER_AGENT),
+    V.PROVIDER_SSH: frozenset(_SERVER_AGENT | {V.CAP_ROUTING}),
     V.PROVIDER_AZURE: frozenset(_CLOUD),
     V.PROVIDER_AWS: frozenset(_CLOUD),
     V.PROVIDER_GCP: frozenset(_CLOUD),
@@ -127,6 +127,8 @@ SOURCE_TYPE_TO_PROVIDER: dict[str, str] = {
     "wmi": V.PROVIDER_WMI,
     "linux_ssh": V.PROVIDER_SSH,
     "azure": V.PROVIDER_AZURE,
+    # Recovery Services vaults are Azure resources read with the same identity.
+    "azure_backup": V.PROVIDER_AZURE,
     "aws": V.PROVIDER_AWS,
     "gcp": V.PROVIDER_GCP,
     "vmware": V.PROVIDER_VMWARE,

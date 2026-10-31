@@ -29,7 +29,20 @@ async def test_tick_skips_when_advisory_lock_held_by_another_worker(monkeypatch)
     """If another worker already holds TICK_LOCK_KEY, tick() must return
     without running the collection loop at all - simulated here by
     acquiring the same advisory lock on a second, independent connection
-    before calling tick()."""
+    before calling tick().
+
+    A test-isolated lock key is used (TEST_TICK_LOCK_KEY) rather than the
+    production TICK_LOCK_KEY (91827364), because the live backend server
+    holds the production key for the duration of its scheduler cycle.
+    Attempting to acquire a key already held by the server always returns
+    False, which makes the "lock held by another worker" assertion vacuously
+    true but prevents validating the actual skip-logic. Monkeypatching both
+    `jobs.TICK_LOCK_KEY` and the holder connection to the same test-only
+    constant guarantees isolation without any change to production behavior.
+    """
+    # A test-specific advisory lock key that the running server never uses.
+    TEST_TICK_LOCK_KEY = 91827365  # distinct from production TICK_LOCK_KEY
+
     called = False
 
     async def _fail_if_called():
@@ -37,18 +50,24 @@ async def test_tick_skips_when_advisory_lock_held_by_another_worker(monkeypatch)
         called = True
 
     monkeypatch.setattr(jobs, "_run_due_sources", _fail_if_called)
+    monkeypatch.setattr(jobs, "TICK_LOCK_KEY", TEST_TICK_LOCK_KEY)
 
     async with engine.connect() as holder_conn:
         result = await holder_conn.execute(
-            text("SELECT pg_try_advisory_lock(:key)"), {"key": jobs.TICK_LOCK_KEY}
+            text("SELECT pg_try_advisory_lock(:key)"), {"key": TEST_TICK_LOCK_KEY}
         )
-        assert result.scalar_one() is True  # sanity: we actually hold it
+        assert result.scalar_one() is True, (
+            "Failed to acquire test advisory lock - another test may be holding it "
+            "or key collision with a live process"
+        )
 
         await jobs.tick()
 
         assert called is False, "tick() ran the collection loop despite the lock being held"
 
-        await holder_conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": jobs.TICK_LOCK_KEY})
+        await holder_conn.execute(
+            text("SELECT pg_advisory_unlock(:key)"), {"key": TEST_TICK_LOCK_KEY}
+        )
 
 
 async def test_tick_releases_lock_so_a_subsequent_tick_can_acquire_it():

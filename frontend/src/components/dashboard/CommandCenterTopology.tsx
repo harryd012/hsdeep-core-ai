@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Cpu, ChevronDown, ChevronRight, Eye } from "lucide-react";
+import { ChevronDown, ChevronRight, Eye } from "lucide-react";
 import {
   CCAgent,
   CCActivityEvent,
@@ -11,6 +11,8 @@ import {
   CommandCenterHealth,
 } from "@/lib/api";
 import { useCommandCenterOverview } from "@/hooks/useAiQueries";
+import BotAvatar, { botStatusFromAvailability, type BotAvatarStatus } from "@/components/ai/BotAvatar";
+import { ctoState } from "@/lib/health";
 
 /* ---------------------------------------------------------------------------
  * REAL backend data only. Compact hierarchy redesign: CTO summary → responsive
@@ -104,7 +106,7 @@ export default function CommandCenterTopology() {
 
   return (
     <div className="org-compact">
-      <CtoSummaryCard m={m} systemOnline={o.system_online} health={o.health ?? null} />
+      <CtoSummaryCard m={m} health={o.health ?? null} />
       <div className="org-compact__depts">
         {workload.map((w) => {
           const key = (w.department || "unassigned").toUpperCase();
@@ -155,24 +157,42 @@ export default function CommandCenterTopology() {
 
 function CtoSummaryCard({
   m,
-  systemOnline,
   health,
 }: {
   m: CCMetrics;
-  systemOnline: boolean;
   health: CommandCenterHealth | null;
 }) {
-  const sysColor = systemOnline ? "var(--green)" : "var(--red)";
-  const sysText = systemOnline ? "SYSTEM ONLINE" : "SYSTEM OFFLINE";
+  const cto = ctoState(health?.status);
+  const toneColor =
+    cto.tone === "ok"
+      ? "var(--green)"
+      : cto.tone === "degraded"
+        ? "var(--amber)"
+        : cto.tone === "down"
+          ? "var(--red)"
+          : "var(--muted)";
+  const avatarStatus: BotAvatarStatus =
+    cto.tone === "ok"
+      ? "controller"
+      : cto.tone === "degraded"
+        ? "degraded"
+        : cto.tone === "down"
+          ? "offline"
+          : "online";
 
   return (
     <div className="org-cto">
       <div className="org-cto__header">
-        <Cpu size={16} />
+        <BotAvatar
+          status={avatarStatus}
+          size="md"
+          working={m.working > 0}
+          label={`AI CTO · ${cto.text}`}
+        />
         <span className="org-cto__title">AI CTO</span>
-        <span className="org-cto__status" style={{ color: sysColor }}>
-          <i className="org-cto__dot" style={{ background: sysColor }} />
-          {sysText}
+        <span className="org-cto__status" style={{ color: toneColor }}>
+          <i className="org-cto__dot" style={{ background: toneColor }} />
+          {cto.text}
         </span>
       </div>
       <div className="org-cto__metrics">
@@ -184,9 +204,15 @@ function CtoSummaryCard({
         </div>
         <div className="org-cto__metric">
           <span className="org-cto__metric-value" style={{ color: "var(--amber)" }}>
+            {m.working_agents}
+          </span>
+          <span className="org-cto__metric-label">WORKING AGENTS</span>
+        </div>
+        <div className="org-cto__metric">
+          <span className="org-cto__metric-value" style={{ color: "var(--amber)" }}>
             {m.working}
           </span>
-          <span className="org-cto__metric-label">WORKING</span>
+          <span className="org-cto__metric-label">WORKING TASKS</span>
         </div>
         <div className="org-cto__metric">
           <span className="org-cto__metric-value" style={{ color: "var(--red)" }}>
@@ -200,14 +226,6 @@ function CtoSummaryCard({
           </span>
           <span className="org-cto__metric-label">QUEUED</span>
         </div>
-        {health && (
-          <div className="org-cto__metric">
-            <span className="org-cto__metric-value" style={{ color: "var(--green)" }}>
-              {health.status}%
-            </span>
-            <span className="org-cto__metric-label">HEALTH</span>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -298,8 +316,14 @@ function AgentGrid({
           const task = taskByAgent.get(a.id) ?? null;
           const color = statusColor(a.availability);
           return (
-            <div key={a.id} className="org-agent-card">
+            <div key={a.id} className={`org-agent-card ${task ? "org-agent-card--working" : ""}`}>
               <div className="org-agent-card__top">
+                <BotAvatar
+                  status={botStatusFromAvailability(a.availability)}
+                  size="sm"
+                  working={!!task}
+                  label={`${a.name} · ${a.availability}`}
+                />
                 <span className="org-agent-card__name">{a.name}</span>
                 <span className="org-agent-card__level">{a.level}</span>
               </div>
@@ -309,8 +333,14 @@ function AgentGrid({
               </div>
               {task && (
                 <div className="org-agent-card__task">
+                  <span className="org-agent-card__assigned">WORKING</span>
                   <span className="org-agent-card__task-number">{task.task_number}</span>
                   <span className="org-agent-card__task-title">{task.title}</span>
+                </div>
+              )}
+              {!task && (
+                <div className="org-agent-card__task org-agent-card__task--idle">
+                  <span className="org-agent-card__task-title">Awaiting assignment</span>
                 </div>
               )}
               <button className="org-agent-card__view" onClick={() => onSelectAgent(a)}>
@@ -343,6 +373,12 @@ function AgentDetailDrawer({
     <div className="org-drawer-overlay" onClick={onClose}>
       <div className="org-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="org-drawer__header">
+          <BotAvatar
+            status={botStatusFromAvailability(agent.availability)}
+            size="lg"
+            working={!!task}
+            label={`${agent.name} · ${agent.availability}`}
+          />
           <div>
             <h3 className="org-drawer__title">{agent.name}</h3>
             <span className="org-drawer__subtitle">{agent.level} · {agent.department ?? "unassigned"}</span>

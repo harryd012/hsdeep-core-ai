@@ -1,34 +1,29 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import Providers from "@/components/Providers";
+import { THEME_BOOT_SCRIPT } from "@/lib/theme";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
+/**
+ * Root layout — HTML document shell ONLY.
+ * No Sidebar, no CopilotBar, no AuthGuard here: the authenticated shell
+ * (AuthGuard + Sidebar + main + CopilotBar) mounts exactly once in
+ * src/app/(dashboard)/layout.tsx, so login/signup stay shell-free while
+ * dashboard routes get one shell.
+ */
 export const metadata: Metadata = {
-  title: "HSDEEP CORE AI | Command Center",
-  description: "Autonomous infrastructure intelligence command center",
+  title: "HSDEEP CORE AI",
+  description: "HSDEEP CORE AI — AIOps Control Plane",
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col">
+    // suppressHydrationWarning: data-theme is set by the boot script before
+    // React hydrates, so the server-rendered <html> intentionally differs.
+    <html lang="en" data-theme="light" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
+      </head>
+      <body>
         <Providers>{children}</Providers>
       </body>
     </html>

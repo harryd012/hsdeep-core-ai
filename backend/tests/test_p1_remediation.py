@@ -261,20 +261,23 @@ class TestSeatsEnforced:
 
 
 # ---------------------------------------------------------------------------
-# Gap 4: rate limiting scoped per tenant off plan.api_rate_limit
+# Gap 4: authenticated (session) rate limiting scoped per user, not per IP.
+# plan.api_rate_limit is a per-billing-period allowance (test_api_quota.py)
+# and must not be reused as a per-minute ceiling (test_session_rate_cap.py).
 # ---------------------------------------------------------------------------
 
 class TestTenantRateLimitScope:
-    async def test_authenticated_requests_keyed_to_plan_limit(self, tenant):
-        """Middleware keys authenticated traffic by tenant and reads the limit
-        from the tenant's ACTIVE plan instead of the flat per-IP default."""
+    async def test_authenticated_requests_keyed_to_user_cap(self, tenant):
+        """Middleware keys session traffic per user and applies the session
+        fair-use cap, not the tenant plan's period allowance."""
         from app.main import _RateLimiter
 
         async with AsyncSessionLocal() as db:
             _, plan = await _seed_sub(db, tenant.id, api_rate_limit=12345)
 
-        limiter = _RateLimiter(requests_per_minute=60)
-        token = _jwt(tenant.id, set(), uuid.uuid4())
+        limiter = _RateLimiter(requests_per_minute=60, session_rpm_per_user=600)
+        user_id = uuid.uuid4()
+        token = _jwt(tenant.id, set(), user_id)
 
         class _FakeRequest:
             def __init__(self, headers):
@@ -283,9 +286,9 @@ class TestTenantRateLimitScope:
 
         req = _FakeRequest({"authorization": f"Bearer {token}"})
         key = limiter.key_for_request(req)
-        assert key == f"tenant:{tenant.id}"
+        assert key == f"user:{tenant.id}:{user_id}"
         rpm = await limiter.rpm_for(key)
-        assert rpm == 12345, f"expected plan api_rate_limit 12345, got {rpm}"
+        assert rpm == 600, f"expected session cap 600, got {rpm}"
 
         anon_key = limiter.key_for_request(_FakeRequest({}))
         assert anon_key.startswith("ip:")

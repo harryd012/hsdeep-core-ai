@@ -98,6 +98,8 @@ class MonitoringService:
                 "source_type": collector_cls.source_type,
                 "display_name": getattr(collector_cls, "display_name", collector_cls.source_type),
                 "implemented": collector_cls.implemented,
+                "category": collector_cls.category,
+                "firewall_capabilities": list(collector_cls.firewall_capabilities),
             }
             for collector_cls in CollectorRegistry.list_types()
         ]
