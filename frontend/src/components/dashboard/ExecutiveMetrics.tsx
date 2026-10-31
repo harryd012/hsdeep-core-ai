@@ -3,6 +3,7 @@
 import { memo, useEffect, useState } from "react";
 import { AlertTriangle, Bell, Bot, CheckCircle2, CreditCard, HardDrive, Server, Workflow } from "lucide-react";
 import { getAlertSummary, getDevices, getSensors, getAutomationStatus, getAIInsights, listAlerts } from "@/lib/api";
+import type { Device, SensorOut } from "@/lib/api";
 import type { SubscriptionWithPlan } from "@/lib/usage-api";
 import { PLANS, derivePlanIdFromTier } from "@/lib/plans";
 import { computeDeduplicatedSummary } from "@/lib/alert-dedup";
@@ -53,8 +54,8 @@ const ExecutiveMetrics = memo(function ExecutiveMetrics() {
       try {
         const [a, d, s, au, ai, alertsList] = await Promise.all([
           getAlertSummary(),
-          getDevices().catch(() => []),
-          getSensors().catch(() => []),
+          getDevices().catch((): Device[] => []),
+          getSensors().catch((): SensorOut[] => []),
           getAutomationStatus().catch(() => null),
           getAIInsights().catch(() => ({ insights: [] })),
           listAlerts({ status: "open", limit: 100 }).catch(() => []),

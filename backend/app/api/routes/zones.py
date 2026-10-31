@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_tenant_id
+from app.core.auth import get_tenant_id, require_permission
 from app.core.db import get_db
 from app.core.entitlements import require_active_subscription
 from app.repositories.zone_repository import ZoneRepository
@@ -21,7 +21,7 @@ def get_zone_service(session: AsyncSession = Depends(get_db)) -> ZoneService:
     return ZoneService(ZoneRepository(session))
 
 
-@router.post("/", response_model=ZoneRead, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=ZoneRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_permission("sites.write"))])
 async def create_zone(
     zone_data: ZoneCreate,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -70,7 +70,7 @@ async def get_zone(
         raise HTTPException(status_code=404, detail="Zone not found")
 
 
-@router.patch("/{zone_id}", response_model=ZoneRead)
+@router.patch("/{zone_id}", response_model=ZoneRead, dependencies=[Depends(require_permission("sites.write"))])
 async def update_zone(
     zone_id: uuid.UUID,
     zone_data: ZoneUpdate,
@@ -84,7 +84,7 @@ async def update_zone(
         raise HTTPException(status_code=404, detail="Zone not found")
 
 
-@router.delete("/{zone_id}")
+@router.delete("/{zone_id}", dependencies=[Depends(require_permission("sites.write"))])
 async def delete_zone(
     zone_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),

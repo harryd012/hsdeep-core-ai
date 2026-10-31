@@ -13,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_tenant_id
+from app.core.auth import get_tenant_id, require_permission
 from app.core.db import get_db
 from app.core.entitlements import require_active_subscription
 from app.repositories.noc_event_repository import NocEventRepository
@@ -134,7 +134,7 @@ async def get_noc_event(
 # ---------------------------------------------------------------------------
 
 
-@router.post("", dependencies=[_active_sub_guard], response_model=NocEventOut, status_code=status.HTTP_201_CREATED)
+@router.post("", dependencies=[Depends(require_permission("noc.write")), _active_sub_guard], response_model=NocEventOut, status_code=status.HTTP_201_CREATED)
 async def create_noc_event(
     payload: NocEventCreate,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -165,7 +165,7 @@ async def create_noc_event(
     return event
 
 
-@router.patch("/{event_id}", dependencies=[_active_sub_guard], response_model=NocEventOut)
+@router.patch("/{event_id}", dependencies=[Depends(require_permission("noc.write")), _active_sub_guard], response_model=NocEventOut)
 async def update_noc_event(
     event_id: uuid.UUID,
     payload: NocEventUpdate,
@@ -199,7 +199,7 @@ async def update_noc_event(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{event_id}/acknowledge", dependencies=[_active_sub_guard], response_model=NocEventOut)
+@router.post("/{event_id}/acknowledge", dependencies=[Depends(require_permission("noc.write")), _active_sub_guard], response_model=NocEventOut)
 async def acknowledge_noc_event(
     event_id: uuid.UUID,
     payload: NocEventAcknowledge,
@@ -215,7 +215,7 @@ async def acknowledge_noc_event(
     return event
 
 
-@router.post("/{event_id}/resolve", dependencies=[_active_sub_guard], response_model=NocEventOut)
+@router.post("/{event_id}/resolve", dependencies=[Depends(require_permission("noc.write")), _active_sub_guard], response_model=NocEventOut)
 async def resolve_noc_event(
     event_id: uuid.UUID,
     payload: NocEventResolve,
@@ -231,7 +231,7 @@ async def resolve_noc_event(
     return event
 
 
-@router.post("/{event_id}/assign", dependencies=[_active_sub_guard], response_model=NocEventOut)
+@router.post("/{event_id}/assign", dependencies=[Depends(require_permission("noc.write")), _active_sub_guard], response_model=NocEventOut)
 async def assign_noc_event(
     event_id: uuid.UUID,
     payload: NocEventAssign,
@@ -270,7 +270,7 @@ def get_correlation_engine(db: AsyncSession = Depends(get_db)) -> NocCorrelation
 @correlation_router.post(
     "/run",
     response_model=list[CorrelationResult],
-    dependencies=[_active_sub_guard],
+    dependencies=[Depends(require_permission("noc.write")), _active_sub_guard],
 )
 async def run_correlation(
     payload: CorrelationRunRequest,

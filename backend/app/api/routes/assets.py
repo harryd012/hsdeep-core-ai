@@ -34,11 +34,12 @@ from app.schemas.asset import (
     SiteCMDBOut,
     TenantHealthSummary,
 )
+from app.models.alert import Alert
+from app.models.sensor import Sensor
 from app.services.health_score import (
-    business_service_health,
-    device_health,
-    site_health,
-    tenant_health,
+    HealthScopeNotFound,
+    business_service_health_rollup,
+    tenant_health_rollup,
 )
 from app.services.dependency_graph import (
     get_dependency_chain,
@@ -225,9 +226,17 @@ async def get_business_service_health(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ):
-    score = await business_service_health(db, service_id, tenant_id)
-    status = "healthy" if score >= 80 else ("degraded" if score >= 50 else "down")
-    return AssetHealthSummary(scope="business_service", scope_id=service_id, health_score=score, status=status)
+    try:
+        rollup = await business_service_health_rollup(db, service_id, tenant_id)
+    except HealthScopeNotFound:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Business service not found")
+    return AssetHealthSummary(
+        scope="business_service",
+        scope_id=service_id,
+        health_score=rollup.score,
+        status=rollup.status,
+        details={"devices_scored": rollup.scored, "devices_total": rollup.total},
+    )
 
 
 @router.get("/tenants/{tenant_id}/health", response_model=TenantHealthSummary)
@@ -240,7 +249,7 @@ async def get_tenant_health(
     authenticated principal's tenant_id (404 on mismatch)."""
     if tenant_id != session_tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    score = await tenant_health(db, tenant_id)
+    rollup = await tenant_health_rollup(db, tenant_id)
     from sqlalchemy import func
     sites_count = (
         await db.execute(select(func.count()).where(Site.tenant_id == tenant_id, Site.is_deleted.is_(False)))
@@ -249,10 +258,25 @@ async def get_tenant_health(
         await db.execute(select(func.count()).where(Device.tenant_id == tenant_id, Device.is_deleted.is_(False)))
     ).scalar_one()
     sensors_count = (
-        await db.execute(select(func.count()).where(Device.tenant_id == tenant_id, Device.is_deleted.is_(False)))
+        await db.execute(select(func.count()).where(Sensor.tenant_id == tenant_id, Sensor.is_deleted.is_(False)))
     ).scalar_one()
-    alerts_active = 0
-    return TenantHealthSummary(tenant_id=tenant_id, health_score=score, sites_count=sites_count, devices_count=devices_count, sensors_count=sensors_count, alerts_active=alerts_active)
+    alerts_active = (
+        await db.execute(
+            select(func.count()).where(
+                Alert.tenant_id == tenant_id, Alert.status != "resolved", Alert.is_deleted.is_(False)
+            )
+        )
+    ).scalar_one()
+    return TenantHealthSummary(
+        tenant_id=tenant_id,
+        health_score=rollup.score,
+        status=rollup.status,
+        devices_scored=rollup.scored,
+        sites_count=sites_count,
+        devices_count=devices_count,
+        sensors_count=sensors_count,
+        alerts_active=alerts_active,
+    )
 
 
 # ---------------------------------------------------------------------------

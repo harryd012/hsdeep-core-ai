@@ -113,8 +113,11 @@ export interface MonitoringSourceInput {
   username?: string | null;
   is_active?: boolean;
   poll_interval_seconds?: number;
-  /** Write-only credential material (SNMP v1/v2c community, or v3 auth key). */
+  /** Write-only credential material (SNMP v1/v2c community, or v3 auth key;
+   *  for cloud sources, the service principal's client secret). */
   credential?: string | null;
+  /** Source-specific settings (e.g. Azure tenant_id / subscription_id / client_id). */
+  config?: Record<string, string>;
 }
 
 /** The collector's credential field for SNMP: the community is sent as

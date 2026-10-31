@@ -283,15 +283,30 @@ async def test_me_override_validates_target(tenant, second_tenant, seeded_permis
 
 @pytest.mark.asyncio
 async def test_me_override_to_live_tenant_succeeds(tenant, second_tenant, seeded_permissions):
-    # A superuser targeting a real live tenant via X-Tenant-Id succeeds and the
-    # active tenant name reflects the override target.
+    # A superuser holding a break-glass grant for a real live tenant can target
+    # it via X-Tenant-Id, and the active tenant name reflects the override.
+    from app.core.db import AsyncSessionLocal
+    from app.models.user import User
+    from app.services.support_access import SupportAccessService
+
+    async with AsyncSessionLocal() as db:
+        su = User(tenant_id=tenant.id, email=f"su-{uuid.uuid4().hex[:6]}@x.com", is_superuser=True)
+        db.add(su)
+        await db.flush()
+        await SupportAccessService(db).create(
+            user_id=su.id, user_email=su.email, home_tenant_id=tenant.id, tenant_id=second_tenant.id,
+            reason="Investigating ticket 4711 for the customer", duration_minutes=30,
+        )
+        await db.commit()
+    token = auth.create_access_token(user_id=su.id, tenant_id=tenant.id, email=su.email,
+                                     is_superuser=True, permissions=frozenset())
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test",
     ) as client:
         resp = await client.get(
             "/api/auth/me",
             headers={
-                "Authorization": f"Bearer {_make_superuser_token(tenant.id)}",
+                "Authorization": f"Bearer {token}",
                 "X-Tenant-Id": str(second_tenant.id),
             },
         )

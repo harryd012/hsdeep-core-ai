@@ -121,12 +121,20 @@ class RequestObservabilityMiddleware(BaseHTTPMiddleware):
         return response
 
 
+#: Probe endpoints exempt from FORCE_HTTPS. Container health checks, Kubernetes
+#: probes and platform health checks (Render, load balancers) call the process
+#: directly over plain HTTP; refusing them would mark every replica unhealthy.
+#: They return no tenant data.
+HTTPS_EXEMPT_PATHS = frozenset({"/health", "/health/live", "/health/ready", "/ready"})
+
+
 class ForceHttpsMiddleware(BaseHTTPMiddleware):
     """Refuses plaintext requests when FORCE_HTTPS is enabled.
 
     Honours ``X-Forwarded-Proto`` so it behaves correctly behind a TLS-
     terminating proxy. Off by default, so local development is unaffected; the
-    response is a generic 400 and never leaks internals.
+    response is a generic 400 and never leaks internals. Health probes
+    (``HTTPS_EXEMPT_PATHS``) are always answered.
     """
 
     def __init__(self, app, *, enabled: bool = False) -> None:
@@ -134,7 +142,7 @@ class ForceHttpsMiddleware(BaseHTTPMiddleware):
         self._enabled = enabled
 
     async def dispatch(self, request: Request, call_next):
-        if self._enabled:
+        if self._enabled and request.url.path not in HTTPS_EXEMPT_PATHS:
             proto = (
                 request.headers.get("x-forwarded-proto") or request.url.scheme or ""
             ).lower()

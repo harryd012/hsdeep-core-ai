@@ -75,6 +75,22 @@ class AutonomousLifecycleOrchestrator:
         # Register event handlers
         self._register_handlers()
 
+        # VALIDATION_STARTED -> PASSED/FAILED from fresh telemetry. Without it
+        # nothing ever validated, so automated remediation could not resolve
+        # (or, worse, would be resolved on the SOP's word alone).
+        from app.core.config import get_settings
+        from app.services.events.recovery_validator import RecoveryValidator
+
+        cfg = get_settings()
+        self.recovery_validator = RecoveryValidator(
+            event_bus,
+            session_factory=session_factory,
+            attempts=cfg.recovery_validation_attempts,
+            interval_seconds=cfg.recovery_validation_interval_seconds,
+            consecutive_passes=cfg.recovery_validation_consecutive_passes,
+        )
+        self.recovery_validator.register()
+
     def _register_handlers(self) -> None:
         """Register all event handlers for the lifecycle."""
         # Alert → Incident → Ticket flow
@@ -337,8 +353,25 @@ class AutonomousLifecycleOrchestrator:
             logger.info("SOP selected for ticket %s but auto-remediation disabled", ticket_id)
 
     async def _on_sop_completed(self, event: DomainEvent) -> None:
-        """Handle SOPCompleted event → start validation."""
+        """Handle SOPCompleted event → start validation.
+
+        A failed SOP is never validated as if it had worked: it goes straight
+        to VALIDATION_FAILED (engineer escalation)."""
         ticket_id = event.payload.get("ticket_id")
+        if event.payload.get("success") is False:
+            await self.event_bus.publish(DomainEvent(
+                event_type=EventType.VALIDATION_FAILED,
+                tenant_id=event.tenant_id,
+                correlation_id=event.correlation_id,
+                payload={
+                    "ticket_id": ticket_id,
+                    "incident_id": event.payload.get("incident_id"),
+                    "sop_id": event.payload.get("sop_id"),
+                    "failure_reason": event.payload.get("result_notes") or "SOP execution failed",
+                },
+            ))
+            logger.warning("SOP failed for ticket %s - skipping validation, escalating", ticket_id)
+            return
 
         await self.event_bus.publish(DomainEvent(
             event_type=EventType.VALIDATION_STARTED,

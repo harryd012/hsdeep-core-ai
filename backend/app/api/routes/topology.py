@@ -11,7 +11,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import Principal, get_current_user, get_tenant_id
+from app.core.auth import Principal, get_current_user, get_tenant_id, require_permission
 from app.core.db import get_db
 from app.core.entitlements import require_active_subscription
 from app.repositories.resource_relationship_repository import (
@@ -108,7 +108,7 @@ async def _resolve_audit_actor(
     "/relationships",
     response_model=ResourceRelationshipRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_active_subscription)],
+    dependencies=[Depends(require_permission("topology.write")), Depends(require_active_subscription)],
 )
 async def create_relationship(
     payload: ResourceRelationshipCreate,
@@ -174,7 +174,7 @@ async def create_relationship(
 @router.post(
     "/relationships/materialize",
     response_model=RelationshipMaterializationOut,
-    dependencies=[Depends(require_active_subscription)],
+    dependencies=[Depends(require_permission("topology.write")), Depends(require_active_subscription)],
 )
 async def materialize_relationships(
     dry_run: bool = Query(
@@ -286,7 +286,7 @@ async def topology_summary(
     "/links",
     response_model=TopologyLinkRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_active_subscription)],
+    dependencies=[Depends(require_permission("topology.write")), Depends(require_active_subscription)],
 )
 async def create_link(
     payload: TopologyLinkCreate,
@@ -394,7 +394,7 @@ async def get_link(
 @router.patch(
     "/links/{link_id}",
     response_model=TopologyLinkRead,
-    dependencies=[Depends(require_active_subscription)],
+    dependencies=[Depends(require_permission("topology.write")), Depends(require_active_subscription)],
 )
 async def update_link(
     link_id: uuid.UUID,
@@ -434,7 +434,7 @@ async def update_link(
 
 @router.delete(
     "/links/{link_id}",
-    dependencies=[Depends(require_active_subscription)],
+    dependencies=[Depends(require_permission("topology.write")), Depends(require_active_subscription)],
 )
 async def delete_link(
     link_id: uuid.UUID,
@@ -465,7 +465,7 @@ async def get_relationship(
 @router.patch(
     "/relationships/{relationship_id}",
     response_model=ResourceRelationshipRead,
-    dependencies=[Depends(require_active_subscription)],
+    dependencies=[Depends(require_permission("topology.write")), Depends(require_active_subscription)],
 )
 async def update_relationship(
     relationship_id: uuid.UUID,
@@ -518,7 +518,7 @@ async def update_relationship(
 
 @router.delete(
     "/relationships/{relationship_id}",
-    dependencies=[Depends(require_active_subscription)],
+    dependencies=[Depends(require_permission("topology.write")), Depends(require_active_subscription)],
 )
 async def delete_relationship(
     relationship_id: uuid.UUID,

@@ -118,7 +118,7 @@ class AlertRepository:
         await self.db.refresh(alert)
         return alert
 
-    async def acknowledge(self, alert: Alert, *, acknowledged_by: uuid.UUID) -> Alert:
+    async def acknowledge(self, alert: Alert, *, acknowledged_by: uuid.UUID | None) -> Alert:
         alert.status = "acknowledged"
         alert.acknowledged_at = datetime.now(timezone.utc)
         alert.acknowledged_by = acknowledged_by

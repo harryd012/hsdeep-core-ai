@@ -7,7 +7,7 @@ transaction boundary.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -148,6 +148,23 @@ class UserRepository:
 
     async def touch_last_login(self, user: User) -> User:
         user.last_login_at = datetime.now(timezone.utc)
+        user.failed_login_count = 0
+        user.locked_until = None
+        await self.db.flush()
+        return user
+
+    async def record_failed_login(self, user: User, *, max_attempts: int, lockout_minutes: int) -> User:
+        """Count a failed login; lock the account once max_attempts is reached."""
+        user.failed_login_count = (user.failed_login_count or 0) + 1
+        if max_attempts > 0 and user.failed_login_count >= max_attempts:
+            user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=lockout_minutes)
+            user.failed_login_count = 0
+        await self.db.flush()
+        return user
+
+    async def clear_lockout(self, user: User) -> User:
+        user.failed_login_count = 0
+        user.locked_until = None
         await self.db.flush()
         return user
 

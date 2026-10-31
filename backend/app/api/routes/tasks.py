@@ -134,7 +134,7 @@ def _request_actor(request: Request) -> str | None:
     return f"user:{user_id}" if user_id else None
 
 
-@router.post("", response_model=TaskRead, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=TaskRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_permission("tasks.write"))])
 async def create_task(
     body: TaskCreate,
     request: Request,
@@ -273,7 +273,7 @@ async def assign_task(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
-@router.post("/{task_id}/route", response_model=TaskRead)
+@router.post("/{task_id}/route", response_model=TaskRead, dependencies=[Depends(require_permission("tasks.write"))])
 async def auto_route_task(
     task_id: uuid.UUID,
     department: str | None = None,
@@ -302,7 +302,7 @@ async def auto_route_task(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
-@router.post("/{task_id}/accept", response_model=TaskRead)
+@router.post("/{task_id}/accept", response_model=TaskRead, dependencies=[Depends(require_permission("tasks.write"))])
 async def accept_task(
     task_id: uuid.UUID,
     agent_id: uuid.UUID = Query(...),
@@ -321,7 +321,7 @@ async def accept_task(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
-@router.post("/{task_id}/investigate", response_model=TaskRead)
+@router.post("/{task_id}/investigate", response_model=TaskRead, dependencies=[Depends(require_permission("tasks.write"))])
 async def start_investigation(
     task_id: uuid.UUID,
     agent_id: uuid.UUID = Query(...),
@@ -340,8 +340,8 @@ async def start_investigation(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
-@router.post("/{task_id}/submit", response_model=TaskRead)
-@router.post("/{task_id}/submit-execution", response_model=TaskRead)
+@router.post("/{task_id}/submit", response_model=TaskRead, dependencies=[Depends(require_permission("tasks.write"))])
+@router.post("/{task_id}/submit-execution", response_model=TaskRead, dependencies=[Depends(require_permission("tasks.write"))])
 async def submit_for_verification(
     task_id: uuid.UUID,
     body: TaskExecutionSubmit,
@@ -367,7 +367,7 @@ async def submit_for_verification(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
-@router.post("/{task_id}/verify", response_model=TaskRead)
+@router.post("/{task_id}/verify", response_model=TaskRead, dependencies=[Depends(require_permission("tasks.write"))])
 async def verify_task(
     task_id: uuid.UUID,
     body: TaskVerification,
@@ -402,7 +402,7 @@ async def verify_task(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
-@router.post("/{task_id}/record", response_model=TaskRead)
+@router.post("/{task_id}/record", response_model=TaskRead, dependencies=[Depends(require_permission("tasks.write"))])
 async def record_task(
     task_id: uuid.UUID,
     service: TaskService = Depends(get_task_service),
@@ -420,7 +420,7 @@ async def record_task(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
-@router.post("/{task_id}/fail", response_model=TaskRead)
+@router.post("/{task_id}/fail", response_model=TaskRead, dependencies=[Depends(require_permission("tasks.write"))])
 async def fail_task(
     task_id: uuid.UUID,
     body: TaskStatusChange,
@@ -447,7 +447,7 @@ async def fail_task(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
-@router.post("/{task_id}/retry", response_model=TaskRead)
+@router.post("/{task_id}/retry", response_model=TaskRead, dependencies=[Depends(require_permission("tasks.write"))])
 async def retry_task(
     task_id: uuid.UUID,
     agent_id: uuid.UUID = Query(...),
@@ -466,7 +466,7 @@ async def retry_task(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
-@router.post("/{task_id}/escalate", response_model=TaskRead)
+@router.post("/{task_id}/escalate", response_model=TaskRead, dependencies=[Depends(require_permission("tasks.write"))])
 async def escalate_task(
     task_id: uuid.UUID,
     body: TaskStatusChange,
@@ -796,7 +796,7 @@ async def start_execution(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
 
-@router.patch("/{task_id}", response_model=TaskRead)
+@router.patch("/{task_id}", response_model=TaskRead, dependencies=[Depends(require_permission("tasks.write"))])
 async def update_task(
     task_id: uuid.UUID,
     body: TaskUpdate,

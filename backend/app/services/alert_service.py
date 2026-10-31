@@ -443,7 +443,7 @@ class AlertService:
 
     # -- operator actions ----------------------------------------------------
     async def acknowledge(
-        self, alert_id: uuid.UUID, tenant_id: uuid.UUID, acknowledged_by: uuid.UUID
+        self, alert_id: uuid.UUID, tenant_id: uuid.UUID, acknowledged_by: uuid.UUID | None
     ) -> Alert:
         alert = await self._get_or_raise(alert_id, tenant_id)
         acknowledged = await self.alert_repo.acknowledge(alert, acknowledged_by=acknowledged_by)
@@ -451,7 +451,7 @@ class AlertService:
             acknowledged,
             event_type="acknowledged",
             message="Alert acknowledged by operator.",
-            details={"acknowledged_by": str(acknowledged_by)},
+            details={"acknowledged_by": str(acknowledged_by) if acknowledged_by else None},
         )
         return acknowledged
 

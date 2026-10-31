@@ -112,6 +112,8 @@ export interface TopologyQuickSummary {
   sites_total: number;
   monitoring_sources_total: number;
   relationships_total: number;
+  /** Devices with at least one recorded relationship or topology link. */
+  devices_linked?: number;
   interfaces_total: number;
   sensors_total: number;
   by_health: Record<string, number>;
@@ -288,3 +290,90 @@ export function getLiveTopology(
   return apiFetch<TopologyLive>(`/api/infrastructure/topology/graph/live?${query.toString()}`);
 }
 
+
+// ---------------------------------------------------------------------------
+// L3 topology - /api/infrastructure/topology/l3
+// ---------------------------------------------------------------------------
+
+/** A synthetic L3 node: a subnet "pipe" (3+ devices) or a next-hop diamond. */
+export interface L3Node {
+  id: string;
+  kind: "subnet" | "next_hop";
+  label: string;
+  vrf: string;
+  site_id: string | null;
+  network: string | null;
+  member_count: number | null;
+  address: string | null;
+  route_count: number | null;
+}
+
+export interface L3Edge {
+  id: string;
+  source: string;
+  target: string;
+  kind: "subnet" | "route";
+  network: string | null;
+  vrf: string;
+  source_address: string | null;
+  source_interface: string | null;
+  target_address: string | null;
+  target_interface: string | null;
+  destinations: string[];
+}
+
+export interface L3Address {
+  address: string;
+  prefix_length: number;
+  network: string;
+  interface: string | null;
+  vrf: string;
+  is_primary: boolean;
+}
+
+export interface L3Route {
+  destination: string;
+  next_hop: string | null;
+  interface: string | null;
+  protocol: string;
+  metric: number | null;
+  vrf: string;
+  next_hop_node: string | null;
+}
+
+export interface L3Device {
+  name: string | null;
+  device_type: string | null;
+  addresses: L3Address[];
+  static_routes: L3Route[];
+  default_route: L3Route | null;
+  routes_by_protocol: Record<string, number>;
+}
+
+export interface TopologyL3 {
+  nodes: L3Node[];
+  edges: L3Edge[];
+  /** Keyed by the live graph's device node id (`device:<uuid>`). */
+  devices: Record<string, L3Device>;
+  /** Preferred roots: default-route exits, most used first. */
+  roots: string[];
+  unlinked: string[];
+  coverage: {
+    devices_total: number;
+    devices_with_addresses: number;
+    devices_with_routes: number;
+    subnets: number;
+    providers: string[];
+  };
+  site_id: string | null;
+  generated_at: string;
+}
+
+export function getL3Topology(
+  options: { siteId?: string | null; tenantId?: string } = {}
+): Promise<TopologyL3> {
+  const tenantId = options.tenantId ?? DEFAULT_TENANT_ID;
+  const query = withTenant(tenantId);
+  if (options.siteId) query.set("site_id", options.siteId);
+  return apiFetch<TopologyL3>(`/api/infrastructure/topology/l3?${query.toString()}`);
+}

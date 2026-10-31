@@ -14,7 +14,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_tenant_id
+from app.core.auth import get_tenant_id, require_permission
 from app.core.db import get_db
 from app.schemas.copilot import CopilotChatRequest, CopilotChatResponse
 from app.services.copilot_router import CopilotRouter
@@ -28,7 +28,7 @@ def get_copilot_router(db: AsyncSession = Depends(get_db)) -> CopilotRouter:
     return CopilotRouter(db)
 
 
-@router.post("/chat", response_model=CopilotChatResponse)
+@router.post("/chat", response_model=CopilotChatResponse, dependencies=[Depends(require_permission("incidents.read"))])
 async def copilot_chat(
     payload: CopilotChatRequest,
     tenant_id: uuid.UUID = Depends(get_tenant_id),

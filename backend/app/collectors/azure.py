@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 class AzureCollector(BaseCollector):
     display_name = "Microsoft Azure Monitor"
     implemented = True
+    category = "cloud"
 
     # -- config helpers -------------------------------------------------------
 

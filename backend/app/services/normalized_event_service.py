@@ -75,21 +75,37 @@ class NormalizedEventService:
         or False if it was a duplicate (occurrence_count bumped).
 
         Deduplication logic:
-        - If an active (non-suppressed, non-deleted) event exists with the same
-          integration_id + event_signature, bump its occurrence_count instead
-          of creating a new row.
+        - When both ``integration_id`` and ``event_signature`` are present, the
+          repository performs an atomic ``INSERT ... ON CONFLICT DO UPDATE``
+          against the active-only partial unique index. A repeat of the same
+          active signature bumps its occurrence_count; a re-fire after the prior
+          event was suppressed/soft-deleted correctly creates a new active row.
+          This closes the previous read-then-write race (which could raise an
+          uncaught UniqueViolation under concurrent writers).
+        - When either key is missing, the previous bypass behavior is preserved:
+          a new row is always created (no dedup key to match on).
         """
-        # Check for existing active event with same signature
         if event_signature and integration_id:
-            existing = await self._find_active_by_signature(
-                tenant_id, integration_id, event_signature
+            return await self.repo.upsert_occurrence(
+                tenant_id=tenant_id,
+                integration_id=integration_id,
+                event_signature=event_signature,
+                event_category=event_category,
+                event_type=event_type,
+                severity=severity,
+                title=title,
+                telemetry_type=telemetry_type,
+                event_timestamp=event_timestamp,
+                site_id=site_id,
+                device_id=device_id,
+                source_event_id=source_event_id,
+                description=description,
+                attributes=attributes,
+                confidence_score=confidence_score,
+                raw_reference=raw_reference,
             )
-            if existing is not None:
-                # Duplicate — bump occurrence
-                await self.repo.bump_occurrence(existing)
-                return existing, False
 
-        # Create new event
+        # No dedup key — always create a new row (unchanged legacy behavior).
         event = await self.repo.create(
             tenant_id=tenant_id,
             integration_id=integration_id,
@@ -111,24 +127,6 @@ class NormalizedEventService:
             last_occurred_at=event_timestamp,
         )
         return event, True
-
-    async def _find_active_by_signature(
-        self,
-        tenant_id: uuid.UUID,
-        integration_id: uuid.UUID,
-        event_signature: str,
-    ) -> NormalizedEvent | None:
-        """Find an active (non-suppressed, non-deleted) event by signature."""
-        events = await self.repo.list(
-            tenant_id,
-            integration_id=integration_id,
-            is_suppressed=False,
-            limit=10,  # Check recent events for matching signature
-        )
-        for event in events:
-            if event.event_signature == event_signature:
-                return event
-        return None
 
     async def update(
         self,

@@ -109,6 +109,8 @@ class TopologyQuickSummary(BaseModel):
     sites_total: int
     monitoring_sources_total: int
     relationships_total: int
+    #: Devices with at least one recorded relationship or topology link.
+    devices_linked: int = 0
     interfaces_total: int
     sensors_total: int
     #: Breakdown from DeviceRepository.counts_by_status, e.g.

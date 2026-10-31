@@ -57,6 +57,7 @@ _VALID_CHECKS = {"icmp", "tcp", "dns"}
 class ConnectivityCollector(BaseCollector):
     display_name = "Connectivity (ICMP/TCP/DNS)"
     implemented = True
+    category = "network"
 
     def _host(self) -> str:
         if not self.source.hostname:

@@ -23,6 +23,9 @@
  * - DEFAULT_TENANT_ID is kept only for transitional unauthenticated routes.
  */
 
+import type { RecoveryCheck } from "@/lib/incidents/recovery";
+import type { GatewaySourceType } from "@/lib/gateway";
+
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 /**
@@ -37,7 +40,10 @@ export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost
  * - Server-side rendering contexts
  * - Transitional migration period
  */
-export const DEFAULT_TENANT_ID = process.env.NEXT_PUBLIC_DEFAULT_TENANT_ID ?? "00000000-0000-0000-0000-000000000000";
+// No fallback tenant: the backend derives the tenant from the signed-in
+// principal (get_tenant_id) and never reads a tenant from the query string,
+// so an unset value stays empty instead of pretending to be a tenant.
+export const DEFAULT_TENANT_ID = process.env.NEXT_PUBLIC_DEFAULT_TENANT_ID ?? "";
 
 const AUTH_TOKEN_KEY = "hsdeep_auth_token";
 const REFRESH_TOKEN_KEY = "hsdeep_refresh_token";
@@ -66,9 +72,10 @@ const REFRESH_TOKEN_KEY = "hsdeep_refresh_token";
  */
 export const AUTH_BOOTSTRAP = process.env.NEXT_PUBLIC_AUTH_DEV_BOOTSTRAP === "true";
 
-export const AUTH_EMAIL = process.env.NEXT_PUBLIC_AUTH_EMAIL ?? "admin@hsdeep.local";
-export const AUTH_PASSWORD = process.env.NEXT_PUBLIC_AUTH_PASSWORD ?? "ChooseAStrongPasswordHere123!";
-export const AUTH_TENANT_ID = process.env.NEXT_PUBLIC_AUTH_TENANT_ID ?? DEFAULT_TENANT_ID;
+// No built-in defaults: NEXT_PUBLIC_* values are compiled into the public
+// bundle, so a fallback password here would ship to every browser.
+export const AUTH_EMAIL = process.env.NEXT_PUBLIC_AUTH_EMAIL ?? "";
+export const AUTH_PASSWORD = process.env.NEXT_PUBLIC_AUTH_PASSWORD ?? "";
 
 // ---------------------------------------------------------------------------
 // Auth token management
@@ -502,6 +509,10 @@ export interface MonitoringSourceOut {
   snmp_version: string | null;
   username: string | null;
   poll_interval_seconds: number;
+  /** healthy | degraded | failing | unknown */
+  health_status?: string | null;
+  /** Last collection run that succeeded; drives "connected" in the gateway. */
+  last_successful_run_at?: string | null;
   /** Whether credential material is stored for this source. Never the value:
    *  the secret itself is not returned by the API, by design. */
   credential_configured?: boolean;
@@ -853,6 +864,8 @@ export interface MeResponse {
   // -- P0 tenant context (authoritative backend data) --
   tenant_name: string | null;
   accessible_tenants: AccessibleTenant[];
+  /** The user's own tenant; differs from tenant_id under a support grant. */
+  home_tenant_id?: string | null;
 }
 
 export function getMe(): Promise<MeResponse> {
@@ -886,6 +899,22 @@ export function setActiveTenantOverride(tenantId: string | null): void {
 
 export function clearActiveTenantOverride(): void {
   setActiveTenantOverride(null);
+}
+
+/** Server detail when a superuser's X-Tenant-Id has no live support grant. */
+const SUPPORT_GRANT_REQUIRED = "break-glass grant";
+
+/**
+ * Open break-glass support access to another tenant (R1.2). Grants are
+ * managed from the support user's own tenant, so any current override is
+ * cleared first; the caller then sets the new override.
+ */
+export async function openSupportGrant(tenantId: string, reason: string, durationMinutes: number): Promise<void> {
+  clearActiveTenantOverride();
+  await apiFetch("/api/support-access/grants", {
+    method: "POST",
+    body: JSON.stringify({ tenant_id: tenantId, reason, duration_minutes: durationMinutes }),
+  });
 }
 
 export interface UserOut {
@@ -1164,6 +1193,16 @@ export const DIAGNOSTIC_TIMEOUT_MS = 90_000;
  */
 export const OPERATOR_WRITE_TIMEOUT_MS = 45_000;
 
+/**
+ * Budget for HEAVY KPI READS that aggregate several tenant-wide measurements
+ * server-side. `GET /api/dashboard/cloud-operations` runs three incident /
+ * device aggregations over a multi-million-row estate; measured cold latency
+ * is ~8.4s (warm ~1.3s), which exceeds the 10s default under a concurrent
+ * dashboard page load (28 parallel requests) and aborted a perfectly healthy
+ * request - the panel then rendered "Request timed out" instead of its data.
+ */
+export const HEAVY_KPI_TIMEOUT_MS = 30_000;
+
 
 async function apiFetchWithRetry<T>(
   path: string,
@@ -1222,14 +1261,28 @@ async function apiFetchWithRetry<T>(
       return apiFetchWithRetry<T>(path, init, attempt + 1, timeoutMs);
     }
 
+    // A support grant expired or was revoked by the customer: return to the
+    // user's own tenant instead of failing every request.
+    if (res.status === 403 && activeTenant && message.includes(SUPPORT_GRANT_REQUIRED)) {
+      clearActiveTenantOverride();
+      if (typeof window !== "undefined") window.location.reload();
+      throw new ApiError(path, 403, "Support access to that tenant has ended. Returned to your own tenant.");
+    }
+
     throw new ApiError(path, res.status, res.status === 401 ? "Session expired - please log in again." : message);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
-export function withTenant(tenantId: string, extra?: Record<string, string>): URLSearchParams {
-  return new URLSearchParams({ tenant_id: tenantId, ...extra });
+/**
+ * Query parameters for a tenant-scoped read. The tenant is NOT sent: the
+ * server takes it from the authenticated principal, and a superuser's tenant
+ * switch travels in the validated, audited X-Tenant-Id header. `tenantId` is
+ * kept in the signature so existing callers compile unchanged.
+ */
+export function withTenant(_tenantId: string, extra?: Record<string, string>): URLSearchParams {
+  return new URLSearchParams(extra ?? {});
 }
 
 // ---------------------------------------------------------------------------
@@ -1259,6 +1312,27 @@ export function updateSecuritySettings(tenantId: string = DEFAULT_TENANT_ID, pay
 
 export function getNotificationSettings(tenantId: string = DEFAULT_TENANT_ID): Promise<NotificationSettings> {
   return apiFetch<NotificationSettings>(`/api/settings/notifications?${withTenant(tenantId).toString()}`);
+}
+
+export interface NotificationDelivery {
+  incident_id: string;
+  channel: "email" | "slack" | "pagerduty";
+  event: "opened" | "resolved";
+  status: "sent" | "failed";
+  attempts: number;
+  last_error: string | null;
+  sent_at: string | null;
+  created_at: string;
+}
+
+/** Recent incident notification deliveries, failures included (newest first). */
+export function listNotificationDeliveries(limit = 50): Promise<NotificationDelivery[]> {
+  return apiFetch<NotificationDelivery[]>(`/api/settings/notifications/deliveries?limit=${limit}`);
+}
+
+/** Sends a labelled test message to each enabled channel; per-channel result text. */
+export function sendTestNotification(): Promise<{ results: Record<string, string> }> {
+  return apiFetch<{ results: Record<string, string> }>(`/api/settings/notifications/test`, { method: "POST", body: "{}" });
 }
 
 export function updateNotificationSettings(tenantId: string = DEFAULT_TENANT_ID, payload: NotificationSettingsUpdate): Promise<NotificationSettings> {
@@ -1351,14 +1425,11 @@ export function getAlertStatistics(tenantId: string = DEFAULT_TENANT_ID): Promis
   return apiFetch<AlertSummary>(`/api/alerts/statistics?${withTenant(tenantId).toString()}`);
 }
 
-export function acknowledgeAlert(
-  alertId: string,
-  acknowledgedBy: string,
-  tenantId: string = DEFAULT_TENANT_ID,
-): Promise<Alert> {
+/** The acknowledgement is attributed to the signed-in user by the server. */
+export function acknowledgeAlert(alertId: string, tenantId: string = DEFAULT_TENANT_ID): Promise<Alert> {
   return apiFetch<Alert>(`/api/alerts/${alertId}/acknowledge?${withTenant(tenantId).toString()}`, {
     method: "POST",
-    body: JSON.stringify({ acknowledged_by: acknowledgedBy }),
+    body: JSON.stringify({}),
   });
 }
 
@@ -1456,6 +1527,14 @@ export interface OperationalIntelligenceDevices {
   offline: number;
   unknown: number;
   total: number;
+  /** Canonical freshness-aware classification (backend counts_by_state). */
+  canonical: {
+    up: number;
+    down: number;
+    stale: number;
+    unknown: number;
+    total: number;
+  };
 }
 
 export interface OperationalIntelligenceAlerts {
@@ -1509,6 +1588,44 @@ export async function getBackendHealth(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Full system health contract returned by GET /health.  The single
+ * authoritative source for every status surface.  `status` is
+ * "ok" | "degraded" | "unavailable"; `system_online` means PostgreSQL is up
+ * (Redis is NOT required for the platform to be online).
+ */
+export interface SystemHealth {
+  status: "ok" | "degraded" | "unavailable";
+  ready: boolean;
+  ai_ready: boolean;
+  system_online: boolean;
+  timestamp: string;
+  dependencies: Record<string, string>;
+}
+
+/**
+ * Fetch GET /health and always resolve to a SystemHealth.  A network failure
+ * or non-200 response is reported as "unavailable" (the platform is offline)
+ * rather than throwing, so status surfaces never sit in a perpetual loading
+ * state.
+ */
+export async function getSystemHealth(): Promise<SystemHealth> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/health`, { cache: "no-store" });
+    if (res.ok) return (await res.json()) as SystemHealth;
+  } catch {
+    // fall through to unavailable
+  }
+  return {
+    status: "unavailable",
+    ready: false,
+    ai_ready: false,
+    system_online: false,
+    timestamp: new Date().toISOString(),
+    dependencies: {},
+  };
 }
 
 export interface AiCtoStatus {
@@ -1680,6 +1797,62 @@ export function getSensors(tenantId: string = DEFAULT_TENANT_ID): Promise<Sensor
 }
 
 // ---------------------------------------------------------------------------
+// Device detail (Host page) — device-nested reads; each 404s for another
+// tenant's device before exposing anything.
+// ---------------------------------------------------------------------------
+export interface DeviceInterface {
+  id: string;
+  device_id: string;
+  external_id: string;
+  name: string;
+  mac_address: string | null;
+  admin_status: string;
+  oper_status: string;
+  speed_mbps: number | null;
+  in_octets: number | null;
+  out_octets: number | null;
+  in_errors: number | null;
+  out_errors: number | null;
+  last_status_change_at: string | null;
+}
+
+export interface MetricPoint {
+  id: string;
+  sensor_id: string | null;
+  metric_type: string;
+  value: number;
+  unit: string | null;
+  recorded_at: string;
+}
+
+export function getDevice(deviceId: string): Promise<Device> {
+  return apiFetch<Device>(`/api/devices/${encodeURIComponent(deviceId)}`);
+}
+
+export function getDeviceSensors(deviceId: string): Promise<SensorOut[]> {
+  return apiFetch<SensorOut[]>(`/api/devices/${encodeURIComponent(deviceId)}/sensors`);
+}
+
+export function getDeviceInterfaces(deviceId: string): Promise<DeviceInterface[]> {
+  return apiFetch<DeviceInterface[]>(`/api/devices/${encodeURIComponent(deviceId)}/interfaces`);
+}
+
+export function getDeviceAlerts(deviceId: string, limit = 200): Promise<Alert[]> {
+  return apiFetch<Alert[]>(`/api/devices/${encodeURIComponent(deviceId)}/alerts?limit=${limit}`);
+}
+
+export function getDeviceEvents(deviceId: string, limit = 100): Promise<Event[]> {
+  return apiFetch<Event[]>(`/api/devices/${encodeURIComponent(deviceId)}/events?limit=${limit}`);
+}
+
+/** Newest first, as the API returns it. */
+export function getSensorMetrics(sensorId: string, params: { since?: string; limit?: number } = {}): Promise<MetricPoint[]> {
+  const search = new URLSearchParams({ limit: String(params.limit ?? 300) });
+  if (params.since) search.set("since", params.since);
+  return apiFetch<MetricPoint[]>(`/api/sensors/${encodeURIComponent(sensorId)}/metrics?${search.toString()}`);
+}
+
+// ---------------------------------------------------------------------------
 // CMDB / Asset Intelligence
 // ---------------------------------------------------------------------------
 
@@ -1752,7 +1925,10 @@ export interface AssetHealthSummary {
 
 export interface TenantHealthSummary {
   tenant_id: string;
-  health_score: number;
+  /** null when no device in the tenant has a known status (not "healthy"). */
+  health_score: number | null;
+  status: "healthy" | "degraded" | "down" | "unknown";
+  devices_scored: number;
   sites_count: number;
   devices_count: number;
   sensors_count: number;
@@ -2333,6 +2509,9 @@ export interface CollectorHealth {
   last_success_at: string | null;
   last_failure_at: string | null;
   last_error: string | null;
+  /** Coarse reason bucket for the last failure: credentials | unreachable |
+   *  no_collector_registered | other | null. */
+  failure_category: string | null;
   // PHASE 3.1: failure_rate_pct / successful_runs / failed_runs / retry_count /
   // last_failure_at ARE now returned by GET /api/incidents/collector-health —
   // the route delegates to CollectorHealthService (the authoritative
@@ -2354,12 +2533,14 @@ export function listIncidents(
     tenantId?: string;
     status?: IncidentStatus;
     severity?: IncidentSeverity;
+    siteId?: string;
     limit?: number;
     offset?: number;
   } = {},
 ): Promise<Incident[]> {
   const tenantId = params.tenantId ?? DEFAULT_TENANT_ID;
   const qs = new URLSearchParams({ tenant_id: tenantId });
+  if (params.siteId) qs.set("site_id", params.siteId);
   if (params.status) qs.set("status", params.status);
   if (params.severity) qs.set("severity", params.severity);
   if (params.limit) qs.set("limit", String(params.limit));
@@ -2375,15 +2556,23 @@ export function getAlertIntelligenceMetrics(tenantId: string = DEFAULT_TENANT_ID
   return apiFetch<AlertIntelligenceMetrics>(`/api/incidents/intelligence?${withTenant(tenantId).toString()}`);
 }
 
-export function getCollectorHealth(tenantId: string = DEFAULT_TENANT_ID, windowHours: number = 24): Promise<CollectorHealthList> {
-  const qs = withTenant(tenantId, { window_hours: String(windowHours) });
+export function getCollectorHealth(
+  tenantId: string = DEFAULT_TENANT_ID,
+  windowHours: number = 24,
+  excludeTestSources: boolean = true,
+): Promise<CollectorHealthList> {
+  const qs = withTenant(tenantId, {
+    window_hours: String(windowHours),
+    exclude_test_sources: String(excludeTestSources),
+  });
   return apiFetch<CollectorHealthList>(`/api/incidents/collector-health?${qs.toString()}`);
 }
 
-export function acknowledgeIncident(incidentId: string, acknowledgedBy: string, tenantId: string = DEFAULT_TENANT_ID): Promise<Incident> {
+/** The acknowledgement is attributed to the signed-in user by the server. */
+export function acknowledgeIncident(incidentId: string, tenantId: string = DEFAULT_TENANT_ID): Promise<Incident> {
   return apiFetch<Incident>(`/api/incidents/${incidentId}/acknowledge?${withTenant(tenantId).toString()}`, {
     method: "POST",
-    body: JSON.stringify({ acknowledged_by: acknowledgedBy }),
+    body: JSON.stringify({}),
   });
 }
 
@@ -2399,6 +2588,10 @@ export function monitorIncident(incidentId: string, tenantId: string = DEFAULT_T
     method: "POST",
     body: JSON.stringify({}),
   });
+}
+
+export function getIncidentRecoveryCheck(incidentId: string): Promise<RecoveryCheck> {
+  return apiFetch<RecoveryCheck>(`/api/incidents/${incidentId}/recovery-check`);
 }
 
 export function recoverIncident(incidentId: string, tenantId: string = DEFAULT_TENANT_ID): Promise<Incident> {
@@ -2656,6 +2849,7 @@ export interface CCWorkload {
   department: string;
   agent_count: number;
   active_agents: number;
+  total_tasks: number;
   active_tasks: number;
   queued_tasks: number;
   verifying_tasks: number;
@@ -2709,21 +2903,70 @@ export interface CommandCenterOverview {
   health: CommandCenterHealth | null;
 }
 
-/** Real adapter/source types actually implemented in the Collector
- * Framework (app/collectors/*). Informational only — the Tool Gateway
- * has no live execution tracking yet. */
-export const TOOL_GATEWAY_ADAPTERS: { id: string; name: string; implemented: boolean }[] = [
-  { id: "prtg", name: "PRTG Network Monitor", implemented: true },
-  { id: "meraki", name: "Cisco Meraki Dashboard", implemented: true },
-  { id: "fortigate", name: "Fortinet FortiGate", implemented: true },
-  { id: "fortimanager", name: "Fortinet FortiManager", implemented: true },
-  { id: "linux", name: "Linux (SSH)", implemented: true },
-  { id: "azure", name: "Microsoft Azure Monitor", implemented: true },
-  { id: "vmware", name: "VMware vSphere / vCenter", implemented: true },
-  { id: "windows_winrm", name: "Windows (WinRM)", implemented: true },
-  { id: "snmp", name: "SNMP (v1/v2c/v3)", implemented: true },
-  { id: "zabbix", name: "Zabbix Enterprise", implemented: true },
-];
+/** Collectors the backend registers (app/collectors/*), with their gateway
+ * category and the firewall tables they read. Replaces the old hard-coded
+ * adapter list, which drifted from the backend. */
+export function listSourceTypes(): Promise<GatewaySourceType[]> {
+  return apiFetch<GatewaySourceType[]>("/api/monitoring/source-types");
+}
+
+// ---------------------------------------------------------------------------
+// Firewall gateway (docs/architecture/firewall-gateway.md)
+// ---------------------------------------------------------------------------
+export interface FirewallLicence {
+  feature: string;
+  expires_at: string | null;
+  status: "valid" | "expiring" | "expired" | "unknown";
+}
+
+export interface FirewallTunnel {
+  name: string;
+  tunnel_type: string;
+  remote_gateway: string | null;
+  status: string;
+  ever_up: boolean;
+  phase2_up: number | null;
+  phase2_total: number | null;
+  last_change_at: string | null;
+  last_seen_at: string;
+}
+
+export interface FirewallSummary {
+  device_id: string;
+  name: string;
+  vendor: string | null;
+  model: string | null;
+  ip_address: string | null;
+  device_status: string;
+  /** fresh | stale | none: whether firewall state was reported recently. */
+  evidence: "fresh" | "stale" | "none";
+  observed_at: string | null;
+  table_status: Record<string, string>;
+  ha_mode: string | null;
+  ha_role: string | null;
+  ha_sync: string | null;
+  ha_peer_serial: string | null;
+  session_count: number | null;
+  session_limit: number | null;
+  cpu_percent: number | null;
+  memory_percent: number | null;
+  firmware_version: string | null;
+  licences: FirewallLicence[] | null;
+  tunnels_up: number | null;
+  tunnels_total: number | null;
+}
+
+export interface FirewallDetail extends FirewallSummary {
+  tunnels: FirewallTunnel[];
+}
+
+export function listFirewalls(): Promise<FirewallSummary[]> {
+  return apiFetch<FirewallSummary[]>("/api/firewalls");
+}
+
+export function getFirewall(deviceId: string): Promise<FirewallDetail> {
+  return apiFetch<FirewallDetail>(`/api/firewalls/${encodeURIComponent(deviceId)}`);
+}
 
 export function getCommandCenterOverview(tenantId: string = DEFAULT_TENANT_ID): Promise<CommandCenterOverview> {
   return apiFetch<CommandCenterOverview>(`/api/command-center/overview?${withTenant(tenantId).toString()}`);
@@ -2991,6 +3234,16 @@ export interface CommandCenterBrief {
     open_incidents: number;
     resolved_incidents_24h: number;
     critical_open_incidents: number;
+    /** ECC-1: mean acknowledge time of incidents opened in the window; null = no sample. */
+    mtta_minutes?: number | null;
+    /** ECC-1: same metrics for the previous window. Point-in-time state has no
+     *  history, so it is deliberately absent (no delta rendered for it). */
+    previous?: {
+      incident_volume: number;
+      resolved_incidents: number;
+      mttr_minutes: number | null;
+      mtta_minutes: number | null;
+    } | null;
   };
   trends: {
     alerts: TrendSeries;
@@ -3014,6 +3267,407 @@ export async function getDashboardCommandCenterBrief(): Promise<CommandCenterBri
   // origin (http://localhost:8000), so every caller spells the full API path —
   // exactly like `/api/auth/me` and `/api/dashboard/operational-intelligence`.
   // Omitting it requests a route that does not exist and the panel 404s.
-  return apiFetch<CommandCenterBrief>("/api/dashboard/command-center-brief");
+  // HEAVY_KPI_TIMEOUT_MS: the brief's tenant-wide active-incident aggregate
+  // runs for several seconds cold on a multi-million-incident estate (measured
+  // 6-39s on the 2.7M-incident dev tenant), so the shared 10s cap aborted it
+  // and the whole KPI strip rendered "unavailable".
+  return apiFetch<CommandCenterBrief>(
+    "/api/dashboard/command-center-brief",
+    undefined,
+    HEAVY_KPI_TIMEOUT_MS,
+  );
 }
 
+
+/** Tenant-scoped Cloud Operations KPI snapshot (GET /api/dashboard/cloud-operations). */
+export interface CloudOperationsKPI {
+  value: number | string | Record<string, unknown> | null;
+  detail: Record<string, unknown> | null;
+  unavailable: boolean;
+  unavailable_reason: string | null;
+  last_collected_at: string | null;
+}
+
+export interface CloudOperations {
+  cloud_resources: CloudOperationsKPI;
+  resource_health: CloudOperationsKPI;
+  active_incidents: CloudOperationsKPI;
+  cloud_spend: CloudOperationsKPI;
+  policy_compliance: CloudOperationsKPI;
+  backup_readiness: CloudOperationsKPI;
+}
+
+/** Fetch the Cloud Operations KPI snapshot for the caller's tenant.
+ *
+ * Uses HEAVY_KPI_TIMEOUT_MS: the backend aggregates three tenant-wide counts
+ * (cold ~8.4s on a 2.7M-incident estate) and would otherwise be aborted by
+ * the shared 10s cap during a cold dashboard load. */
+export async function getCloudOperations(): Promise<CloudOperations> {
+  return apiFetch<CloudOperations>(
+    "/api/dashboard/cloud-operations",
+    undefined,
+    HEAVY_KPI_TIMEOUT_MS,
+  );
+}
+
+/** Incident analytics for the Executive Command Center charts
+ *  (GET /api/dashboard/incident-analytics). Mirrors
+ *  backend/app/schemas/incident_analytics.py field-for-field. */
+export interface IncidentAnalytics {
+  generated_at: string;
+  window_days: number;
+  heatmap_days: number;
+  trend: { day: string; opened: number; resolved: number }[];
+  severity: { severity: string; count: number }[];
+  total_opened: number;
+  aging: { key: string; label: string; total: number; by_severity: Record<string, number> }[];
+  /** 7 rows (Monday..Sunday, UTC) x 24 hourly columns of opened counts. */
+  heatmap: number[][];
+  duration: {
+    resolved_count: number;
+    /** null when no incident was resolved in the window (never 0). */
+    median_minutes: number | null;
+    p90_minutes: number | null;
+    p95_minutes: number | null;
+    buckets: { key: string; label: string; count: number }[];
+  };
+  top_sites: { site_id: string | null; name: string; count: number }[];
+  other_sites_count: number;
+}
+
+/** Fetch incident analytics for the caller's tenant (tenant comes from the JWT).
+ *
+ * Uses HEAVY_KPI_TIMEOUT_MS: the backend runs eight tenant-wide aggregates and
+ * a cold read on a very large incident estate must not be aborted by the
+ * shared 10s cap. */
+export async function getIncidentAnalytics(
+  days = 7,
+  filters: { siteId?: string | null; severity?: string | null } = {},
+): Promise<IncidentAnalytics> {
+  const qs = new URLSearchParams({ days: String(days) });
+  if (filters.siteId) qs.set("site_id", filters.siteId);
+  if (filters.severity) qs.set("severity", filters.severity);
+  return apiFetch<IncidentAnalytics>(
+    `/api/dashboard/incident-analytics?${qs.toString()}`,
+    undefined,
+    HEAVY_KPI_TIMEOUT_MS,
+  );
+}
+
+/** Per-site device health + active incidents (GET /api/dashboard/site-health).
+ *  Mirrors backend/app/schemas/site_health.py field-for-field. */
+export type SiteWorstHealth = "down" | "critical" | "warning" | "healthy" | "unknown";
+
+export interface SiteHealthItem {
+  site_id: string;
+  code: string;
+  name: string;
+  region: string | null;
+  criticality: string | null;
+  devices: CommandCenterBrief["infrastructure_health"]["devices"];
+  open_incidents: number;
+  critical_incidents: number;
+  worst_health: SiteWorstHealth;
+}
+
+export interface SiteHealth {
+  generated_at: string;
+  /** Worst first, then by open incidents. */
+  sites: SiteHealthItem[];
+  unassigned_devices: number;
+}
+
+export async function getSiteHealth(): Promise<SiteHealth> {
+  return apiFetch<SiteHealth>("/api/dashboard/site-health");
+}
+
+// ---------------------------------------------------------------------------
+// Hosts & Devices Explorer (GET /api/explorer/hosts)
+// Mirrors backend/app/schemas/explorer_hosts.py field-for-field.
+// ---------------------------------------------------------------------------
+
+/** Derived from the host's OPEN alerts - not a stored health bucket. */
+export type HostHealth = "critical" | "warning" | "no_alerts";
+
+export interface HostExplorerRow {
+  id: string;
+  name: string;
+  hostname: string | null;
+  ip_address: string | null;
+  device_type: string;
+  vendor: string | null;
+  provider: string | null;
+  status: string;
+  criticality: string | null;
+  environment: string | null;
+  lifecycle_state: string;
+  site_id: string | null;
+  site_name: string | null;
+  health: HostHealth;
+  alerts: { critical: number; warning: number; info: number };
+  last_seen_at: string | null;
+  last_telemetry_at: string | null;
+}
+
+export interface ExplorerFacetValue {
+  value: string;
+  count: number;
+}
+
+export type HostFacetDimension =
+  | "health"
+  | "status"
+  | "device_type"
+  | "vendor"
+  | "criticality"
+  | "environment";
+
+export interface HostsExplorer {
+  generated_at: string;
+  /** Hosts matching ALL active filters (drives pagination). */
+  total: number;
+  limit: number;
+  offset: number;
+  rows: HostExplorerRow[];
+  facets: Record<HostFacetDimension, ExplorerFacetValue[]>;
+}
+
+export interface HostsExplorerParams {
+  search?: string;
+  health?: HostHealth;
+  status?: string;
+  device_type?: string;
+  vendor?: string;
+  criticality?: string;
+  environment?: string;
+  site_id?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** One tenant-scoped read: a health-sorted host page plus facet counts. */
+export async function getExplorerHosts(params: HostsExplorerParams = {}): Promise<HostsExplorer> {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") qs.set(key, String(value));
+  }
+  const query = qs.toString();
+  return apiFetch<HostsExplorer>(`/api/explorer/hosts${query ? `?${query}` : ""}`);
+}
+
+// ---------------------------------------------------------------------------
+// Clouds overview (GET /api/cloud/status) - per-vendor resource count + status.
+// Mirrors backend/app/schemas/dashboard.py CloudStatus / CloudVendorStatus.
+// ---------------------------------------------------------------------------
+
+export interface CloudsOverviewVendor {
+  vendor: string;
+  resource_count: number;
+  /** Derived by the backend from that vendor's monitoring-source states. */
+  status: "operational" | "degraded" | "error";
+}
+
+export interface CloudsOverview {
+  vendors: CloudsOverviewVendor[];
+  total_resources: number;
+}
+
+export async function getCloudsOverview(): Promise<CloudsOverview> {
+  return apiFetch<CloudsOverview>("/api/cloud/status");
+}
+
+
+// ---------------------------------------------------------------------------
+// Runbooks (GET /api/runbooks, GET /api/runbooks/history)
+// Mirrors backend/app/schemas/runbook.py.
+// ---------------------------------------------------------------------------
+
+export type RunbookExecutionMode = "manual" | "semi_automated" | "automated";
+export type RunbookExecutionStatus =
+  | "pending_approval"
+  | "approved"
+  | "rejected"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "rolled_back";
+
+export interface RunbookSummary {
+  id: string;
+  tenant_id: string;
+  sop_id: string;
+  sop_version_id: string;
+  name: string;
+  description: string | null;
+  execution_mode: RunbookExecutionMode;
+  steps: Record<string, unknown>[];
+  automation_ref: string | null;
+  requires_approval: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RunbookExecution {
+  id: string;
+  tenant_id: string;
+  runbook_id: string;
+  incident_id: string | null;
+  status: RunbookExecutionStatus;
+  operator_id: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  rejection_reason: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  duration_seconds: number | null;
+  result_notes: string | null;
+  rollback_required: boolean;
+  rollback_performed: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export function listRunbooks(limit = 200): Promise<RunbookSummary[]> {
+  return apiFetch<RunbookSummary[]>(`/api/runbooks?limit=${limit}`);
+}
+
+/** Execution history, most recent first. */
+export function listRunbookHistory(limit = 200): Promise<RunbookExecution[]> {
+  return apiFetch<RunbookExecution[]>(`/api/runbooks/history?limit=${limit}`);
+}
+
+// ---------------------------------------------------------------------------
+// Backup monitoring (GET /api/backup/*). Mirrors backend/app/schemas/backup.py.
+// ---------------------------------------------------------------------------
+
+export type BackupRpoState = "within" | "breached" | "never" | "not_protected";
+
+export interface BackupJobCounts {
+  total: number;
+  completed: number;
+  completed_with_warnings: number;
+  failed: number;
+  in_progress: number;
+  other: number;
+}
+
+export interface BackupOverview {
+  /** False until an Azure Backup source exists; counts are real zeros only when true. */
+  configured: boolean;
+  generated_at: string;
+  rpo_hours: number;
+  sources: { id: string; name: string; status: string; is_active: boolean; last_sync_at: string | null; last_error: string | null }[];
+  vaults: number;
+  vaults_soft_delete_off: number;
+  items_total: number;
+  items_protected: number;
+  items_within_rpo: number;
+  items_breaching_rpo: number;
+  items_never_backed_up: number;
+  items_not_protected: number;
+  items_last_failed: number;
+  /** Percent of finished jobs that completed in the last 24 h; null when none finished. */
+  success_rate_24h: number | null;
+  jobs_24h: BackupJobCounts;
+  jobs_7d: BackupJobCounts;
+  daily: { day: string; completed: number; completed_with_warnings: number; failed: number; other: number }[];
+  last_job_at: string | null;
+  observed_at: string | null;
+}
+
+export interface BackupVault {
+  id: string;
+  device_id: string | null;
+  name: string;
+  provider: string;
+  location: string | null;
+  resource_group: string | null;
+  subscription_id: string | null;
+  soft_delete_state: string | null;
+  immutability_state: string | null;
+  storage_redundancy: string | null;
+  observed_at: string | null;
+  items_total: number;
+  items_breaching_rpo: number;
+}
+
+export interface BackupItem {
+  id: string;
+  vault_id: string;
+  vault_name: string;
+  name: string;
+  workload_type: string | null;
+  protection_state: string | null;
+  last_backup_status: string | null;
+  last_backup_at: string | null;
+  age_hours: number | null;
+  rpo_state: BackupRpoState;
+  policy_name: string | null;
+  health_status: string | null;
+  source_resource_id: string | null;
+}
+
+export interface BackupJob {
+  id: string;
+  vault_id: string;
+  vault_name: string;
+  item_name: string | null;
+  operation: string | null;
+  status: string;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+export function getBackupOverview(): Promise<BackupOverview> {
+  return apiFetch<BackupOverview>("/api/backup/overview");
+}
+
+export function listBackupVaults(): Promise<BackupVault[]> {
+  return apiFetch<BackupVault[]>("/api/backup/vaults");
+}
+
+export function listBackupItems(params: { vaultId?: string; rpoState?: BackupRpoState } = {}): Promise<BackupItem[]> {
+  const qs = new URLSearchParams();
+  if (params.vaultId) qs.set("vault_id", params.vaultId);
+  if (params.rpoState) qs.set("rpo_state", params.rpoState);
+  const q = qs.toString();
+  return apiFetch<BackupItem[]>(`/api/backup/items${q ? `?${q}` : ""}`);
+}
+
+export function listBackupJobs(params: { days?: number; status?: string; limit?: number } = {}): Promise<BackupJob[]> {
+  const qs = new URLSearchParams({ days: String(params.days ?? 7), limit: String(params.limit ?? 200) });
+  if (params.status) qs.set("status", params.status);
+  return apiFetch<BackupJob[]>(`/api/backup/jobs?${qs.toString()}`);
+}
+
+// ---------------------------------------------------------------------------
+// Automation and work queue (GET /api/workflows/statistics, /api/tasks/counts)
+// ---------------------------------------------------------------------------
+
+/** Mirrors backend WorkflowStatisticsOut. success_rate is a 0-1 fraction over
+ *  finished executions; null (not 0) when none has finished yet. */
+export interface WorkflowStatistics {
+  total_executions: number;
+  queued: number;
+  waiting_approval: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  rolled_back: number;
+  success_rate: number | null;
+  avg_duration_seconds: number | null;
+}
+
+export function getWorkflowStatistics(): Promise<WorkflowStatistics> {
+  return apiFetch<WorkflowStatistics>("/api/workflows/statistics");
+}
+
+/** Task counts by status (only statuses that have tasks are present). */
+export function getTaskCounts(): Promise<Record<string, number>> {
+  return apiFetch<Record<string, number>>("/api/tasks/counts");
+}

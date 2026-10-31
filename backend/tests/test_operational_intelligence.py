@@ -80,6 +80,28 @@ class _FakeDeviceRepo:
         self.calls += 1
         return self.statuses
 
+    async def counts_by_status_and_state(self, tenant_id, **kw):
+        self.calls += 1
+        # Deterministic canonical classification: the fake has no per-device
+        # last_seen_at, so every status is treated as recent evidence. "up" maps
+        # to the canonical up-set, "down"-ish statuses to the down-set, everything
+        # else to unknown; stale is always 0 (no staleness is simulated).
+        state = {"up": 0, "down": 0, "stale": 0, "unknown": 0}
+        for status, count in self.statuses.items():
+            s = (status or "").strip().lower()
+            if s in ("up", "online"):
+                state["up"] += count
+            elif s in ("down", "offline", "critical", "error", "unreachable", "degraded", "warning"):
+                state["down"] += count
+            else:
+                state["unknown"] += count
+        state["total"] = sum(state.values())
+        return self.statuses, state
+
+    async def counts_by_state(self, tenant_id, **kw):
+        _, state = await self.counts_by_status_and_state(tenant_id, **kw)
+        return state
+
 
 class _FakeAlertRepo:
     def __init__(self, last_24h: int = 0, unack: int = 0, auto: int = 0):
@@ -488,6 +510,7 @@ class TestTenantIsolation:
                     db.add(Device(
                         tenant_id=t.id, name="d0", device_type="switch",
                         status="up",
+                        last_seen_at=now,
                     ))
                     db.add(Alert(
                         tenant_id=t.id, title="a", severity="critical",
@@ -579,6 +602,7 @@ class TestTenantIsolation:
                         db.add(Device(
                             tenant_id=t.id, name=f"d{i}", device_type="switch",
                             status="up",
+                            last_seen_at=now,
                             monitoring_source_id=source_ids[t.id][0],
                         ))
                         db.add(Alert(

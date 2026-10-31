@@ -17,6 +17,8 @@ OIDs covered:
     sysName         (.1.3.6.1.2.1.1.5.0)
     ifTable         (.1.3.6.1.2.1.2.2.1) — ifDescr, ifAdminStatus, ifOperStatus,
                     ifInOctets, ifOutOctets, ifInErrors, ifOutErrors, ifSpeed
+    IP-MIB / IP-FORWARD-MIB address and route tables (L3 topology) - see
+                    app/collectors/snmp_l3.py
 
 Dependency: pysnmp==6.2.5 (pinned in requirements.txt)
 """
@@ -37,6 +39,8 @@ from app.collectors.base import (
     NormalizedNeighbor,
     NormalizedSensorReading,
 )
+from app.collectors.snmp_firewall import collect_firewall, firewall_family, normalize_firewall
+from app.collectors.snmp_l3 import collect_l3, normalize_l3
 
 from app.collectors.switching import (
     _DOT1D_BASE_PORT_IF_INDEX,
@@ -247,6 +251,9 @@ def _coerce_ipv4(value: Any) -> str | None:
 class SNMPCollector(BaseCollector):
     display_name = "SNMP (v1/v2c/v3)"
     implemented = True
+    category = "network"
+    #: Read only from FortiGate and PAN-OS agents, chosen by sysObjectID.
+    firewall_capabilities = ("status", "vpn")
 
     # -- config helpers -------------------------------------------------------
 
@@ -362,7 +369,7 @@ class SNMPCollector(BaseCollector):
         return rows
 
     async def _walk_with_status(
-        self, base_oid: str
+        self, base_oid: str, max_rows: int | None = None
     ) -> tuple[list[tuple[str, str]], str | None]:
         """WALK that also reports WHY it returned nothing.
 
@@ -430,6 +437,8 @@ class SNMPCollector(BaseCollector):
                 rows.append((oid, str(var_bind[1])))
                 current = oid
                 advanced = True
+                if max_rows is not None and len(rows) >= max_rows:
+                    return rows, error
 
             if not advanced:
                 break
@@ -855,6 +864,21 @@ class SNMPCollector(BaseCollector):
             raw["switching"] = {"status": {"vlan": NEIGHBOR_FAILED, "stp": NEIGHBOR_FAILED,
                                            "lag": NEIGHBOR_FAILED}}
 
+        # Firewall tables (firewall gateway), only for a device whose own
+        # sysObjectID says it is a supported firewall.
+        family = firewall_family((raw.get("switching") or {}).get("sys_object_id"))
+        if family is not None:
+            try:
+                raw["firewall"] = await collect_firewall(self._walk_with_status, family)
+            except CollectorConfigError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "SNMP collect(): firewall tables failed: source_id=%s error=%s",
+                    self.source.id, exc,
+                )
+                raw["firewall"] = {"family": family, "failed": True}
+
         # Authoritative device identity (ENTITY-MIB). Best-effort: a device with
         # no ENTITY-MIB still collects normally, it just cannot be correlated
         # across collectors by serial.
@@ -868,6 +892,19 @@ class SNMPCollector(BaseCollector):
                 self.source.id, exc,
             )
             raw["identity"] = {"status": NEIGHBOR_FAILED}
+
+        # Interface addresses and routes (L3 topology). Best-effort and
+        # independently statused, like the tables above.
+        try:
+            raw["l3"] = await collect_l3(self._walk_with_status)
+        except CollectorConfigError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SNMP collect(): L3 address/route read failed: source_id=%s error=%s",
+                self.source.id, exc,
+            )
+            raw["l3"] = {"addresses_status": NEIGHBOR_FAILED, "routes_status": NEIGHBOR_FAILED}
 
         return raw
 
@@ -909,7 +946,10 @@ class SNMPCollector(BaseCollector):
         device = NormalizedDevice(
             external_id=hostname,
             name=sys_name,
-            device_type=classify_switch("other", sys_descr) or "other",
+            device_type=(
+                "firewall" if raw.get("firewall")
+                else classify_switch("other", sys_descr) or "other"
+            ),
             vendor=vendor,
             model=model,
             serial_number=serial_number,
@@ -1017,7 +1057,14 @@ class SNMPCollector(BaseCollector):
                 evidence_type="cdp",
             ))
 
-        return NormalizedBundle(
+        addresses, routes, l3_status = normalize_l3(
+            raw.get("l3") or {},
+            device_external_id=hostname,
+            if_names=descr_map,
+            coerce_ipv4=_coerce_ipv4,
+        )
+
+        bundle = NormalizedBundle(
             devices=[device],
             interfaces=interfaces,
             neighbors=neighbors,
@@ -1025,7 +1072,13 @@ class SNMPCollector(BaseCollector):
                 "lldp": raw.get("lldp_status", NEIGHBOR_UNAVAILABLE),
                 "cdp": raw.get("cdp_status", NEIGHBOR_UNAVAILABLE),
             },
+            addresses=addresses,
+            routes=routes,
+            l3_status=l3_status,
         )
+        if raw.get("firewall"):
+            normalize_firewall(raw["firewall"], bundle, hostname)
+        return bundle
 
 
 def _safe_float(value: Any) -> float | None:

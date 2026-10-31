@@ -43,6 +43,8 @@ export interface RenderNode {
   hostname: string | null;
   /** Present only on monitoring-source nodes. */
   sourceType?: string | null;
+  /** Present only on the L3 map's synthetic nodes: a subnet pipe or a next hop. */
+  l3Kind?: "subnet" | "next_hop";
 }
 
 export interface RenderEdge {

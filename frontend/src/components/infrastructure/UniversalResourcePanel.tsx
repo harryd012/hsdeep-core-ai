@@ -20,6 +20,8 @@ import {
   type UniversalResourceOut,
 } from "@/lib/infrastructureIntelligence";
 import FailoverTimelinePanel from "@/components/infrastructure/FailoverTimelinePanel";
+import { Pill, StatTile, ago, statusTone, titleCaseWords } from "@/components/ui/PageKit";
+import { formatMinutes } from "@/lib/commandCenter/format";
 
 /**
  * UniversalResourcePanel — the /infrastructure/universal operator surface for
@@ -31,37 +33,23 @@ import FailoverTimelinePanel from "@/components/infrastructure/FailoverTimelineP
  */
 
 const cardStyle: React.CSSProperties = {
-  background: "rgba(9, 16, 28, 0.72)",
-  border: "1px solid rgba(90, 140, 200, 0.25)",
-  borderRadius: 10,
-  padding: "14px 16px",
-  marginBottom: 14,
+  background: "var(--ecc-surface)",
+  border: "1px solid var(--ecc-border)",
+  borderRadius: "var(--ecc-radius)",
+  padding: 14,
+  marginBottom: 16,
 };
 
 const kpiStyle: React.CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-  gap: 10,
+  gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+  gap: 12,
 };
 
-const tableStyle: React.CSSProperties = {
-  width: "100%",
-  borderCollapse: "collapse",
-  fontSize: 13,
-};
 
-const thStyle: React.CSSProperties = {
-  textAlign: "left",
-  padding: "6px 8px",
-  borderBottom: "1px solid rgba(90, 140, 200, 0.3)",
-  opacity: 0.75,
-  fontWeight: 600,
-};
+const thStyle: React.CSSProperties = {};
 
-const tdStyle: React.CSSProperties = {
-  padding: "6px 8px",
-  borderBottom: "1px solid rgba(90, 140, 200, 0.12)",
-};
+const tdStyle: React.CSSProperties = {};
 
 const HEALTH_COLOR: Record<string, string> = {
   healthy: "#4ade80",
@@ -76,14 +64,9 @@ function healthColor(health: string | undefined): string {
 }
 
 function Kpi({ label, value, tone }: { label: string; value: string; tone?: string }) {
-  return (
-    <div style={{ ...cardStyle, marginBottom: 0 }}>
-      <div style={{ fontSize: 11, opacity: 0.7, letterSpacing: 0.6 }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 600, color: tone ?? "inherit", marginTop: 4 }}>
-        {value}
-      </div>
-    </div>
-  );
+  const nice = (label.charAt(0) + label.slice(1).toLowerCase()).replace(/bgp/i, "BGP");
+  const shown = /^\d+$/.test(value) ? Number(value).toLocaleString("en-US") : value;
+  return <StatTile label={nice} value={shown} info={nice} alarm={tone === HEALTH_COLOR.critical} />;
 }
 
 function NotAvailable({ reason, detail }: { reason?: string | null; detail?: string }) {
@@ -196,17 +179,20 @@ export default function UniversalResourcePanel() {
   }, [resources]);
 
   return (
-    <section style={{ padding: 18 }}>
-      <header style={{ marginBottom: 14 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>
-          Universal Infrastructure
+    <section className="pk-page">
+      <header className="pk-header">
+        <div>
+        <nav className="pk-crumbs" aria-label="Breadcrumb"><a href="/infrastructure">Infrastructure</a> / Universal Resources</nav>
+        <h1 className="pk-title">
+          Universal Resources
         </h1>
-        <p style={{ fontSize: 12, opacity: 0.75, marginTop: 6, maxWidth: 800 }}>
+        <p className="pk-subtitle">
           Provider-neutral view of every resource: firewalls, routers, switches,
           access points, servers, cloud resources, endpoints and storage. Every
           value comes from persisted collection data; a capability that was not
           collected is reported as unavailable with the reason the API returned.
         </p>
+        </div>
       </header>
 
       {error ? (
@@ -220,7 +206,7 @@ export default function UniversalResourcePanel() {
           <div style={kpiStyle}>
             <Kpi
               label="TENANT HEALTH"
-              value={`${overview.health.health} (${overview.health.score})`}
+              value={`${titleCaseWords(overview.health.health)} · ${overview.health.score}`}
               tone={healthColor(overview.health.health)}
             />
             <Kpi label="SITES" value={String(overview.sites.total)} />
@@ -238,7 +224,7 @@ export default function UniversalResourcePanel() {
               value={
                 overview.telemetry.freshness_seconds === null
                   ? "no telemetry yet"
-                  : `${Math.round(overview.telemetry.freshness_seconds)}s old`
+                  : `${formatMinutes(overview.telemetry.freshness_seconds / 60)} old`
               }
               tone={overview.telemetry.quality === "stale" ? "#fbbf24" : undefined}
             />
@@ -286,49 +272,32 @@ export default function UniversalResourcePanel() {
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           placeholder="Search resources"
-          style={{
-            background: "rgba(2, 6, 16, 0.6)",
-            border: "1px solid rgba(90, 140, 200, 0.3)",
-            borderRadius: 6,
-            padding: "6px 10px",
-            color: "inherit",
-            minWidth: 220,
-          }}
+          aria-label="Search resources"
+          className="pk-input"
+          style={{ minWidth: 240 }}
         />
         <input
           value={typeFilter}
           onChange={(event) => setTypeFilter(event.target.value)}
-          placeholder="resource type (e.g. firewall)"
-          style={{
-            background: "rgba(2, 6, 16, 0.6)",
-            border: "1px solid rgba(90, 140, 200, 0.3)",
-            borderRadius: 6,
-            padding: "6px 10px",
-            color: "inherit",
-            minWidth: 200,
-          }}
+          placeholder="Resource type, e.g. firewall"
+          aria-label="Filter by resource type"
+          className="pk-input"
+          style={{ minWidth: 200 }}
         />
         <button
           type="button"
           onClick={() => void correlate()}
-          style={{
-            background: "rgba(37, 99, 235, 0.25)",
-            border: "1px solid rgba(96, 165, 250, 0.6)",
-            borderRadius: 6,
-            padding: "6px 12px",
-            color: "inherit",
-            cursor: "pointer",
-          }}
+          className="pk-button"
         >
           Correlate visible resources
         </button>
         <span style={{ fontSize: 12, opacity: 0.7 }}>
-          {loading ? "loading…" : `${resources.length} of ${total}`}
+          {loading ? "Loading…" : `${resources.length} of ${total}`}
         </span>
       </div>
 
-      <div style={cardStyle}>
-        <table style={tableStyle}>
+      <div className="pk-table-wrap" style={{ maxHeight: 560, marginBottom: 16 }}>
+        <table className="pk-table">
           <thead>
             <tr>
               <th style={thStyle}>Name</th>
@@ -351,26 +320,26 @@ export default function UniversalResourcePanel() {
                   cursor: "pointer",
                   background:
                     selected?.resource_id === resource.resource_id
-                      ? "rgba(37, 99, 235, 0.14)"
+                      ? "var(--ecc-surface-raised)"
                       : undefined,
                 }}
               >
-                <td style={tdStyle}>{resource.name}</td>
-                <td style={tdStyle}>{resource.resource_type}</td>
-                <td style={tdStyle}>{resource.family}</td>
-                <td style={tdStyle}>{resource.provider ?? "—"}</td>
-                <td style={tdStyle}>{resource.status}</td>
-                <td style={{ ...tdStyle, color: healthColor(resource.health) }}>
-                  {resource.health}
-                </td>
-                <td style={tdStyle}>{resource.lifecycle_state}</td>
+                <td style={tdStyle}><span className="pk-cell-main pk-mono">{resource.name}</span></td>
+                <td style={tdStyle}>{titleCaseWords(resource.resource_type)}</td>
+                <td style={tdStyle} className="pk-muted">{titleCaseWords(resource.family)}</td>
+                <td style={tdStyle}>{resource.provider ? titleCaseWords(resource.provider) : "—"}</td>
+                <td style={tdStyle}><Pill tone={statusTone(resource.status)}>{titleCaseWords(resource.status)}</Pill></td>
+                <td style={tdStyle}><Pill tone={resource.health === "healthy" ? "good" : statusTone(resource.health)}>{titleCaseWords(resource.health)}</Pill></td>
+                <td style={tdStyle} className="pk-muted">{titleCaseWords(resource.lifecycle_state)}</td>
                 <td style={tdStyle}>
                   <OperationalSummary state={resource.operational_state} />
                 </td>
                 <td style={tdStyle}>
-                  {resource.last_telemetry_at
-                    ? new Date(resource.last_telemetry_at).toLocaleString()
-                    : "never"}
+                  {resource.last_telemetry_at ? (
+                    <span title={new Date(resource.last_telemetry_at).toLocaleString()}>{ago(resource.last_telemetry_at)}</span>
+                  ) : (
+                    <span className="pk-muted">Never</span>
+                  )}
                 </td>
               </tr>
             ))}

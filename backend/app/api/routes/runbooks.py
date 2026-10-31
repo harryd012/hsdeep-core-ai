@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from app.core.auth import get_tenant_id
+from app.core.auth import get_acting_user_id, get_tenant_id, require_permission
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -89,7 +89,7 @@ async def get_runbook(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("", dependencies=[_active_sub_guard], response_model=RunbookOut, status_code=201)
+@router.post("", dependencies=[Depends(require_permission("runbooks.write")), _active_sub_guard], response_model=RunbookOut, status_code=201)
 async def create_runbook(
     payload: RunbookCreate,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -101,7 +101,7 @@ async def create_runbook(
     return runbook
 
 
-@router.post("/{runbook_id}/execute", dependencies=[_active_sub_guard], response_model=RunbookExecutionOut, status_code=201)
+@router.post("/{runbook_id}/execute", dependencies=[Depends(require_permission("runbooks.execute")), _active_sub_guard], response_model=RunbookExecutionOut, status_code=201)
 async def execute_runbook(
     runbook_id: uuid.UUID,
     payload: RunbookExecutionRequest,
@@ -133,17 +133,18 @@ async def get_execution(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/executions/{execution_id}/approve", dependencies=[_active_sub_guard], response_model=RunbookExecutionOut)
+@router.post("/executions/{execution_id}/approve", dependencies=[Depends(require_permission("runbooks.approve")), _active_sub_guard], response_model=RunbookExecutionOut)
 async def approve_execution(
     execution_id: uuid.UUID,
     payload: RunbookExecutionApproveRequest,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
+    actor_id: uuid.UUID = Depends(get_acting_user_id),
     db: AsyncSession = Depends(get_db),
     service: RunbookService = Depends(get_runbook_service),
 ):
     try:
         execution = await service.get_execution(execution_id, tenant_id)
-        approved = await service.execution_tracker.approve(execution, approved_by=payload.approved_by)
+        approved = await service.execution_tracker.approve(execution, approved_by=actor_id)
     except RunbookNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except InvalidExecutionTransition as exc:
@@ -152,17 +153,18 @@ async def approve_execution(
     return approved
 
 
-@router.post("/executions/{execution_id}/reject", dependencies=[_active_sub_guard], response_model=RunbookExecutionOut)
+@router.post("/executions/{execution_id}/reject", dependencies=[Depends(require_permission("runbooks.approve")), _active_sub_guard], response_model=RunbookExecutionOut)
 async def reject_execution(
     execution_id: uuid.UUID,
     payload: RunbookExecutionRejectRequest,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
+    actor_id: uuid.UUID = Depends(get_acting_user_id),
     db: AsyncSession = Depends(get_db),
     service: RunbookService = Depends(get_runbook_service),
 ):
     try:
         execution = await service.get_execution(execution_id, tenant_id)
-        rejected = await service.execution_tracker.reject(execution, rejected_by=payload.rejected_by, reason=payload.reason)
+        rejected = await service.execution_tracker.reject(execution, rejected_by=actor_id, reason=payload.reason)
     except RunbookNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except InvalidExecutionTransition as exc:
@@ -171,7 +173,7 @@ async def reject_execution(
     return rejected
 
 
-@router.post("/executions/{execution_id}/start", dependencies=[_active_sub_guard], response_model=RunbookExecutionOut)
+@router.post("/executions/{execution_id}/start", dependencies=[Depends(require_permission("runbooks.execute")), _active_sub_guard], response_model=RunbookExecutionOut)
 async def start_execution(
     execution_id: uuid.UUID,
     payload: RunbookExecutionStartRequest,
@@ -190,7 +192,7 @@ async def start_execution(
     return started
 
 
-@router.post("/executions/{execution_id}/complete", dependencies=[_active_sub_guard], response_model=RunbookExecutionOut)
+@router.post("/executions/{execution_id}/complete", dependencies=[Depends(require_permission("runbooks.execute")), _active_sub_guard], response_model=RunbookExecutionOut)
 async def complete_execution(
     execution_id: uuid.UUID,
     payload: RunbookExecutionCompleteRequest,
@@ -214,7 +216,7 @@ async def complete_execution(
     return completed
 
 
-@router.post("/executions/{execution_id}/rollback", dependencies=[_active_sub_guard], response_model=RunbookExecutionOut)
+@router.post("/executions/{execution_id}/rollback", dependencies=[Depends(require_permission("runbooks.execute")), _active_sub_guard], response_model=RunbookExecutionOut)
 async def rollback_execution(
     execution_id: uuid.UUID,
     payload: RunbookExecutionRollbackRequest,

@@ -25,6 +25,19 @@ scripts/seed_prtg_dev.py):
     SEED_ADMIN_PASSWORD Plaintext password, hashed via app.core.auth
                          before storage - never logged (required)
     SEED_ADMIN_NAME     Optional full_name, defaults to "Admin"
+    SEED_TENANT_NAME    Optional. When set and the tenant does not exist yet
+                         (a fresh production database), the tenant is created
+                         with this name, so a new deployment can bootstrap
+                         without hand-written SQL.
+    SEED_TENANT_SLUG    Optional slug for that new tenant (default: from the name)
+    SEED_PLAN_TIER      Optional (starter | pro | enterprise). When set and the
+                         tenant has no active subscription, an ACTIVE
+                         subscription on that tier is created. Write routes and
+                         ingestion require one, so a fresh deployment's own
+                         operator tenant needs it.
+
+The default plan catalog (BillingService.seed_default_plans) is always synced
+first: public signup (POST /api/billing/signup) fails until plans exist.
 
 Usage (from the `backend` directory, with its virtualenv active):
     python scripts/seed_admin.py
@@ -54,12 +67,21 @@ from app.core.permissions import PERMISSION_CATALOG  # noqa: E402
 from app.models.permission import Permission  # noqa: E402
 from app.models.tenant import Tenant  # noqa: E402
 from app.repositories.permission_repository import PermissionRepository  # noqa: E402
+from app.repositories.plan_repository import PlanRepository  # noqa: E402
+from app.repositories.subscription_repository import SubscriptionRepository  # noqa: E402
+from app.services.billing_service import BillingService  # noqa: E402
 from app.repositories.refresh_token_repository import RefreshTokenRepository  # noqa: E402
 from app.repositories.role_repository import RoleRepository  # noqa: E402
 from app.repositories.user_repository import UserRepository  # noqa: E402
 from app.services.auth_service import AuthService, Conflict  # noqa: E402
 
 REQUIRED_ENV_VARS = ("SEED_TENANT_ID", "SEED_ADMIN_EMAIL", "SEED_ADMIN_PASSWORD")
+
+
+def _slugify(name: str) -> str:
+    slug = "".join(ch if ch.isalnum() else "-" for ch in name.lower())
+    slug = "-".join(part for part in slug.split("-") if part)
+    return slug[:100] or "tenant"
 
 
 def _missing_required_env_vars() -> list[str]:
@@ -111,8 +133,37 @@ async def seed_admin(db: AsyncSession) -> int:
 
     tenant = await _get_tenant(db, tenant_id)
     if tenant is None:
-        print(f"[seed_admin] Aborted: no tenant found with id={tenant_id}")
-        return 1
+        tenant_name = os.environ.get("SEED_TENANT_NAME", "").strip()
+        if not tenant_name:
+            print(f"[seed_admin] Aborted: no tenant found with id={tenant_id} "
+                  "(set SEED_TENANT_NAME to create it)")
+            return 1
+        slug = os.environ.get("SEED_TENANT_SLUG", "").strip() or _slugify(tenant_name)
+        tenant = Tenant(id=tenant_id, name=tenant_name, slug=slug)
+        db.add(tenant)
+        await db.flush()
+        print(f"[seed_admin] Created tenant id={tenant_id} slug={slug!r}")
+
+    # 0. Plan catalog (system-wide). Idempotent; syncs catalog fields only.
+    billing = BillingService(
+        plans=PlanRepository(db), subscriptions=SubscriptionRepository(db), db=db
+    )
+    created_plans = await billing.seed_default_plans()
+    print(f"[seed_admin] Plan catalog: {len(created_plans)} new plan(s) created.")
+
+    plan_tier = os.environ.get("SEED_PLAN_TIER", "").strip()
+    if plan_tier:
+        if await billing.get_active_subscription(tenant_id) is not None:
+            print("[seed_admin] Subscription: tenant already has an active subscription.")
+        else:
+            plan = await billing.plans.get_by_tier(plan_tier)
+            if plan is None:
+                print(f"[seed_admin] Aborted: unknown SEED_PLAN_TIER={plan_tier!r}")
+                return 1
+            await billing.subscriptions.create(
+                tenant_id=tenant_id, plan_id=plan.id, status="active"
+            )
+            print(f"[seed_admin] Subscription: active {plan_tier!r} subscription created.")
 
     # 1. Permission catalog (system-wide, not tenant-scoped).
     created_perms = await _seed_permission_catalog(db)

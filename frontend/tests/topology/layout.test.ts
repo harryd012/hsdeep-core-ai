@@ -25,7 +25,7 @@ const EDGES = [
   { source: "d-core", target: "d-acc1" },
   { source: "d-core", target: "d-acc2" },
 ];
-const KINDS: LayoutKind[] = ["hierarchical", "force", "radial", "site-grouped"];
+const KINDS: LayoutKind[] = ["connected-first", "hierarchical", "force", "radial", "site-grouped"];
 
 test("every declared layout is actually implemented", () => {
   assert.deepEqual(
@@ -168,4 +168,29 @@ test("the minimap viewport indicator maps and clips", () => {
   assert.ok(clipped.y >= 6);
   assert.ok(clipped.x + clipped.width <= 174.001, String(clipped));
   assert.ok(clipped.y + clipped.height <= 114.001, String(clipped));
+});
+
+test("connected-first puts linked devices above unlinked clusters, worst group first", () => {
+  const nodes = [
+    ...NODES.map((n) => ({ ...n, group: "ONLINE" })),
+    { id: "u-down-1", siteId: null, group: "OFFLINE" },
+    { id: "u-down-2", siteId: null, group: "OFFLINE" },
+    { id: "u-ok", siteId: null, group: "ONLINE" },
+  ];
+  const placed = new Map(
+    layoutNodes(nodes, EDGES, "connected-first", {}, ["OFFLINE", "ONLINE"]).map((p) => [p.id, p])
+  );
+  assert.equal(placed.size, nodes.length, "every device is still drawn");
+  const linkedMaxY = Math.max(...["d-fw", "d-core", "d-acc1", "d-acc2"].map((id) => placed.get(id)!.y));
+  for (const id of ["d-loose", "u-down-1", "u-down-2", "u-ok"]) {
+    assert.ok(placed.get(id)!.y > linkedMaxY, `${id} sits below the linked map`);
+  }
+  // OFFLINE band comes before the ONLINE band.
+  assert.ok(placed.get("u-down-1")!.y < placed.get("u-ok")!.y);
+  assert.equal(placed.get("u-ok")!.y, placed.get("d-loose")!.y, "same group, same band");
+  // Deterministic.
+  assert.deepEqual(
+    layoutNodes(nodes, EDGES, "connected-first", {}, ["OFFLINE", "ONLINE"]),
+    layoutNodes([...nodes].reverse(), EDGES, "connected-first", {}, ["OFFLINE", "ONLINE"])
+  );
 });

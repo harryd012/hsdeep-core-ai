@@ -104,6 +104,24 @@ class _FakeDeviceRepo:
     async def counts_by_status(self, tenant_id, **kw):
         return self.statuses
 
+    async def counts_by_status_and_state(self, tenant_id, **kw):
+        # Mirror DeviceRepository.counts_by_status_and_state: the fake has no
+        # per-device last_seen_at, so every status is treated as recent evidence
+        # (stale is always 0). "up" maps to the canonical up-set, "down"-ish
+        # statuses to the down-set, everything else to unknown. The raw status
+        # distribution is returned unchanged so bucket-sum assertions still hold.
+        state = {"up": 0, "down": 0, "stale": 0, "unknown": 0}
+        for status, count in self.statuses.items():
+            s = (status or "").strip().lower()
+            if s in ("up", "online"):
+                state["up"] += count
+            elif s in ("down", "offline", "critical", "error", "unreachable", "degraded", "warning"):
+                state["down"] += count
+            else:
+                state["unknown"] += count
+        state["total"] = sum(state.values())
+        return self.statuses, state
+
     async def counts_by_monitoring_source(self, tenant_id):
         return self.by_source
 
@@ -139,11 +157,33 @@ class _FakeIncidentRepo:
     async def count(self, tenant_id, **kw):
         return 0
 
+    async def active_counts(self, tenant_id, *, statuses):
+        """Mirror ``IncidentRepository.active_counts`` -> ``(active, critical)``.
+
+        The brief reads both numbers from this ONE call instead of two
+        ``count()`` calls (P1.1). Returning ``(0, 0)`` keeps this fake's
+        behaviour byte-identical to the two ``count()`` calls it replaced,
+        which both returned 0 here.
+        """
+        return 0, 0
+
     async def hourly_counts(self, tenant_id, **kw):
         return {}
 
     async def mean_resolution_minutes(self, tenant_id, **kw):
         return None
+
+    #: ECC-1 window stats; overridable per test via attributes.
+    window_stats = (None, None, 0)
+    resolution_between = (0, None)
+
+    async def opened_window_stats(self, tenant_id, *, previous_start, current_start):
+        assert previous_start < current_start
+        return self.window_stats
+
+    async def resolution_stats_between(self, tenant_id, *, since, until):
+        assert since < until
+        return self.resolution_between
 
 
 class _FakeTaskRepo:
@@ -357,3 +397,41 @@ class TestTrendBuckets:
         assert [b.count for b in alerts.buckets] == [2, 4], "buckets must be time-ordered"
         assert [b.ts for b in alerts.buckets] == [earlier, later]
 
+
+
+class TestMttaAndPreviousWindow:
+    """ECC-1: incident MTTA + previous-window KPIs."""
+
+    async def test_no_acknowledged_incidents_means_null_mtta_not_zero(self):
+        brief = await _svc().command_center_brief(uuid.uuid4())
+        assert brief.kpis.mtta_minutes is None
+        assert brief.kpis.previous is not None
+        assert brief.kpis.previous.mtta_minutes is None
+        assert brief.kpis.previous.mttr_minutes is None
+        assert brief.kpis.previous.incident_volume == 0
+
+    async def test_window_values_are_carried_and_rounded(self):
+        repo = _FakeIncidentRepo()
+        repo.window_stats = (14.04, 20.26, 37)
+        repo.resolution_between = (12, 168.449)
+        brief = await _svc(incident_repo=repo).command_center_brief(uuid.uuid4())
+        assert brief.kpis.mtta_minutes == 14.0
+        prev = brief.kpis.previous
+        assert (prev.incident_volume, prev.resolved_incidents) == (37, 12)
+        assert prev.mtta_minutes == 20.3
+        assert prev.mttr_minutes == 168.4
+
+    async def test_old_clients_can_build_kpis_without_new_fields(self):
+        """Additive contract: the new fields are optional with defaults."""
+        from app.schemas.dashboard import ResponseKpis
+
+        kpis = ResponseKpis(
+            availability_pct=None,
+            mttr_minutes=None,
+            mttd_minutes=None,
+            incident_volume_24h=0,
+            open_incidents=0,
+            resolved_incidents_24h=0,
+            critical_open_incidents=0,
+        )
+        assert kpis.mtta_minutes is None and kpis.previous is None

@@ -179,6 +179,14 @@ def normalize_bundle(
             V.CAP_INTERFACES, V.CAP_BANDWIDTH, V.CAP_ERRORS,
         })
 
+    if bundle.l3_status.get("routes") in ("collected", "empty", "partial"):
+        # The routing table was read, so routing is collected for every device
+        # in the bundle - even one whose table came back empty.
+        for nd in bundle.devices:
+            device_id = device_id_by_external.get(nd.external_id)
+            if device_id is not None:
+                result.collected_by_device.setdefault(device_id, set()).add(V.CAP_ROUTING)
+
     for neighbor in bundle.neighbors:
         device_id = device_id_by_external.get(neighbor.device_external_id)
         if device_id is not None:

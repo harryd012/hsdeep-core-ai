@@ -124,10 +124,9 @@ class AlertStatistics(BaseModel):
 
 
 class AlertAcknowledge(BaseModel):
-    # TODO(auth): should come from the authenticated principal once the auth
-    # module exists, not the request body. Same interim pattern as the rest
-    # of the API - see NOTE(auth) in api/routes/monitoring.py.
-    acknowledged_by: uuid.UUID
+    # Ignored: the acknowledgement is attributed to the authenticated user.
+    # Still accepted so existing clients that send it keep working.
+    acknowledged_by: uuid.UUID | None = None
     note: str | None = Field(default=None, max_length=1000)
 
 

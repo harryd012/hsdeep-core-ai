@@ -13,6 +13,13 @@ from app.models.site import Site
 from app.models.monitoring_source import MonitoringSource
 from app.models.device import Device
 from app.models.interface import Interface
+from app.models.interface_address import InterfaceAddress
+from app.models.email_outbox import EmailOutbox
+from app.models.account_token import AccountToken
+from app.models.incident_notification import IncidentNotification
+from app.models.firewall import FirewallStatus, VpnTunnel
+from app.models.support_access_grant import SupportAccessGrant
+from app.models.backup import BackupItem, BackupJob, BackupVault
 from app.models.sensor import Sensor
 from app.models.event import Event
 from app.models.metric import Metric
@@ -26,6 +33,11 @@ from app.models.usage import UsageCounter
 from app.models.sop import SOP, SOPVersion
 from app.models.runbook import Runbook
 from app.models.runbook_execution import RunbookExecution
+from app.models.paloalto_diagnostic import (
+    PaloAltoDiagnosticExecution,
+    PaloAltoDiagnosticStep,
+    PaloAltoEvidenceRef,
+)
 from app.models.workflow import Workflow
 from app.models.workflow_execution import WorkflowExecution
 from app.models.servicenow import ServiceNowConnection, ServiceNowIncidentLink, ServiceNowSyncJob
@@ -65,12 +77,23 @@ from app.models.bgp_neighbor import BgpNeighbor
 from app.models.operational_sla_policy import OperationalSLAPolicy
 from app.models.failover_event import FailoverEvent
 from app.models.failover_detector_state import FailoverDetectorState
+# Collector enrollment + discovery + tenant-metadata models. These tables
+# existed in the database but were not previously registered here, so Alembic
+# autogenerate could not see them (and would have proposed DROP TABLE).
+from app.models.collector_credential import CollectorCredential
+from app.models.collector_enrollment_token import CollectorEnrollmentToken
+from app.models.discovery_probe import DiscoveryProbeJob, DiscoveryProbeHost
+from app.models.discovery_scope import DiscoveryScope
+from app.models.tenant_custom_property import TenantCustomProperty
 
 ___all__ = [
     "SOP",
     "SOPVersion",
     "Runbook",
     "RunbookExecution",
+    "PaloAltoDiagnosticExecution",
+    "PaloAltoDiagnosticStep",
+    "PaloAltoEvidenceRef",
     "Workflow",
     "WorkflowExecution",
     "ServiceNowConnection",
@@ -118,8 +141,24 @@ ___all__ = [
     "NocEvent",
     "ResourceCapability",
     "NetworkRoute",
+    "InterfaceAddress",
+    "EmailOutbox",
+    "AccountToken",
+    "IncidentNotification",
+    "FirewallStatus",
+    "BackupVault",
+    "BackupItem",
+    "BackupJob",
+    "VpnTunnel",
+    "SupportAccessGrant",
     "BgpNeighbor",
     "OperationalSLAPolicy",
     "FailoverEvent",
     "FailoverDetectorState",
+    "CollectorCredential",
+    "CollectorEnrollmentToken",
+    "DiscoveryProbeJob",
+    "DiscoveryProbeHost",
+    "DiscoveryScope",
+    "TenantCustomProperty",
 ]

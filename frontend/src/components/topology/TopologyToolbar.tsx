@@ -8,10 +8,10 @@
  * chip is generated from values that exist in this tenant's data, and the
  * "Unclassified" toggle filters on the backend's own recognition status.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { ChevronDown, Filter, Search, Sliders } from "lucide-react";
 
-import { LAYOUTS, type LayoutKind } from "../../lib/topology/layout";
+import { VIEWS, type ViewKind } from "../../lib/topology/layout";
 import { DEVICE_STATE_VISUALS, type DeviceState } from "../../lib/topology/status";
 import type { FilterOptions, TopologyFilters } from "./topologyRenderTypes";
 
@@ -39,8 +39,12 @@ export interface TopologyToolbarProps {
   onToggleRelationship: (type: string) => void;
   onToggleEvidence: (tag: TopologyFilters["evidence"][number]) => void;
   onClear: () => void;
-  layout: LayoutKind;
-  onLayoutChange: (layout: LayoutKind) => void;
+  layout: ViewKind;
+  onLayoutChange: (layout: ViewKind) => void;
+  /** False when a status line elsewhere already filters by state. */
+  showStateChips?: boolean;
+  /** View-specific controls (the tree's expand/collapse/labels), before Layout. */
+  viewControls?: ReactNode;
   /** Results after filtering, shown next to the search box. */
   resultCount: number;
   totalCount: number;
@@ -89,6 +93,8 @@ export default function TopologyToolbar({
   onLayoutChange,
   resultCount,
   totalCount,
+  showStateChips = true,
+  viewControls,
 }: TopologyToolbarProps) {
   const [showFilters, setShowFilters] = useState(false);
 
@@ -167,7 +173,9 @@ export default function TopologyToolbar({
           style={{ display: "inline-flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}
           aria-label="Filter by device state"
         >
-          {STATE_ORDER.filter((state) => !options || options.states.includes(state)).map(
+          {STATE_ORDER.filter(
+            (state) => showStateChips && (!options || options.states.includes(state))
+          ).map(
             (state) => (
               <button
                 key={state}
@@ -219,25 +227,31 @@ export default function TopologyToolbar({
           </button>
         </span>
 
+        {viewControls ? (
+          <span style={{ display: "inline-flex", gap: 5, alignItems: "center", marginLeft: "auto" }}>
+            {viewControls}
+          </span>
+        ) : null}
+
         <label
           style={{
             fontSize: 11,
             color: "var(--muted)",
             display: "inline-flex",
             gap: 5,
-            marginLeft: "auto",
+            marginLeft: viewControls ? 0 : "auto",
           }}
         >
           <Sliders size={12} aria-hidden="true" style={{ alignSelf: "center" }} />
           Layout
           <select
             value={layout}
-            onChange={(event) => onLayoutChange(event.target.value as LayoutKind)}
+            onChange={(event) => onLayoutChange(event.target.value as ViewKind)}
             style={controlStyle()}
             aria-label="Topology layout"
             data-testid="topology-layout"
           >
-            {LAYOUTS.map((entry) => (
+            {VIEWS.map((entry) => (
               <option key={entry.kind} value={entry.kind} title={entry.hint}>
                 {entry.label}
               </option>

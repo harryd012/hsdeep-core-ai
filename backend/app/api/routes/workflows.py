@@ -17,7 +17,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from app.core.auth import get_tenant_id
+from app.core.auth import get_acting_user_id, get_tenant_id, require_permission
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -118,7 +118,7 @@ async def get_workflow(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("", dependencies=[_active_sub_guard], response_model=WorkflowOut, status_code=201)
+@router.post("", dependencies=[Depends(require_permission("workflows.write")), _active_sub_guard], response_model=WorkflowOut, status_code=201)
 async def create_workflow(
     payload: WorkflowCreate,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -133,7 +133,7 @@ async def create_workflow(
     return workflow
 
 
-@router.put("/{workflow_id}", dependencies=[_active_sub_guard], response_model=WorkflowOut)
+@router.put("/{workflow_id}", dependencies=[Depends(require_permission("workflows.write")), _active_sub_guard], response_model=WorkflowOut)
 async def create_new_version(
     workflow_id: uuid.UUID,
     payload: WorkflowNewVersionRequest,
@@ -156,11 +156,12 @@ async def create_new_version(
     return workflow
 
 
-@router.post("/{workflow_id}/approve", dependencies=[_active_sub_guard], response_model=WorkflowOut)
+@router.post("/{workflow_id}/approve", dependencies=[Depends(require_permission("workflows.approve")), _active_sub_guard], response_model=WorkflowOut)
 async def approve_workflow_version(
     workflow_id: uuid.UUID,
     payload: WorkflowApproveRequest,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
+    actor_id: uuid.UUID = Depends(get_acting_user_id),
     db: AsyncSession = Depends(get_db),
     service: WorkflowService = Depends(get_workflow_service),
 ):
@@ -168,7 +169,7 @@ async def approve_workflow_version(
     (distinct from an execution's approval nodes) - a version only
     becomes executable once approved."""
     try:
-        workflow = await service.approve_current_version(workflow_id, tenant_id, approved_by=payload.approved_by)
+        workflow = await service.approve_current_version(workflow_id, tenant_id, approved_by=actor_id)
     except WorkflowNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except WorkflowDefinitionError as exc:
@@ -177,7 +178,7 @@ async def approve_workflow_version(
     return workflow
 
 
-@router.delete("/{workflow_id}", dependencies=[_active_sub_guard], status_code=204)
+@router.delete("/{workflow_id}", dependencies=[Depends(require_permission("workflows.write")), _active_sub_guard], status_code=204)
 async def delete_workflow(
     workflow_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -191,7 +192,7 @@ async def delete_workflow(
     await db.commit()
 
 
-@router.post("/{workflow_id}/execute", dependencies=[_active_sub_guard], response_model=WorkflowExecutionOut, status_code=201)
+@router.post("/{workflow_id}/execute", dependencies=[Depends(require_permission("workflows.execute")), _active_sub_guard], response_model=WorkflowExecutionOut, status_code=201)
 async def execute_workflow(
     workflow_id: uuid.UUID,
     payload: WorkflowExecutionRequest,
@@ -232,18 +233,19 @@ async def get_execution(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/executions/{execution_id}/approve", dependencies=[_active_sub_guard], response_model=WorkflowExecutionOut)
+@router.post("/executions/{execution_id}/approve", dependencies=[Depends(require_permission("workflows.approve")), _active_sub_guard], response_model=WorkflowExecutionOut)
 async def approve_execution(
     execution_id: uuid.UUID,
     payload: WorkflowExecutionApproveRequest,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
+    actor_id: uuid.UUID = Depends(get_acting_user_id),
     db: AsyncSession = Depends(get_db),
     service: WorkflowService = Depends(get_workflow_service),
     tracker: WorkflowExecutionTracker = Depends(get_execution_tracker),
 ):
     try:
         execution = await service.get_execution(execution_id, tenant_id)
-        execution = await tracker.approve(execution, node_id=payload.node_id, approved_by=payload.approved_by, comment=payload.comment)
+        execution = await tracker.approve(execution, node_id=payload.node_id, approved_by=actor_id, comment=payload.comment)
     except WorkflowNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except InvalidWorkflowExecutionTransition as exc:
@@ -253,18 +255,19 @@ async def approve_execution(
     return execution
 
 
-@router.post("/executions/{execution_id}/reject", dependencies=[_active_sub_guard], response_model=WorkflowExecutionOut)
+@router.post("/executions/{execution_id}/reject", dependencies=[Depends(require_permission("workflows.approve")), _active_sub_guard], response_model=WorkflowExecutionOut)
 async def reject_execution(
     execution_id: uuid.UUID,
     payload: WorkflowExecutionRejectRequest,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
+    actor_id: uuid.UUID = Depends(get_acting_user_id),
     db: AsyncSession = Depends(get_db),
     service: WorkflowService = Depends(get_workflow_service),
     tracker: WorkflowExecutionTracker = Depends(get_execution_tracker),
 ):
     try:
         execution = await service.get_execution(execution_id, tenant_id)
-        execution = await tracker.reject(execution, node_id=payload.node_id, rejected_by=payload.rejected_by, reason=payload.reason)
+        execution = await tracker.reject(execution, node_id=payload.node_id, rejected_by=actor_id, reason=payload.reason)
     except WorkflowNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except InvalidWorkflowExecutionTransition as exc:
@@ -277,7 +280,7 @@ async def reject_execution(
     return execution
 
 
-@router.post("/executions/{execution_id}/pause", dependencies=[_active_sub_guard], response_model=WorkflowExecutionOut)
+@router.post("/executions/{execution_id}/pause", dependencies=[Depends(require_permission("workflows.execute")), _active_sub_guard], response_model=WorkflowExecutionOut)
 async def pause_execution(
     execution_id: uuid.UUID,
     payload: WorkflowExecutionActionRequest,
@@ -297,7 +300,7 @@ async def pause_execution(
     return execution
 
 
-@router.post("/executions/{execution_id}/resume", dependencies=[_active_sub_guard], response_model=WorkflowExecutionOut)
+@router.post("/executions/{execution_id}/resume", dependencies=[Depends(require_permission("workflows.execute")), _active_sub_guard], response_model=WorkflowExecutionOut)
 async def resume_execution(
     execution_id: uuid.UUID,
     payload: WorkflowExecutionActionRequest,
@@ -318,7 +321,7 @@ async def resume_execution(
     return execution
 
 
-@router.post("/executions/{execution_id}/cancel", dependencies=[_active_sub_guard], response_model=WorkflowExecutionOut)
+@router.post("/executions/{execution_id}/cancel", dependencies=[Depends(require_permission("workflows.execute")), _active_sub_guard], response_model=WorkflowExecutionOut)
 async def cancel_execution(
     execution_id: uuid.UUID,
     payload: WorkflowExecutionActionRequest,
@@ -338,7 +341,7 @@ async def cancel_execution(
     return execution
 
 
-@router.post("/executions/{execution_id}/rollback", dependencies=[_active_sub_guard], response_model=WorkflowExecutionOut)
+@router.post("/executions/{execution_id}/rollback", dependencies=[Depends(require_permission("workflows.execute")), _active_sub_guard], response_model=WorkflowExecutionOut)
 async def rollback_execution(
     execution_id: uuid.UUID,
     payload: WorkflowExecutionActionRequest,

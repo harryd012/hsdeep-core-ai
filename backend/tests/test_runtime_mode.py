@@ -77,6 +77,8 @@ def _prod_settings(**overrides) -> Settings:
         debug=False,
         runtime_mode="worker",
         log_format="json",
+        # Production must choose email explicitly ("log" is refused).
+        email_transport="none",
     )
     base.update(overrides)
     return Settings(**base)

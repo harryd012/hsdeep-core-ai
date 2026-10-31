@@ -89,6 +89,7 @@ def _import_boto3() -> Any:
 class AwsCollector(BaseCollector):
     display_name = "Amazon Web Services"
     implemented = True
+    category = "cloud"
 
     # -- config helpers -------------------------------------------------------
 

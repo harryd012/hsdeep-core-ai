@@ -32,6 +32,7 @@ from app.schemas.infrastructure_overview import InfrastructureOverviewOut
 from app.schemas.pagination import Page
 from app.schemas.site import SiteOut, SiteSummary
 from app.schemas.topology_graph import TopologyGraphOut, TopologyQuickSummary
+from app.schemas.topology_l3 import TopologyL3Out
 from app.schemas.topology_live import TopologyLiveOut
 from app.services.infrastructure_overview_service import InfrastructureOverviewService
 from app.services.dependency_impact_service import (
@@ -44,6 +45,7 @@ from app.services.dependency_impact_service import (
 )
 from app.services.infrastructure_service import InfrastructureService
 from app.services.topology_graph_service import TopologyGraphService
+from app.services.topology_l3_service import SiteNotFound, TopologyL3Service
 from app.services.topology_live_service import TopologyLiveService
 from app.services.topology_service import TopologyService
 from app.schemas.topology import TopologyOut
@@ -86,6 +88,12 @@ def get_topology_live_service(
     db: AsyncSession = Depends(get_db),
 ) -> TopologyLiveService:
     return TopologyLiveService(db)
+
+
+def get_topology_l3_service(
+    db: AsyncSession = Depends(get_db),
+) -> TopologyL3Service:
+    return TopologyL3Service(db)
 
 
 def get_monitoring_source_repository(
@@ -150,6 +158,7 @@ async def get_topology_quick_summary(
         interfaces_total,
         sensors_total,
         status_counts,
+        devices_linked,
     ) = await asyncio.gather(
         _count(lambda s: DeviceRepository(s).count(tenant_id)),
         _count(lambda s: SiteRepository(s).count(tenant_id)),
@@ -158,6 +167,7 @@ async def get_topology_quick_summary(
         _count(lambda s: InterfaceRepository(s).count_for_tenant(tenant_id)),
         _count(lambda s: SensorRepository(s).count_for_tenant(tenant_id)),
         _count(lambda s: DeviceRepository(s).counts_by_status(tenant_id)),
+        _count(lambda s: ResourceRelationshipRepository(s).count_linked_devices(tenant_id)),
     )
 
     # Map raw status strings → canonical 4-bucket health vocabulary.
@@ -173,6 +183,7 @@ async def get_topology_quick_summary(
         sites_total=sites_total,
         monitoring_sources_total=sources_total,
         relationships_total=relationships_total,
+        devices_linked=devices_linked,
         interfaces_total=interfaces_total,
         sensors_total=sensors_total,
         by_health=by_health,
@@ -235,6 +246,31 @@ async def get_topology_live_graph(
     thresholds, so there is no second graph, health or telemetry engine.
     """
     return await service.build(tenant_id, site_id=site_id)
+
+
+@router.get("/topology/l3", response_model=TopologyL3Out)
+async def get_topology_l3(
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    site_id: uuid.UUID | None = Query(
+        default=None,
+        description="Bound the view to one site's devices. 404 if the site is not in this tenant.",
+    ),
+    service: TopologyL3Service = Depends(get_topology_l3_service),
+):
+    """The L3 (routed) topology: devices joined by shared subnets and routes.
+
+    Built only from stored interface addresses and routing-table entries that
+    collectors read from the devices. Subnets are grouped per site and VRF, so
+    the same private range at two customer sites never merges. Subnets with
+    three or more devices are returned as pipe nodes; static/default-route next
+    hops that are not a known device are returned as next-hop nodes; ``roots``
+    are the default-route exits. ``coverage`` says how many devices actually
+    reported L3 data, so an empty map is never mistaken for "no subnets".
+    """
+    try:
+        return await service.build(tenant_id, site_id=site_id)
+    except SiteNotFound:
+        raise HTTPException(status_code=404, detail="Site not found")
 
 
 @router.get("/overview", response_model=InfrastructureOverviewOut)

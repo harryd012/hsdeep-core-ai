@@ -17,9 +17,11 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   ApiError,
   clearAuthToken,
@@ -29,6 +31,7 @@ import {
   getAuthToken,
   getMe,
   loginWithCredentials,
+  logoutSession,
   signupTenant,
   type LoginCredentials,
   type MeResponse,
@@ -53,9 +56,7 @@ interface AuthContextValue {
    * POST /api/billing/signup, then load the resulting session. Throws
    * ApiError on failure (duplicate email, rate limit, network error). */
   signup: (payload: SignupRequest) => Promise<void>;
-  /** Clear the local session. Does not call a backend logout endpoint —
-   * the access token is short-lived and stateless; this simply drops it
-   * client-side (matches the existing token model in lib/api.ts). */
+  /** Clear local credentials and revoke the backend refresh session. */
   logout: () => void;
   /** Re-run the "who am I" check (e.g. after external token changes). */
   refresh: () => Promise<void>;
@@ -71,37 +72,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<MeResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [sessionError, setSessionError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const sessionVersion = useRef(0);
 
   const loadUser = useCallback(async () => {
+    const version = ++sessionVersion.current;
     setIsLoading(true);
     try {
       const me = await getMe();
+      if (version !== sessionVersion.current) return;
       setUser(me);
       setSessionError(null);
     } catch (err) {
+      if (version !== sessionVersion.current) return;
       setUser(null);
       // A 401 here just means "no valid session yet" — that's the normal,
       // expected state for a visitor who hasn't logged in. Anything else
       // (network failure, 5xx, timeout) is a real problem worth surfacing.
       if (err instanceof ApiError) {
-        clearAuthToken();
+        if (err.isAuthError) clearAuthToken();
         setSessionError(err.isAuthError ? null : err.message);
       } else {
         setSessionError("Could not verify your session. Please try again.");
       }
     } finally {
-      setIsLoading(false);
+      if (version === sessionVersion.current) setIsLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    // Only attempt the "who am I" check if a token already exists OR the
-    // dev bootstrap will silently mint one. Either way getMe() -> apiFetch
-    // -> ensureAuthenticated() already handles that; we just react to the
-    // outcome here.
-    void loadUser();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    // Defer the initial check; loading is already true on first render.
+    // Cleanup also prevents a late /me response from updating an unmounted provider.
+    let active = true;
+    const versionRef = sessionVersion;
+    queueMicrotask(() => {
+      if (active) void loadUser();
+    });
+    return () => {
+      active = false;
+      ++versionRef.current;
+    };
+  }, [loadUser]);
 
   const login = useCallback(async (creds: LoginCredentials) => {
     await loginWithCredentials(creds); // throws ApiError on failure
@@ -114,17 +125,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [loadUser]);
 
   const logout = useCallback(() => {
-    clearAuthToken();
+    ++sessionVersion.current;
+    void logoutSession().catch(() => {
+      setSessionError("Signed out locally, but server session revocation failed.");
+    });
+    queryClient.clear();
     setUser(null);
+    setIsLoading(false);
     setSessionError(null);
-    // Clear the active tenant override on logout so a fresh login doesn't
-    // accidentally inherit a stale cross-tenant selection.
     clearActiveTenantOverride();
-  }, []);
+  }, [queryClient]);
 
-  // Derive the current authenticated tenant from the loaded user.
-  // Falls back to DEFAULT_TENANT_ID (or override) only when no user is loaded yet.
-  const tenantId = user?.tenant_id ?? getActiveTenantOverride() ?? DEFAULT_TENANT_ID;
+  // Match X-Tenant-Id sent by apiFetch; the backend authorizes overrides.
+  const tenantId = getActiveTenantOverride() ?? user?.tenant_id ?? DEFAULT_TENANT_ID;
 
   const value: AuthContextValue = {
     user,

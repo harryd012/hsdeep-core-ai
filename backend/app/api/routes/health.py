@@ -137,8 +137,11 @@ async def health():
     authoritative system state (ONLINE / DEGRADED / OFFLINE) from real
     dependency reachability, not hardcoded labels.
 
-    The ``system_online`` boolean mirrors the Command Center's own
-    ``overview.system_online`` (DB + Redis).  ``ai_ready`` reflects Ollama.
+    The ``system_online`` boolean means "the platform can serve requests"
+    (PostgreSQL is up) — Redis does NOT count toward it: Redis down only
+    degrades the cache/rate-limit layer (the scheduler and task routing are
+    PostgreSQL-backed).  ``ready`` honours the same required-dependency
+    contract as /ready.  ``ai_ready`` reflects Ollama.
     """
     db_ok = await check_db_connection()
     redis_state = await redis_health()
@@ -153,11 +156,11 @@ async def health():
     if ollama_status != "unavailable":
         deps["ollama"] = ollama_status
 
-    # Database is the critical dependency.  Its absence makes the platform
-    # OFFLINE.  Redis down means the cache/scheduler layer is degraded but
-    # the API can still serve stale data, so OFFLINE as well (the platform
-    # relies on Redis for task routing and the scheduler).  Ollama down is
-    # only DEGRADED — AI features fall back to deterministic behaviour.
+    # Database is the critical dependency: without it the API cannot serve, so
+    # the platform is UNAVAILABLE.  Redis down degrades the cache/rate-limit
+    # layer but the API, scheduler, and task routing (all PostgreSQL-backed)
+    # keep working, so it is only DEGRADED — never OFFLINE.  Ollama down is
+    # DEGRADED too: AI features fall back to deterministic behaviour.
     if not db_ok:
         status = "unavailable"
     elif not redis_ok:
@@ -167,11 +170,16 @@ async def health():
     else:
         status = "ok"
 
+    # Readiness honours the same required-dependency contract as /ready:
+    # PostgreSQL always, Redis only when `readiness_require_redis` is set.
+    settings = get_settings()
+    ready = db_ok and (redis_ok or not settings.readiness_require_redis)
+
     return {
         "status": status,
-        "ready": db_ok and redis_ok,
+        "ready": ready,
         "ai_ready": ollama_status == "up",
-        "system_online": db_ok and redis_ok,
+        "system_online": db_ok,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "dependencies": deps,
     }

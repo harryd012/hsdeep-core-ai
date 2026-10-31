@@ -274,3 +274,78 @@ async def test_site_overview_for_an_unknown_site_is_404(tenant):
     async with _client(tenant.id) as client:
         missing = await client.get(f"{BASE}/sites/{uuid.uuid4()}/overview")
     assert missing.status_code == 404
+
+
+async def test_correlation_context_includes_open_incident_and_stays_scoped(
+    tenant, monitoring_source_factory
+):
+    """Regression: HsignceContextBuilder must call get_open_for_device() WITH
+    tenant_id.
+
+    Before the fix, POST /correlation/context for a device that has an OPEN
+    incident raised ``TypeError: get_open_for_device() missing 1 required
+    positional argument: 'tenant_id'`` (a 500). It now returns 200, includes the
+    open incident as evidence, and never leaks another tenant's incident.
+    """
+    from datetime import datetime, timezone
+
+    from app.models.incident import Incident
+    from app.models.tenant import Tenant
+
+    source = await monitoring_source_factory(tenant_id=tenant.id, source_type="snmp")
+    device_id = await _seed_device(tenant.id, source.id)
+
+    # Another tenant with a device + open incident, to prove isolation.
+    async with AsyncSessionLocal() as db:
+        other = Tenant(name=f"Other {uuid.uuid4().hex[:6]}", slug=f"other-{uuid.uuid4().hex[:8]}")
+        db.add(other)
+        await db.commit()
+        await db.refresh(other)
+    other_source = await monitoring_source_factory(tenant_id=other.id, source_type="snmp")
+    other_device_id = await _seed_device(other.id, other_source.id)
+
+    async with AsyncSessionLocal() as db:
+        now = datetime.now(timezone.utc)
+        db.add(Incident(
+            tenant_id=tenant.id,
+            device_id=device_id,
+            title="branch-fw-01 unreachable",
+            severity="critical",
+            status="open",
+            opened_at=now,
+            last_alert_at=now,
+        ))
+        db.add(Incident(
+            tenant_id=other.id,
+            device_id=other_device_id,
+            title="other-tenant incident",
+            severity="critical",
+            status="open",
+            opened_at=now,
+            last_alert_at=now,
+        ))
+        await db.commit()
+
+    try:
+        async with _client(tenant.id) as client:
+            result = await client.post(
+                f"{BASE}/correlation/context", json={"resource_ids": [str(device_id)]}
+            )
+
+        assert result.status_code == 200
+        body = result.json()
+        evidence = [
+            e
+            for group in body.get("groups", [])
+            for e in group.get("evidence", [])
+        ]
+        incident_evidence = [e for e in evidence if e.get("kind") == "incident"]
+        assert incident_evidence, "open incident must appear as correlation evidence"
+        # Isolation: only the caller's incident is returned, never the other's.
+        assert all(e.get("resource_id") == str(device_id) for e in incident_evidence)
+    finally:
+        async with AsyncSessionLocal() as db:
+            from sqlalchemy import delete
+            await db.execute(delete(Tenant).where(Tenant.id == other.id))
+            await db.commit()
+

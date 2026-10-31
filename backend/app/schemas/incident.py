@@ -74,3 +74,23 @@ class IncidentDetailOut(IncidentOut):
     """Incident Details API - the incident plus every member Alert."""
 
     alerts: list[AlertOut] = []
+
+
+class RecoveryCheckItemOut(BaseModel):
+    kind: Literal["alert", "sensor", "device"]
+    id: uuid.UUID
+    name: str
+    status: str
+    observed_at: datetime | None
+    result: Literal["pass", "fail", "inconclusive"]
+    detail: str
+
+
+class RecoveryCheckOut(BaseModel):
+    """Evidence for or against recovery, from telemetry observed after `since`."""
+
+    incident_id: uuid.UUID
+    since: datetime
+    evaluated_at: datetime
+    verdict: Literal["recovered", "not_recovered", "inconclusive"]
+    checks: list[RecoveryCheckItemOut]

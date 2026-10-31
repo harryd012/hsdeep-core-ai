@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -55,6 +55,18 @@ class User(Base, UUIDPKMixin, TimestampMixin, SoftDeleteMixin):
         Boolean, default=False, server_default="false", nullable=False
     )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Brute-force lockout (see AuthService.login): consecutive failed logins
+    # since the last success, and when a lockout ends (None = not locked).
+    failed_login_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Email ownership. Self-service sign-ups must verify before they can sign
+    # in again; operator-created and invited users do not need to.
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    requires_email_verification: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
 
     tenant: Mapped["Tenant"] = relationship(back_populates="users")
     roles: Mapped[list["Role"]] = relationship(secondary=user_roles, back_populates="users")

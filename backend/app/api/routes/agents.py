@@ -8,7 +8,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_tenant_id as get_current_tenant
+from app.core.auth import get_tenant_id as get_current_tenant, require_permission
 from app.core.db import get_db
 from app.schemas.agent import AgentCreate, AgentRead, AgentTreeNode, AgentUpdate
 from app.services.agent_service import AgentNotFound, AgentService
@@ -90,7 +90,7 @@ async def list_agents_by_task_type(
     return await service.list_by_task_type(tenant_id, task_type)
 
 
-@router.post("", response_model=AgentRead, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=AgentRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_permission("agents.write"))])
 async def create_agent(
     body: AgentCreate,
     service: AgentService = Depends(get_agent_service_dep),
@@ -121,7 +121,7 @@ async def get_agent(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
 
-@router.patch("/{agent_id}", response_model=AgentRead)
+@router.patch("/{agent_id}", response_model=AgentRead, dependencies=[Depends(require_permission("agents.write"))])
 async def update_agent(
     agent_id: uuid.UUID,
     body: AgentUpdate,
@@ -156,7 +156,7 @@ async def get_direct_reports(
     return await service.list_by_manager(agent_id, tenant_id)
 
 
-@router.post("/{agent_id}/availability", response_model=AgentRead)
+@router.post("/{agent_id}/availability", response_model=AgentRead, dependencies=[Depends(require_permission("agents.write"))])
 async def set_agent_availability(
     agent_id: uuid.UUID,
     availability: str = Query(..., pattern="^(available|busy|away|offline)$"),

@@ -123,6 +123,7 @@ def reset_circuits() -> None:
 class WindowsWinRMCollector(BaseCollector):
     display_name = "Windows (WinRM)"
     implemented = True
+    category = "server"
 
     #: Shown in user-facing messages. The `wmi` source_type reuses this entire
     #: implementation (remote WMI over WSMan), but an operator who configured a

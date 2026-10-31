@@ -1,15 +1,31 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Bell } from "lucide-react";
-import { SettingsSection, SettingsCard, SaveBar } from "@/components/settings/SettingsSection";
+import { SaveBar } from "@/components/settings/SettingsSection";
+import { Banner, DataTable, PageShell, Panel, Pill, ago, titleCaseWords, type Column } from "@/components/ui/PageKit";
 import SettingsBackButton from "@/components/settings/SettingsBackButton";
 import { useAuth } from "@/lib/auth-context";
 import {
   getNotificationSettings,
+  listNotificationDeliveries,
+  sendTestNotification,
   updateNotificationSettings,
+  NotificationDelivery,
   NotificationSettings,
 } from "@/lib/api";
+
+const DELIVERY_COLUMNS: Column<NotificationDelivery>[] = [
+  { key: "when", header: "When", render: (d) => ago(d.sent_at ?? d.created_at), sortValue: (d) => d.sent_at ?? d.created_at },
+  { key: "channel", header: "Channel", render: (d) => titleCaseWords(d.channel) },
+  { key: "event", header: "Event", render: (d) => (d.event === "opened" ? "Incident opened" : "Incident resolved") },
+  {
+    key: "status",
+    header: "Result",
+    render: (d) => (d.status === "sent" ? <Pill tone="good">Sent</Pill> : <Pill tone="bad">Failed · {d.attempts} tries</Pill>),
+  },
+  { key: "error", header: "Error", render: (d) => d.last_error ?? "—" },
+  { key: "incident", header: "Incident", render: (d) => <a href={`/incidents/${d.incident_id}`}>Open</a> },
+];
 
 export default function NotificationsSettingsPage() {
   const { tenantId } = useAuth();
@@ -26,6 +42,26 @@ export default function NotificationsSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [deliveries, setDeliveries] = useState<NotificationDelivery[] | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    listNotificationDeliveries().then(setDeliveries).catch(() => setDeliveries(null));
+  }, []);
+
+  async function onTest() {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const { results } = await sendTestNotification();
+      setTestResult(Object.entries(results).map(([ch, r]) => `${titleCaseWords(ch)}: ${r}`).join(" · "));
+    } catch (err) {
+      setTestResult(err instanceof Error ? err.message : "Test failed");
+    } finally {
+      setTesting(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -122,56 +158,112 @@ export default function NotificationsSettingsPage() {
     }
   }
 
+  const channelState = (on: boolean, configured: boolean) =>
+    on ? (configured ? <Pill tone="good">Enabled</Pill> : <Pill tone="warn">Enabled · not configured</Pill>) : <Pill tone="neutral">Off</Pill>;
+
   return (
-    <div className="dashboard" style={{ paddingTop: "clamp(84px,8.5vh,104px)" }}>
-      <div className="overview" style={{ gridTemplateColumns: "1fr", gap: 16 }}>
-        <section className="hud-panel">
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-            <SettingsBackButton />
-            <h2>NOTIFICATION SETTINGS</h2>
+    <PageShell
+      title="Notifications"
+      subtitle="Where alerts and incidents are delivered for this tenant."
+      crumbs={[{ label: "Settings", href: "/settings" }, { label: "Notifications" }]}
+      actions={<SettingsBackButton />}
+    >
+      {loading && <Panel title="Notification channels" state="loading" skeletonHeight={260} />}
+
+      {!loading && error && (
+        <Panel title="Notification channels" state="error" errorText={error} onRetry={handleRetry} />
+      )}
+
+      {!loading && !error && data && (
+        <>
+          {success && <Banner tone="good">{success}</Banner>}
+          <div className="pk-grid">
+            <Panel title="Email" info="Send alert notifications by email." aside={channelState(emailEnabled, !!emailRecipients?.trim())} state="ready" className="pk-col-4">
+              <div className="pk-form">
+                <label className="pk-switch">
+                  <input type="checkbox" checked={emailEnabled} onChange={(e) => setEmailEnabled(e.target.checked)} />
+                  Send email notifications
+                </label>
+                <div className="pk-field">
+                  <label htmlFor="email-recipients">Recipients</label>
+                  <textarea
+                    id="email-recipients"
+                    className="pk-input"
+                    value={emailRecipients ?? ""}
+                    placeholder="ops@example.com, noc@example.com"
+                    onChange={(e) => setEmailRecipients(e.target.value)}
+                  />
+                  <small>Comma-separated email addresses.</small>
+                </div>
+              </div>
+            </Panel>
+
+            <Panel title="Slack" info="Post alerts to a Slack channel through an incoming webhook." aside={channelState(slackEnabled, !!slackWebhook?.trim())} state="ready" className="pk-col-4">
+              <div className="pk-form">
+                <label className="pk-switch">
+                  <input type="checkbox" checked={slackEnabled} onChange={(e) => setSlackEnabled(e.target.checked)} />
+                  Post to Slack
+                </label>
+                <div className="pk-field">
+                  <label htmlFor="slack-webhook">Webhook URL</label>
+                  <input id="slack-webhook" className="pk-input" type="password" autoComplete="off" value={slackWebhook ?? ""} placeholder="https://hooks.slack.com/services/…" onChange={(e) => setSlackWebhook(e.target.value)} />
+                  <small>Must be a Slack incoming webhook (hooks.slack.com). Stored for this tenant; shown masked.</small>
+                </div>
+                <div className="pk-field">
+                  <label htmlFor="slack-channel">Channel</label>
+                  <input id="slack-channel" className="pk-input" value={slackChannel ?? ""} placeholder="#noc-alerts" onChange={(e) => setSlackChannel(e.target.value)} />
+                </div>
+              </div>
+            </Panel>
+
+            <Panel title="PagerDuty" info="Route incidents to on-call through a PagerDuty Events integration." aside={channelState(pagerdutyEnabled, !!pagerdutyKey?.trim())} state="ready" className="pk-col-4">
+              <div className="pk-form">
+                <label className="pk-switch">
+                  <input type="checkbox" checked={pagerdutyEnabled} onChange={(e) => setPagerdutyEnabled(e.target.checked)} />
+                  Page on-call through PagerDuty
+                </label>
+                <div className="pk-field">
+                  <label htmlFor="pd-key">Integration key</label>
+                  <input id="pd-key" className="pk-input" type="password" autoComplete="off" value={pagerdutyKey ?? ""} onChange={(e) => setPagerdutyKey(e.target.value)} />
+                  <small>Stored for this tenant; shown masked.</small>
+                </div>
+                <div className="pk-field">
+                  <label htmlFor="pd-severity">Minimum severity</label>
+                  <select id="pd-severity" className="pk-input" value={pagerdutySeverity ?? ""} onChange={(e) => setPagerdutySeverity(e.target.value)}>
+                    <option value="">Not set</option>
+                    {["critical", "error", "warning", "info"].map((s) => (
+                      <option key={s} value={s}>{titleCaseWords(s)}</option>
+                    ))}
+                    {pagerdutySeverity && !["critical", "error", "warning", "info"].includes(pagerdutySeverity) && (
+                      <option value={pagerdutySeverity}>{pagerdutySeverity}</option>
+                    )}
+                  </select>
+                </div>
+              </div>
+            </Panel>
           </div>
 
-          {loading && (
-            <div style={{ border: "1px dashed var(--line)", borderRadius: 8, padding: 32, textAlign: "center", color: "var(--muted)" }}>
-              <Bell size={32} style={{ margin: "0 auto 12px", color: "var(--cyan)" }} />
-              <p>Loading notification settings…</p>
-            </div>
-          )}
-
-          {!loading && error && (
-            <div style={{ border: "1px dashed var(--line)", borderRadius: 8, padding: 32, textAlign: "center", color: "var(--amber)" }}>
-              <p>{error}</p>
-              <button onClick={handleRetry} style={{ marginTop: 12, background: "var(--cyan)", color: "#001a1f", border: "none", borderRadius: 6, padding: "8px 16px", cursor: "pointer" }}>
-                Retry
+          <Panel
+            title="Recent deliveries"
+            info="Incidents at warning or above notify email and Slack; PagerDuty uses its minimum severity. Each incident is sent once per channel when it opens and again when it resolves."
+            aside={
+              <button type="button" className="pk-button" onClick={onTest} disabled={testing || hasChanges}>
+                {testing ? "Sending…" : "Send test notification"}
               </button>
-            </div>
-          )}
-
-          {!loading && !error && data && (
-            <div>
-              <SettingsSection title="Email Notifications" description="Configure outbound email alerts">
-                <SettingsCard title="Email Enabled" type="checkbox" value={emailEnabled ? "true" : "false"} onChange={(v) => setEmailEnabled(v === "true")} />
-          <SettingsCard title="Recipients (comma separated)" value={emailRecipients ?? ""} onChange={(v) => setEmailRecipients(v)} />
-              </SettingsSection>
-              <SettingsSection title="Slack" description="Slack channel webhook integration">
-                <SettingsCard title="Slack Enabled" type="checkbox" value={slackEnabled ? "true" : "false"} onChange={(v) => setSlackEnabled(v === "true")} />
-                <SettingsCard title="Webhook URL" value={slackWebhook ?? ""} onChange={(v) => setSlackWebhook(v)} />
-                <SettingsCard title="Channel" value={slackChannel ?? ""} onChange={(v) => setSlackChannel(v)} />
-              </SettingsSection>
-              <SettingsSection title="PagerDuty" description="On-call routing and escalation">
-                <SettingsCard title="PagerDuty Enabled" type="checkbox" value={pagerdutyEnabled ? "true" : "false"} onChange={(v) => setPagerdutyEnabled(v === "true")} />
-                <SettingsCard title="Integration Key" value={pagerdutyKey ?? ""} onChange={(v) => setPagerdutyKey(v)} />
-                <SettingsCard title="Severity" value={pagerdutySeverity ?? ""} onChange={(v) => setPagerdutySeverity(v)} />
-              </SettingsSection>
-              {success && (
-                <div style={{ color: "#0f8", fontSize: 12, marginTop: 8 }}>{success}</div>
-              )}
-            </div>
-          )}
-        </section>
-      </div>
+            }
+            state={deliveries === null ? "error" : "ready"}
+            errorText="Couldn't load the delivery log."
+          >
+            {testResult && <Banner tone="info">{testResult}</Banner>}
+            {deliveries && (
+              <DataTable columns={DELIVERY_COLUMNS} rows={deliveries} rowKey={(d) => `${d.incident_id}-${d.channel}-${d.event}`}
+                emptyText="No incident notifications sent yet." maxHeight={360} caption="Recent incident notification deliveries" />
+            )}
+          </Panel>
+        </>
+      )}
 
       <SaveBar onSave={onSave} saving={saving} disabled={loading || !hasChanges} hasChanges={hasChanges} />
-    </div>
+    </PageShell>
   );
 }

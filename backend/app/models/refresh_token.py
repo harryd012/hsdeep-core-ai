@@ -46,6 +46,12 @@ class RefreshToken(Base, UUIDPKMixin, TimestampMixin):
     # Set on logout / rotation / admin revocation. A non-null value makes the
     # token unusable regardless of expires_at.
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # One sign-in session: every rotation of a refresh token keeps the same
+    # session_id, and access tokens carry it as the "sid" claim. A session is
+    # live while it has an unrevoked, unexpired row (see
+    # RefreshTokenRepository.session_is_live). Null only on rows written
+    # before sessions existed.
+    session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
 
     user: Mapped["User"] = relationship(back_populates="refresh_tokens")
 

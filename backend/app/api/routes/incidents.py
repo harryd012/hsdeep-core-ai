@@ -8,10 +8,11 @@ authenticated-principal dependency yet.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from app.core.auth import get_tenant_id
+from app.core.auth import get_actor_user_id, get_tenant_id, require_permission
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -22,10 +23,11 @@ from app.repositories.device_repository import DeviceRepository
 from app.repositories.incident_repository import IncidentRepository
 from app.repositories.maintenance_window_repository import MaintenanceWindowRepository
 from app.repositories.site_repository import SiteRepository
-from app.schemas.incident import IncidentDetailOut, IncidentOut, IncidentSeverity, IncidentStatus
+from app.schemas.incident import IncidentDetailOut, IncidentOut, IncidentSeverity, IncidentStatus, RecoveryCheckOut
 from app.schemas.priority import Priority, PrioritizedIncidentOut
 from app.services.collector_health_service import CollectorHealthService
 from app.services.incident_service import IncidentNotFound, IncidentService
+from app.services.recovery_check import RecoveryIncidentNotFound, check_incident_recovery
 from app.services.priority.business_impact_engine import BusinessImpactEngine
 from app.services.priority.decision_engine import DecisionEngine
 from app.services.priority.priority_engine import PriorityEngine
@@ -99,6 +101,7 @@ class CollectorHealthItem(BaseModel):
     last_success_at: str | None
     last_failure_at: str | None
     last_error: str | None
+    failure_category: str | None = None
 
 
 class CollectorHealthList(BaseModel):
@@ -157,6 +160,10 @@ async def get_alert_intelligence_metrics(
 async def get_collector_health(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     window_hours: int = Query(default=24, ge=1, le=168),
+    exclude_test_sources: bool = Query(
+        default=True,
+        description="Exclude synthetic/test sources (source_type='test_fake_concurrency') from the rollup",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """Collector health summary for the Incidents dashboard.
@@ -175,7 +182,7 @@ async def get_collector_health(
     `get_health_for_tenant()` both filter `tenant_id` + not soft-deleted.
     """
     health = await CollectorHealthService(db).get_health_for_tenant(
-        tenant_id, window_hours=window_hours
+        tenant_id, window_hours=window_hours, exclude_test_sources=exclude_test_sources
     )
 
     items = [
@@ -192,6 +199,7 @@ async def get_collector_health(
             last_success_at=h.last_success_at.isoformat() if h.last_success_at else None,
             last_failure_at=h.last_failure_at.isoformat() if h.last_failure_at else None,
             last_error=h.last_error,
+            failure_category=h.failure_category,
         )
         for h in health
     ]
@@ -280,31 +288,55 @@ async def get_incident(
     return IncidentDetailOut(**incident_out.model_dump(), alerts=alerts)
 
 
+@router.get("/{incident_id}/recovery-check", response_model=RecoveryCheckOut)
+async def get_recovery_check(
+    incident_id: uuid.UUID,
+    since: datetime | None = Query(
+        default=None,
+        description="Only telemetry observed after this time counts (default: the incident's last alert).",
+    ),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Has the incident's scope recovered? Read-only: member alerts must be
+    resolved, and the affected sensors and devices must report up with an
+    observation newer than `since`. Stale or missing telemetry is
+    `inconclusive`, never recovered."""
+    try:
+        result = await check_incident_recovery(db, incident_id, tenant_id, since=since)
+    except RecoveryIncidentNotFound as exc:
+        raise HTTPException(status_code=404, detail="Incident not found") from exc
+    return RecoveryCheckOut.model_validate(result, from_attributes=True)
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle transitions
 # ---------------------------------------------------------------------------
 
 class AcknowledgeBody(BaseModel):
+    # Ignored: attributed to the authenticated user (still accepted for
+    # existing clients).
     acknowledged_by: uuid.UUID | None = None
 
 
-@router.post("/{incident_id}/acknowledge", dependencies=[_active_sub_guard], response_model=IncidentOut)
+@router.post("/{incident_id}/acknowledge", dependencies=[Depends(require_permission("incidents.write")), _active_sub_guard], response_model=IncidentOut)
 async def acknowledge_incident(
     incident_id: uuid.UUID,
     body: AcknowledgeBody = AcknowledgeBody(),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
+    actor_id: uuid.UUID | None = Depends(get_actor_user_id),
     db: AsyncSession = Depends(get_db),
     service: IncidentService = Depends(get_incident_service),
 ):
     try:
-        incident = await service.acknowledge(incident_id, tenant_id, body.acknowledged_by)
+        incident = await service.acknowledge(incident_id, tenant_id, actor_id)
     except IncidentNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     await db.commit()
     return incident
 
 
-@router.post("/{incident_id}/investigate", dependencies=[_active_sub_guard], response_model=IncidentOut)
+@router.post("/{incident_id}/investigate", dependencies=[Depends(require_permission("incidents.write")), _active_sub_guard], response_model=IncidentOut)
 async def investigate_incident(
     incident_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -319,7 +351,7 @@ async def investigate_incident(
     return incident
 
 
-@router.post("/{incident_id}/monitor", dependencies=[_active_sub_guard], response_model=IncidentOut)
+@router.post("/{incident_id}/monitor", dependencies=[Depends(require_permission("incidents.write")), _active_sub_guard], response_model=IncidentOut)
 async def monitor_incident(
     incident_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -334,7 +366,7 @@ async def monitor_incident(
     return incident
 
 
-@router.post("/{incident_id}/recover", dependencies=[_active_sub_guard], response_model=IncidentOut)
+@router.post("/{incident_id}/recover", dependencies=[Depends(require_permission("incidents.write")), _active_sub_guard], response_model=IncidentOut)
 async def recover_incident(
     incident_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -349,7 +381,7 @@ async def recover_incident(
     return incident
 
 
-@router.post("/{incident_id}/close", dependencies=[_active_sub_guard], response_model=IncidentOut)
+@router.post("/{incident_id}/close", dependencies=[Depends(require_permission("incidents.write")), _active_sub_guard], response_model=IncidentOut)
 async def close_incident(
     incident_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -364,7 +396,7 @@ async def close_incident(
     return incident
 
 
-@router.post("/{incident_id}/archive", dependencies=[_active_sub_guard], response_model=IncidentOut)
+@router.post("/{incident_id}/archive", dependencies=[Depends(require_permission("incidents.write")), _active_sub_guard], response_model=IncidentOut)
 async def archive_incident(
     incident_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -379,7 +411,7 @@ async def archive_incident(
     return incident
 
 
-@router.post("/{incident_id}/resolve", dependencies=[_active_sub_guard], response_model=IncidentOut)
+@router.post("/{incident_id}/resolve", dependencies=[Depends(require_permission("incidents.write")), _active_sub_guard], response_model=IncidentOut)
 async def resolve_incident(
     incident_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),

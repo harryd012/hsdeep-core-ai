@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from app.core.auth import get_tenant_id
+from app.core.auth import get_tenant_id, require_permission
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -146,7 +146,7 @@ async def get_priority(
     )
 
 
-@router.post("/priorities/{incident_id}/override", dependencies=[_active_sub_guard], response_model=PriorityOut)
+@router.post("/priorities/{incident_id}/override", dependencies=[Depends(require_permission("priorities.write")), _active_sub_guard], response_model=PriorityOut)
 async def set_manual_override(
     incident_id: uuid.UUID,
     payload: ManualOverrideRequest,

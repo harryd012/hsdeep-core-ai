@@ -90,9 +90,9 @@ export default function InfrastructureTopologyPage() {
       const sd = db.get(s.id) ?? []; const sz = zb.get(s.id) ?? [];
       const zn: InfraNode[] = sz.map((z) => ({ id: `z-${z.id}`, name: z.name, type: "zone" as const, icon: Network, meta: z.zone_type, children: sd.map((d) => ({ id: `d-${d.id}`, name: d.name, type: "device" as const, icon: deviceIcon(d.device_type), status: d.status, meta: d.ip_address ?? d.vendor ?? undefined })) }));
       if (!zn.length && sd.length) zn.push({ id: `uz-${s.id}`, name: "Unzoned", type: "placeholder" as const, icon: Network, meta: `${sd.length} device(s)`, children: sd.map((d) => ({ id: `d-${d.id}`, name: d.name, type: "device" as const, icon: deviceIcon(d.device_type), status: d.status, meta: d.ip_address ?? d.vendor ?? undefined })) });
-      return { id: `s-${s.id}`, name: s.name, type: "site" as const, icon: Globe2, status: "healthy", meta: s.region ?? s.code, children: zn.length ? zn : undefined } as InfraNode;
+      return { id: `s-${s.id}`, name: s.name, type: "site" as const, icon: Globe2, meta: s.region ?? s.code, children: zn.length ? zn : undefined } as InfraNode;
     });
-    return [{ id: "root", name: `Infra (${tid.slice(0, 8)})`, type: "tenant", icon: Server, meta: health ? `${sites.length} sites, ${devices.length} devices` : undefined, status: "healthy", children: sn.length ? sn : undefined }];
+    return [{ id: "root", name: `Infra (${tid.slice(0, 8)})`, type: "tenant", icon: Server, meta: health ? `${sites.length} sites, ${devices.length} devices` : undefined, status: health?.status, children: sn.length ? sn : undefined }];
   }, [sites, devices, zones, health]);
 
   const filteredTree = useMemo(() => {

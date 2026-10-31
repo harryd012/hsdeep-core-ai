@@ -1,100 +1,38 @@
 "use client";
 
-import {
-  LayoutDashboard, Server, Activity, Bell, TriangleAlert, Ticket, ArrowLeftRight, BookOpen,
-  Bot, Workflow, Database, CreditCard, Settings, ChevronRight, ChevronDown, Check,
-    Building2, type LucideIcon,
-} from "lucide-react";
+import { Activity, Check, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, Search } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
-  clearActiveTenantOverride, getActiveTenantOverride, getTenantId, setActiveTenantOverride,
+  clearActiveTenantOverride, getActiveTenantOverride, getAlertSummary, getTenantId, setActiveTenantOverride,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { useAiCtoStatus } from "@/hooks/useAiCtoStatus";
+import { dependencyStatusLine } from "@/lib/health";
+import AppearanceMenu from "@/components/AppearanceMenu";
+import AppLauncher from "@/components/AppLauncher";
+import SupportAccessForm from "@/components/SupportAccessForm";
+import "@/app/styles/executive-command-center.css";
+import "@/app/styles/navigation.css";
+import { NAV_SECTIONS, visibleNav, type NavGroup } from "@/lib/navigation";
+import { NAV_STORAGE_KEY } from "@/lib/theme";
 
-interface NavChild {
-  label: string;
-  route: string;
-}
+// The per-dependency system status line is derived in lib/health.ts
+// (dependencyStatusLine) so the sidebar and the status tests share one source.
 
-interface NavGroup {
-  id: string;
-  label: string;
-  icon: LucideIcon;
-  route: string;
-  children?: NavChild[];
-  /**
-   * RBAC gate. MUST map to an existing code in the backend canonical
-   * catalog (backend/app/core/permissions.py PERMISSION_CATALOG) — never
-   * an invented code. Groups WITHOUT a permission are visible to every
-   * authorized user. Nav visibility is UX convenience only; the backend
-   * remains authoritative (every API route enforces its own permission).
-   */
-  permission?: string;
-}
-
-/**
- * Centralized HSDEEP CORE AI navigation configuration.
- * Groups map 1:1 to real routes (route-safety rule): every leaf points to an
- * existing page. Sub-items are only listed where a real page exists, so this
- * never fabricates dead navigation links.
- *
- * RBAC mapping notes (P0 #7):
- *  - Tickets/Changes have no `tickets.*`/`changes.*` codes in the catalog yet
- *    → left ungated (visible to all) rather than faking a permission.
- *  - AI Copilot and Settings mix capability areas with no single catalog code
- *    → left ungated for now (Settings gating on `users.read` would wrongly
- *    hide General/Notifications from operators).
- */
-const navConfig: NavGroup[] = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, route: "/dashboard", permission: "dashboard.read" },
-  { id: "infrastructure", label: "Infrastructure", icon: Server, route: "/infrastructure", permission: "sites.read", children: [
-    { label: "Overview", route: "/infrastructure" },
-    { label: "Asset Inventory", route: "/infrastructure/assets" },
-    { label: "Topology", route: "/infrastructure-topology/live" },
-  ] },
-  { id: "org", label: "Organization", icon: Building2, route: "/organization", children: [
-    { label: "Hierarchy", route: "/organization" },
-  ] },
-  { id: "monitoring", label: "Monitoring", icon: Activity, route: "/monitoring", permission: "monitoring.read" },
-  { id: "alerts", label: "Alerts", icon: Bell, route: "/alerts", permission: "alerts.read" },
-  { id: "incidents", label: "Incidents", icon: TriangleAlert, route: "/incidents", permission: "incidents.read" },
-  { id: "tickets", label: "Tickets", icon: Ticket, route: "/tickets" },
-  {
-    id: "changes", label: "Changes", icon: ArrowLeftRight, route: "/changes", children: [
-      { label: "Change Dashboard", route: "/changes" },
-    ],
-  },
-  { id: "sop", label: "SOP Engine", icon: BookOpen, route: "/sop-engine", permission: "sops.read" },
-  { id: "ai", label: "AI Copilot", icon: Bot, route: "/ai-copilot" },
-  { id: "automation", label: "Automation", icon: Workflow, route: "/automation", permission: "workflows.read" },
-  {
-    id: "reports", label: "Reports", icon: Database, route: "/reports", permission: "dashboard.read", children: [
-      { label: "Reports Overview", route: "/reports" },
-      { label: "Alert Analysis", route: "/reports/alert-analysis" },
-      { label: "Collector Performance", route: "/reports/collector-performance" },
-      { label: "Infrastructure Summary", route: "/reports/infrastructure-summary" },
-      { label: "SOP Execution Log", route: "/reports/sop-execution-log" },
-    ],
-  },
-  { id: "subscription", label: "Subscription", icon: CreditCard, route: "/subscription", permission: "usage.read" },
-  {
-    id: "settings", label: "Settings", icon: Settings, route: "/settings", children: [
-      { label: "General", route: "/settings/general" },
-      { label: "Security", route: "/settings/security" },
-      { label: "Users & Roles", route: "/settings/users-roles" },
-      { label: "Notifications", route: "/settings/notifications" },
-      { label: "API Keys", route: "/settings/api-keys" },
-      { label: "Customers (Admin)", route: "/admin/customers" },
-    ],
-  },
-];
+/** Navigation model and RBAC rules live in lib/navigation.ts (shared with the Apps launcher). */
 
 export default function Sidebar() {
-  const pathname = usePathname();
+  const pathname = usePathname() ?? "";
   const router = useRouter();
   const { user } = useAuth();
+  // Real dependency state for the SYSTEM STATUS block. This block previously
+  // read a hardcoded "All Systems Operational", which meant the platform could
+  // report a healthy system while the database or Redis was down. It now
+  // derives from the same real probe the rest of the portal uses.
+  const { data: aiCto } = useAiCtoStatus();
   // Per-group explicit toggle. Absent = derive from the active route, so the
   // group containing the current page auto-expands without an effect.
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
@@ -105,11 +43,45 @@ export default function Sidebar() {
   // While the session is still resolving (user null) nothing is hidden, so a
   // transient fetch never blanks the nav; the backend remains authoritative
   // for every route — this is UX, not security.
-  const visibleGroups = (() => {
-    if (!user || user.is_superuser) return navConfig;
-    const granted = new Set(user.permissions);
-    return navConfig.filter((g) => !g.permission || granted.has(g.permission));
-  })();
+  const visibleGroups = visibleNav(user);
+
+  // ── Apps launcher (Ctrl+K / ⌘K) and collapsed rail ─────────────────────
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(
+    () => typeof document !== "undefined" && document.documentElement.getAttribute("data-nav") === "collapsed",
+  );
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setLauncherOpen((o) => !o);
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+  function toggleCollapsed() {
+    const next = !collapsed;
+    setCollapsed(next);
+    document.documentElement.setAttribute("data-nav", next ? "collapsed" : "expanded");
+    try {
+      localStorage.setItem(NAV_STORAGE_KEY, next ? "collapsed" : "expanded");
+    } catch {
+      // Storage unavailable: the rail still toggles for this visit.
+    }
+  }
+
+  // Live count on the Alerts entry: open (unacknowledged) alerts. Same cached
+  // read the Alerts page uses; failures simply show no badge.
+  const { data: alertSummary } = useQuery({
+    queryKey: ["nav", "alert-summary"],
+    queryFn: () => getAlertSummary(),
+    enabled: !!user,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const badges: Record<string, number | undefined> = { alerts: alertSummary?.by_status.open };
 
   // Group is active when the route matches the landing page OR any child.
   function groupActive(g: NavGroup): boolean {
@@ -142,6 +114,8 @@ export default function Sidebar() {
   })();
   const canSwitch = (user?.is_superuser) && accessible.length > 1;
   const [tenantOpen, setTenantOpen] = useState(false);
+  // Customer tenant awaiting a break-glass reason before the switch.
+  const [pendingTenant, setPendingTenant] = useState<{ id: string; name: string } | null>(null);
   const tenantRef = useRef<HTMLDivElement>(null);
 
   // Close the tenant dropdown on outside click.
@@ -155,15 +129,53 @@ export default function Sidebar() {
     return () => document.removeEventListener("mousedown", onClick);
   }, [tenantOpen]);
 
-  function switchTenant(tenantId: string) {
+  function switchTenant(tenantId: string, name: string) {
+    // Another tenant needs a support grant (reason + duration) first; the
+    // user's own tenant just drops the override.
+    const home = user?.home_tenant_id ?? user?.tenant_id;
+    if (tenantId !== home) {
+      setPendingTenant({ id: tenantId, name });
+      return;
+    }
+    clearActiveTenantOverride();
+    setTenantOpen(false);
+    window.location.reload();
+  }
+
+  function grantOpened(tenantId: string) {
     setActiveTenantOverride(tenantId);
+    setPendingTenant(null);
     setTenantOpen(false);
     // Reload so all dashboard data refreshes under the new active tenant.
     window.location.reload();
   }
 
   return (
-    <aside className="hs-sidebar">
+    <aside className="hs-sidebar" data-collapsed={collapsed || undefined}>
+      <div className="hs-brand">
+        <span className="hs-brand__mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Zm0 2.3 6.8 3.8L12 12 5.2 8.1 12 4.3Z" fill="currentColor" /></svg>
+        </span>
+        <span className="hs-brand__text">
+          <b>HSDEEP CORE AI</b>
+          <small>AI observability</small>
+        </span>
+        <button
+          type="button"
+          className="hs-brand__collapse"
+          onClick={toggleCollapsed}
+          aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}
+          title={collapsed ? "Expand navigation" : "Collapse navigation"}
+        >
+          {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+        </button>
+      </div>
+      <button type="button" className="hs-search" onClick={() => setLauncherOpen(true)} title="Search apps (Ctrl+K)">
+        <Search size={15} aria-hidden="true" />
+        <span>Search apps</span>
+        <kbd>Ctrl K</kbd>
+      </button>
+      <AppLauncher open={launcherOpen} onClose={() => setLauncherOpen(false)} groups={visibleGroups} />
       <nav aria-label="Primary navigation">
         {/* Tenant context / switcher */}
         <div className="hs-sidebar__ctx" ref={tenantRef}>
@@ -190,7 +202,7 @@ export default function Sidebar() {
             title={activeTenant?.name ?? activeTenant?.id ?? getTenantId()}
             onClick={() => { if (canSwitch) setTenantOpen((o) => !o); }}
           >
-            {activeTenant?.name ?? (activeTenant?.id === "00000000-0000-0000-0000-000000000000" ? "Default" : (activeTenant?.id?.slice(0, 8) ?? getTenantId().slice(0, 8)))}
+            {activeTenant?.name ?? (activeTenant?.id?.slice(0, 8) || getTenantId().slice(0, 8) || "—")}
           </button>
 
           {canSwitch && tenantOpen && (
@@ -204,7 +216,7 @@ export default function Sidebar() {
                       role="option"
                       aria-selected={isActive}
                       className={`hs-sidebar__tenant-item ${isActive ? "active" : ""}`}
-                      onClick={() => switchTenant(t.id)}
+                      onClick={() => switchTenant(t.id, t.name)}
                     >
                       <span className="hs-sidebar__tenant-name">{t.name}</span>
                       {!t.is_active && <span className="hs-sidebar__tenant-suspended">suspended</span>}
@@ -215,9 +227,23 @@ export default function Sidebar() {
               })}
             </ul>
           )}
+          {canSwitch && pendingTenant && (
+            <SupportAccessForm
+              tenantId={pendingTenant.id}
+              tenantName={pendingTenant.name}
+              onOpened={() => grantOpened(pendingTenant.id)}
+              onCancel={() => setPendingTenant(null)}
+            />
+          )}
         </div>
 
-        {visibleGroups.map((g) => {
+        {NAV_SECTIONS.map((section) => {
+          const groups = visibleGroups.filter((g) => g.section === section);
+          if (!groups.length) return null;
+          return (
+            <div key={section} className="hs-sidebar__section" role="group" aria-label={section}>
+              <span className="hs-sidebar__section-label">{section}</span>
+        {groups.map((g: NavGroup) => {
           const isActive = groupActive(g);
           const expanded = openGroups[g.id] !== undefined ? openGroups[g.id] : g.id === activeId;
           const hasChildren = !!g.children?.length;
@@ -230,9 +256,15 @@ export default function Sidebar() {
                 aria-expanded={hasChildren ? expanded : undefined}
                 aria-current={isActive ? "page" : undefined}
                 onClick={() => { if (hasChildren) toggleGroup(g); else router.push(g.route); }}
+                title={collapsed ? g.label : undefined}
               >
-                <Icon size={19} />
+                <Icon size={18} />
                 <span>{g.label}</span>
+                {badges[g.id] ? (
+                  <em className="hs-sidebar__badge" aria-label={`${badges[g.id]} open`}>
+                    {badges[g.id]! > 99 ? "99+" : badges[g.id]}
+                  </em>
+                ) : null}
                 {hasChildren && (
                   <ChevronRight size={15} className={`hs-sidebar__chev ${expanded ? "open" : ""}`} />
                 )}
@@ -258,12 +290,19 @@ export default function Sidebar() {
             </div>
           );
         })}
+            </div>
+          );
+        })}
       </nav>
+      <AppearanceMenu variant="sidebar" />
       <div className="system-status">
         <b>HSDEEP CORE AI<br />SYSTEM STATUS</b>
         <div className="pulse-icon"><Activity /></div>
-        <small><i /> All Systems Operational</small>
+        <small>
+          <i /> {dependencyStatusLine(aiCto?.services)}
+        </small>
       </div>
     </aside>
   );
 }
+// NAV: Firewall Diagnostic -> /(dashboard)/firewall-diagnostic

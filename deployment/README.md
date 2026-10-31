@@ -126,6 +126,18 @@ CI on credential material in shipping paths.
 Point orchestrator probes at `/health/live` (liveness) and `/health/ready`
 (readiness) - never at `/health`.
 
+These probe paths are exempt from `FORCE_HTTPS` (`HTTPS_EXEMPT_PATHS` in
+`app/core/request_logging.py`): container health checks and platform probes
+call the process over plain HTTP, and refusing them would mark every replica
+unhealthy. Every other plaintext request still gets a 400.
+
+## Hosting on Render
+
+`render.yaml` at the repository root is a ready Blueprint (API, worker, web,
+PostgreSQL, Redis). Go-live checklist: [`RENDER.md`](RENDER.md). Managed
+Postgres URLs (`postgres://` / `postgresql://`) are rewritten to the asyncpg
+driver automatically (`normalize_database_url` in `app/core/config.py`).
+
 ## Known Phase 9B prerequisites
 
 1. **Cloud WAF / API gateway** for edge protection (TLS termination, DDoS and

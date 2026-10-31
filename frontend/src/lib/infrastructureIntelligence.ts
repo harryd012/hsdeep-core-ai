@@ -1320,3 +1320,92 @@ export function listDiscoveryJobs(limit: number = 25): Promise<DiscoveryJob[]> {
   );
 }
 
+/* ------------------------------------------------------------------------ *
+ * Universal Discovery — probe jobs (observation-only) + materialization
+ * ------------------------------------------------------------------------ */
+
+export interface DiscoveryProbeHost {
+  id: string;
+  address: string;
+  reachable: boolean;
+  latency_ms: number | null;
+  packet_loss_pct: number | null;
+  protocols: Record<string, string>;
+  evidence: string[];
+  materialization_outcome: string | null;
+  device_id: string | null;
+  materialized_at: string | null;
+}
+
+export interface DiscoveryProbeJob {
+  id: string;
+  scope_id: string;
+  tenant_id: string;
+  target: string;
+  scope_type: string;
+  status: string;
+  hosts_probed: number;
+  hosts_total: number;
+  reachable: number;
+  truncated: boolean;
+  error: string | null;
+  materialization_state: string;
+  started_at: string;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DiscoveryProbeJobDetail extends DiscoveryProbeJob {
+  hosts: DiscoveryProbeHost[];
+}
+
+export type MaterializeOutcome = "created" | "existing" | "rejected" | "failed";
+
+export interface MaterializeHostOutcome {
+  address: string;
+  outcome: MaterializeOutcome;
+  device_id: string | null;
+  error: string | null;
+}
+
+export interface MaterializeResult {
+  job_id: string;
+  materialization_state: string;
+  created: number;
+  existing: number;
+  rejected: number;
+  failed: number;
+  hosts: MaterializeHostOutcome[];
+}
+
+export function listDiscoveryProbeJobs(
+  scopeId?: string,
+): Promise<DiscoveryProbeJob[]> {
+  const q = scopeId ? `?scope_id=${encodeURIComponent(scopeId)}` : "";
+  return apiFetch<DiscoveryProbeJob[]>(
+    `/api/infrastructure/discovery/probe-jobs${q}`,
+  );
+}
+
+export function getDiscoveryProbeJob(
+  jobId: string,
+): Promise<DiscoveryProbeJobDetail> {
+  return apiFetch<DiscoveryProbeJobDetail>(
+    `/api/infrastructure/discovery/probe-jobs/${jobId}`,
+  );
+}
+
+export function materializeProbeJob(
+  jobId: string,
+  hosts: string[],
+): Promise<MaterializeResult> {
+  return apiFetch<MaterializeResult>(
+    `/api/infrastructure/discovery/probe-jobs/${jobId}/materialize`,
+    {
+      method: "POST",
+      body: JSON.stringify({ hosts }),
+    },
+  );
+}
+

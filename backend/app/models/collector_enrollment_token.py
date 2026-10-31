@@ -46,7 +46,7 @@ class CollectorEnrollmentToken(Base, UUIDPKMixin, TimestampMixin):
 
     #: SHA-256 style digest of the plaintext token. NEVER the token itself.
     token_hash: Mapped[str] = mapped_column(
-        String(128), nullable=False, unique=True, index=True
+        String(128), nullable=False, index=True
     )
 
     expires_at: Mapped[datetime] = mapped_column(

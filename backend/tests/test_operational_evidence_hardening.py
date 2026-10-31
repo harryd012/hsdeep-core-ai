@@ -501,7 +501,7 @@ async def test_stale_relationship_evidence_is_distinguishable(tenant, db):
     assert O.relationship_evidence_state(relationship, now=NOW) == V.RELATIONSHIP_ACTIVE
 
     # Age the evidence: still recorded, but no longer current topology.
-    relationship.last_seen = datetime.now(timezone.utc) - timedelta(days=30)
+    relationship.last_seen = NOW - timedelta(days=30)
     await db.flush()
     assert O.relationship_evidence_state(relationship, now=NOW) == V.RELATIONSHIP_STALE
 

@@ -22,10 +22,12 @@ from app.core.auth import Principal, get_tenant_id, hash_api_key as core_hash_ap
 from app.core.db import get_db
 from app.core.entitlements import require_active_subscription
 from app.models.api_key import ApiKey
+from app.models.incident_notification import IncidentNotification
 from app.models.notification_setting import NotificationSetting
 from app.models.security_setting import SecuritySetting
 from app.models.setting import Setting
 from app.services.audit_service import AuditService
+from app.services.notifications import NotificationDispatcher, is_allowed_slack_webhook
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -104,6 +106,18 @@ class SecuritySettingUpdate(BaseModel):
         return v
 
 
+_MASK = "••••"
+
+
+def _is_masked(value: str | None) -> bool:
+    return bool(value) and value.startswith(_MASK)
+
+
+def _mask(value: str | None) -> str | None:
+    """Secrets are never returned in full: the last 4 characters identify which one is stored."""
+    return f"{_MASK}{value[-4:]}" if value else None
+
+
 class NotificationSettingOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -148,8 +162,11 @@ class NotificationSettingUpdate(BaseModel):
     @field_validator("slack_webhook_url")
     @classmethod
     def _slack_webhook(cls, v: str | None, info) -> str | None:
-        if v and not (v.startswith("https://") or v.startswith("http://")):
-            raise ValueError("slack_webhook_url must be a valid URL (http/https)")
+        # Only Slack's webhook host: the platform POSTs to this URL, so any
+        # other address would let a tenant make it call internal services.
+        # A masked value (unchanged secret) is passed through and kept.
+        if v and not _is_masked(v) and not is_allowed_slack_webhook(v):
+            raise ValueError("slack_webhook_url must be a Slack incoming webhook (https://hooks.slack.com/...)")
         return v
 
     @field_validator("pagerduty_integration_key")
@@ -312,7 +329,14 @@ async def get_notification_settings(
         # Return defaults instead of 404 — don't error just because
         # the row hasn't been created yet
         return NotificationSettingOut(tenant_id=tenant_id, **DEFAULT_NOTIFICATION_SETTINGS, is_default=True)
-    return row
+    return _notification_out(row)
+
+
+def _notification_out(row: NotificationSetting) -> NotificationSettingOut:
+    out = NotificationSettingOut.model_validate(row)
+    out.slack_webhook_url = _mask(row.slack_webhook_url)
+    out.pagerduty_integration_key = _mask(row.pagerduty_integration_key)
+    return out
 
 
 @router.put("/notifications", dependencies=[_active_sub_guard], response_model=NotificationSettingOut)
@@ -334,10 +358,63 @@ async def update_notification_settings(
         row = NotificationSetting(tenant_id=tenant_id)
         db.add(row)
     for field, value in payload.model_dump(exclude_unset=True).items():
+        if field in ("slack_webhook_url", "pagerduty_integration_key") and _is_masked(value):
+            continue  # unchanged secret: keep the stored value
         setattr(row, field, value)
+    if row.pagerduty_enabled and not row.pagerduty_integration_key:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="PagerDuty integration key is required when PagerDuty is enabled",
+        )
     await db.commit()
     await db.refresh(row)
-    return row
+    return _notification_out(row)
+
+
+class NotificationDeliveryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    incident_id: uuid.UUID
+    channel: str
+    event: str
+    status: str
+    attempts: int
+    last_error: str | None
+    sent_at: datetime | None
+    created_at: datetime
+
+
+@router.get("/notifications/deliveries", response_model=list[NotificationDeliveryOut])
+async def list_notification_deliveries(
+    limit: int = 50,
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Most recent incident notification deliveries, including failures and their errors."""
+    rows = (
+        await db.execute(
+            select(IncidentNotification)
+            .where(IncidentNotification.tenant_id == tenant_id)
+            .order_by(IncidentNotification.created_at.desc())
+            .limit(max(1, min(limit, 200)))
+        )
+    ).scalars().all()
+    return rows
+
+
+@router.post("/notifications/test", dependencies=[_active_sub_guard])
+async def send_test_notification(
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    _: Principal = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, dict[str, str]]:
+    """Send a labelled test message to every enabled channel now."""
+    row = (await db.execute(select(NotificationSetting).where(NotificationSetting.tenant_id == tenant_id))).scalar_one_or_none()
+    if row is None or not (row.email_enabled or row.slack_enabled or row.pagerduty_enabled):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Enable at least one channel first.")
+    results = await NotificationDispatcher(db).send_test(row)
+    await db.commit()
+    return {"results": results}
 
 
 # ---- API keys -------------------------------------------------------------
