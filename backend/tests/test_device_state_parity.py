@@ -88,3 +88,11 @@ async def test_counts_by_state_classification(tenant, db):
         "unknown": 4,  # unknown-null, unknown-status, unknown-default, unknown-empty
         "total": 18,
     }
+
+    # Same query, plus which raw statuses the stale devices last reported -
+    # what the brief uses to keep silent devices out of "down" and "up".
+    _, state, stale_by_status = await repo.freshness_breakdown(
+        tenant.id, now=now, freshness_seconds=FRESHNESS_SECONDS
+    )
+    assert state == counts
+    assert stale_by_status == {"up": 1, "down": 1}

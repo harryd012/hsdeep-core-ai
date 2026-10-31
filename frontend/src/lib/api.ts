@@ -3180,6 +3180,8 @@ export interface CommandCenterBrief {
       warning: number;
       critical: number;
       down: number;
+      /** Not seen within the 24h freshness window, whatever the last status. */
+      stale: number;
       unknown: number;
       total: number;
     };

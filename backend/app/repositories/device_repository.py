@@ -340,6 +340,25 @@ class DeviceRepository:
         same filter (tenant + not deleted), so
         ``state_counts["total"] == sum(status_counts.values())``.
         """
+        status_counts, state_counts, _ = await self.freshness_breakdown(
+            tenant_id, now=now, freshness_seconds=freshness_seconds
+        )
+        return status_counts, state_counts
+
+    async def freshness_breakdown(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        now: datetime,
+        freshness_seconds: int,
+    ) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
+        """:meth:`counts_by_status_and_state` plus ``{raw status: stale count}``.
+
+        The third dict says how many devices of each raw status are ``stale``
+        (not seen within ``freshness_seconds``), so a health rule can move them
+        out of their last-known bucket instead of reporting a silent device as
+        "down" or "up". Same single GROUP BY as the two-dict form.
+        """
         stale_cutoff = now - timedelta(seconds=freshness_seconds)
         state_expr = case(
             (Device.last_seen_at.is_(None), "unknown"),
@@ -355,11 +374,14 @@ class DeviceRepository:
         )
         status_counts: dict[str, int] = {}
         state_counts: dict[str, int] = {"up": 0, "down": 0, "stale": 0, "unknown": 0}
+        stale_by_status: dict[str, int] = {}
         for status, state, n in (await self.db.execute(stmt)).all():
             status_counts[status] = status_counts.get(status, 0) + n
             state_counts[state] += n
+            if state == "stale":
+                stale_by_status[status] = stale_by_status.get(status, 0) + n
         state_counts["total"] = sum(state_counts.values())
-        return status_counts, state_counts
+        return status_counts, state_counts, stale_by_status
 
     async def counts_by_state(
         self,

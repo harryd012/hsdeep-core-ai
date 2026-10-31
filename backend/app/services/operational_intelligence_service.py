@@ -143,26 +143,42 @@ AI_TASK_FAILED_STATUSES = frozenset({"failed"})
 AI_TASK_CANCELLED_STATUSES = frozenset({"cancelled"})
 
 
-def device_health_buckets(status_counts: dict[str, int]) -> DeviceHealthBuckets:
+def device_health_buckets(
+    status_counts: dict[str, int], stale_by_status: dict[str, int] | None = None
+) -> DeviceHealthBuckets:
     """THE device-health rule for the brief and the per-site health read.
 
     ``{raw Device.status: count}`` -> HEALTHY / WARNING / CRITICAL / DOWN /
-    UNKNOWN. Shared so the estate donut and the site honeycomb can never
-    disagree about what "critical" means.
+    STALE / UNKNOWN. Shared so the estate donut and the site honeycomb can
+    never disagree about what "critical" means.
+
+    ``stale_by_status`` (``{raw status: devices not seen recently}``) moves
+    those devices out of their last-known bucket into ``stale``: a device
+    whose collector went quiet is neither confirmed down nor confirmed up.
     """
+    stale_by_status = stale_by_status or {}
     total = sum(status_counts.values())
-    healthy = status_counts.get("up", 0)
-    warning = status_counts.get("warning", 0)
-    critical = status_counts.get("critical", 0)
-    down = sum(
-        count for status, count in status_counts.items() if status in DEVICE_OFFLINE_STATUSES
-    )
+    fresh = {
+        status: max(count - stale_by_status.get(status, 0), 0)
+        for status, count in status_counts.items()
+    }
+    stale = total - sum(fresh.values())
+    healthy = fresh.get("up", 0)
+    warning = fresh.get("warning", 0)
+    critical = fresh.get("critical", 0)
+    down = sum(count for status, count in fresh.items() if status in DEVICE_OFFLINE_STATUSES)
     # Remainder, never another query: a status this rule does not define
     # stays visible as `unknown` rather than being dropped or counted as a
     # fault.
-    unknown = max(total - healthy - warning - critical - down, 0)
+    unknown = max(total - healthy - warning - critical - down - stale, 0)
     return DeviceHealthBuckets(
-        healthy=healthy, warning=warning, critical=critical, down=down, unknown=unknown, total=total
+        healthy=healthy,
+        warning=warning,
+        critical=critical,
+        down=down,
+        stale=stale,
+        unknown=unknown,
+        total=total,
     )
 
 
@@ -391,10 +407,12 @@ class OperationalIntelligenceService:
         sources = await self.source_repo.list(tenant_id)
         total_sources = len(sources)
 
-        device_statuses, device_states = await self.device_repo.counts_by_status_and_state(
-            tenant_id, now=now, freshness_seconds=DEVICE_FRESHNESS_WINDOW_SECONDS
+        device_statuses, device_states, stale_by_status = (
+            await self.device_repo.freshness_breakdown(
+                tenant_id, now=now, freshness_seconds=DEVICE_FRESHNESS_WINDOW_SECONDS
+            )
         )
-        device_buckets = device_health_buckets(device_statuses)
+        device_buckets = device_health_buckets(device_statuses, stale_by_status)
         device_total = device_buckets.total
 
         sensor_statuses = await self.sensor_repo.counts_by_status(tenant_id)

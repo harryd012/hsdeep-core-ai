@@ -28,7 +28,8 @@ export interface Finding {
 }
 
 export interface BriefingInput {
-  devices?: { total: number; healthy: number; warning: number; critical: number; down: number; unknown: number } | null;
+  /** `stale`: not seen within the freshness window, so neither confirmed up nor down. */
+  devices?: { total: number; healthy: number; warning: number; critical: number; down: number; stale?: number; unknown: number } | null;
   collectors?: { total: number; healthy: number; degraded: number; failed: number; stale: number; unknown: number } | null;
   /** Latest collection error per source, if any. */
   sourceErrors?: { name: string; error: string | null }[] | null;
@@ -101,6 +102,24 @@ export function buildBriefing(input: BriefingInput): Briefing {
           : "A majority of devices are unavailable; expect broad service impact.",
         action: collectionBlind ? { label: "Check collection first", href: "/monitoring" } : { label: "Open critical hosts", href: "/infrastructure/hosts?health=critical" },
         weight: collectionBlind ? 10 : 30,
+      });
+    }
+  }
+
+  // 2b. Silent estate: devices whose collector stopped reporting. Their last
+  //     status is not shown as current, so say how much of the estate is unseen.
+  if (devices && devices.total > 0 && devices.stale !== undefined) {
+    evaluated += 1;
+    const share = pctOf(devices.stale, devices.total);
+    if (share >= 50) {
+      findings.push({
+        id: "estate-stale",
+        severity: "warning",
+        title: `${share}% of devices have not reported in 24 hours`,
+        evidence: [`${fmt(devices.stale)} of ${fmt(devices.total)} devices silent`, `${fmt(devices.healthy)} confirmed healthy`],
+        impact: "Their last-known state is not counted as current, so up and down figures cover only devices with recent data.",
+        action: { label: "Check collection", href: "/monitoring" },
+        weight: 15,
       });
     }
   }

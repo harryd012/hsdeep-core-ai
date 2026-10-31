@@ -251,7 +251,7 @@ function KpiStrip({ brief, loading, error }: { brief: CommandCenterBrief | undef
         value={v(() => formatKpiCount(devices!.total))}
         info="All registered devices in the estate (current state)."
         href="/explorer"
-        sub={devices ? `${formatCount(devices.unknown)} with no status` : undefined}
+        sub={devices ? `${formatCount(devices.stale)} not reporting · ${formatCount(devices.unknown)} with no status` : undefined}
         loading={loading}
         naText={naText}
         unavailableReason={missing ? reason : undefined}
@@ -259,7 +259,7 @@ function KpiStrip({ brief, loading, error }: { brief: CommandCenterBrief | undef
       <KpiTile
         label="Healthy Devices" icon={ShieldCheck} tone="good"
         value={v(() => formatKpiCount(devices!.healthy))}
-        info="Devices whose latest status is up."
+        info="Devices whose latest status is up and that reported in the last 24h."
         href="/explorer"
         sub={devices ? `${formatPct(pct(devices.healthy, devices.total))} of estate` : undefined}
         loading={loading}
@@ -269,7 +269,7 @@ function KpiStrip({ brief, loading, error }: { brief: CommandCenterBrief | undef
       <KpiTile
         label="Critical / Down" icon={AlertTriangle}
         value={v(() => formatKpiCount(atRisk))}
-        info="Devices whose latest status is critical, down or offline. Sparkline: devices reported down per hour, last 24h."
+        info="Devices that reported critical, down or offline in the last 24h. Devices that stopped reporting are counted as not reporting, not down. Sparkline: devices reported down per hour, last 24h."
         href="/explorer"
         alarm={!!atRisk}
         sub={devices ? `${formatCount(devices.critical)} critical · ${formatCount(devices.down)} down` : undefined}
@@ -349,6 +349,7 @@ const DEVICE_ROWS: { key: keyof CommandCenterBrief["infrastructure_health"]["dev
   { key: "warning", label: "Warning", color: "var(--ecc-warn)" },
   { key: "critical", label: "Critical", color: "var(--ecc-bad)" },
   { key: "down", label: "Down / unreachable", color: "var(--ecc-down)" },
+  { key: "stale", label: "Not reporting (24h)", color: "var(--ecc-text-muted)" },
   { key: "unknown", label: "Unknown", color: "var(--ecc-unknown)" },
 ];
 

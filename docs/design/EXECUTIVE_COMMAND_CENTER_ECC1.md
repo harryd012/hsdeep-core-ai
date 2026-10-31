@@ -55,6 +55,7 @@ not scannable, and not the one-screen executive view in the mockups.
 | Duration distribution + Median/P90/P95 | `IncidentAnalytics.duration` | Exists |
 | Top Affected Sites | `IncidentAnalytics.top_sites`, `other_sites_count` | Exists |
 | Infrastructure Health donut | `CommandCenterBrief.infrastructure_health` (DeviceHealthBuckets) | Exists |
+| Device freshness | `devices.stale`: devices not seen for 24h (`DEVICE_FRESHNESS_WINDOW_SECONDS`) are moved out of their last-known bucket, so a silent device is never counted as down or healthy (added 2026-10-31) | Exists |
 | Collector Health & freshness | `CommandCenterBrief.collection_health`, `CollectorHealthBuckets` | Exists |
 | Active / Critical incidents, MTTR | `CommandCenterBrief.kpis` (ResponseKpis) | Exists |
 | Sparklines | `CommandCenterBrief.trends` (hourly: alerts, incidents, collection_failures, devices_down, stale_telemetry) | Exists |
