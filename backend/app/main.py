@@ -421,7 +421,10 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
         if key.startswith("user:"):
             retry_after = await self._limiter.try_acquire(key, rpm)
             if retry_after is not None:
-                seconds = max(1, math.ceil(retry_after))
+                # Never above the 60 s window: when two requests share a clock
+                # tick, window[0] + 60 - now is 60 plus float error, and
+                # ceil() would advertise 61.
+                seconds = min(60, max(1, math.ceil(retry_after)))
                 return JSONResponse(
                     status_code=HTTP_429_TOO_MANY_REQUESTS,
                     headers={"Retry-After": str(seconds)},
