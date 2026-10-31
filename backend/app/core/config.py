@@ -149,6 +149,8 @@ class Settings(BaseSettings):
     # poll covers this many hours back.
     backup_rpo_hours: int = 24
     backup_job_lookback_hours: int = 72
+    # Stored backup job history older than this is purged after each save.
+    backup_job_retention_days: int = 90
 
     # Correlation: how long an open incident may be quiet before a new alert
     # starts a fresh incident instead of reopening it. Replaces the hardcoded

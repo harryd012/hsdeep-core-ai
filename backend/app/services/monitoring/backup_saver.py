@@ -8,7 +8,10 @@ Called by `BundleSaver.save()` for bundles that carry backup tables
     cloud_resource Device), overwriting posture only when the vault table was
     read this poll;
   - syncs `backup_items`, deleting items a successful read no longer lists;
-  - upserts `backup_jobs` by the provider's job id (history accumulates);
+  - upserts `backup_jobs` by the provider's job id, then purges jobs older
+    than `backup_job_retention_days`;
+  - syncs `backup_policies` (schedule and retention) and the vault's storage
+    used, each only when that table was read this poll;
   - turns item and vault state into sensor readings, so backup alerts open and
     auto-resolve through the existing sensor path (AlertService.evaluate_sensor),
     exactly like firewall state - no second alerting mechanism.
@@ -25,20 +28,21 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.collectors.base import (
     NormalizedBackupItem,
+    NormalizedBackupPolicy,
     NormalizedBackupVault,
     NormalizedBundle,
     NormalizedSensorReading,
 )
 from app.core.config import get_settings
-from app.models.backup import BackupItem, BackupJob, BackupVault
+from app.models.backup import BackupItem, BackupJob, BackupPolicy, BackupVault
 
 _READ_OK = ("collected", "empty")
 #: Prefix of every sensor external_id this module produces.
@@ -47,6 +51,12 @@ SENSOR_PREFIX = "bk:"
 _ITEM_FIELDS = (
     "name", "workload_type", "protection_state", "last_backup_status", "last_backup_at",
     "source_resource_id", "policy_name", "health_status",
+    "recovery_point_count", "oldest_recovery_point_at",
+)
+_POLICY_FIELDS = (
+    "workload_type", "schedule_frequency", "schedule_times", "daily_retention_days",
+    "weekly_retention_weeks", "monthly_retention_months", "yearly_retention_years",
+    "protected_items_count",
 )
 _ACTIVE_PROTECTION = ("protected", "protection_error", "ir_pending")
 _STOPPED_PROTECTION = ("protection_stopped", "protection_paused")
@@ -58,6 +68,8 @@ class BackupSaveResult:
     items_upserted: int = 0
     items_retired: int = 0
     jobs_upserted: int = 0
+    jobs_purged: int = 0
+    policies_upserted: int = 0
     readings: list[NormalizedSensorReading] = field(default_factory=list)
 
 
@@ -139,7 +151,8 @@ async def save_backup(
     tables = bundle.backup_status
     if not tables or tables.get("vaults") not in _READ_OK:
         return result
-    rpo_hours = get_settings().backup_rpo_hours
+    settings = get_settings()
+    rpo_hours = settings.backup_rpo_hours
 
     items_by_vault: dict[str, list[NormalizedBackupItem]] = {}
     for item in bundle.backup_items:
@@ -147,6 +160,9 @@ async def save_backup(
     jobs_by_vault: dict[str, list] = {}
     for job in bundle.backup_jobs:
         jobs_by_vault.setdefault(job.vault_external_id, []).append(job)
+    policies_by_vault: dict[str, list[NormalizedBackupPolicy]] = {}
+    for policy in bundle.backup_policies:
+        policies_by_vault.setdefault(policy.vault_external_id, []).append(policy)
 
     for nv in bundle.backup_vaults:
         vault = (
@@ -167,6 +183,8 @@ async def save_backup(
         vault.soft_delete_state = nv.soft_delete_state
         vault.immutability_state = nv.immutability_state
         vault.storage_redundancy = nv.storage_redundancy
+        if tables.get("usage") in _READ_OK:
+            vault.storage_used_bytes = nv.storage_used_bytes
         vault.table_status = dict(tables)
         vault.observed_at = now
         await db.flush()
@@ -177,9 +195,44 @@ async def save_backup(
             await _sync_items(db, tenant_id, vault, nv, items_by_vault.get(nv.external_id, []), now, rpo_hours, result)
         if tables.get("jobs") in _READ_OK:
             await _upsert_jobs(db, tenant_id, vault, jobs_by_vault.get(nv.external_id, []), result)
+        if tables.get("policies") in _READ_OK:
+            await _sync_policies(db, tenant_id, vault, policies_by_vault.get(nv.external_id, []), now, result)
 
+    cutoff = now - timedelta(days=settings.backup_job_retention_days)
+    purged = await db.execute(
+        delete(BackupJob).where(
+            BackupJob.tenant_id == tenant_id,
+            BackupJob.started_at.is_not(None),
+            BackupJob.started_at < cutoff,
+        )
+    )
+    result.jobs_purged = purged.rowcount or 0
     await db.flush()
     return result
+
+
+async def _sync_policies(db, tenant_id, vault: BackupVault, policies, now, result) -> None:
+    """Upsert this vault's policies by name; drop policies the read no longer lists."""
+    existing = {
+        row.name: row
+        for row in (await db.execute(select(BackupPolicy).where(BackupPolicy.vault_id == vault.id))).scalars()
+    }
+    seen: set[str] = set()
+    for policy in policies:
+        if policy.name in seen:
+            continue
+        seen.add(policy.name)
+        row = existing.get(policy.name)
+        if row is None:
+            row = BackupPolicy(tenant_id=tenant_id, vault_id=vault.id, name=policy.name)
+            db.add(row)
+        for f in _POLICY_FIELDS:
+            setattr(row, f, getattr(policy, f))
+        row.observed_at = now
+        result.policies_upserted += 1
+    for name, row in existing.items():
+        if name not in seen:
+            await db.delete(row)
 
 
 async def _sync_items(db, tenant_id, vault: BackupVault, nv: NormalizedBackupVault, items, now, rpo_hours, result) -> None:

@@ -49,8 +49,9 @@ def _vault(soft="Enabled", immutability="Locked", redundancy="GeoRedundant"):
     }
 
 
-def _item(name, *, state="Protected", status="Completed", last: datetime | None = NOW - timedelta(hours=3)):
-    return {
+def _item(name, *, state="Protected", status="Completed", last: datetime | None = NOW - timedelta(hours=3),
+          extended: dict | None = None):
+    item = {
         "id": f"{VAULT_ID}/backupFabrics/Azure/protectionContainers/iaasvmcontainer;rg;{name}/protectedItems/vm;rg;{name}",
         "name": f"vm;rg;{name}",
         "properties": {
@@ -66,6 +67,9 @@ def _item(name, *, state="Protected", status="Completed", last: datetime | None 
             "healthStatus": "Passed",
         },
     }
+    if extended is not None:
+        item["properties"]["extendedInfo"] = extended
+    return item
 
 
 def _job(job_id, *, status="Completed", item="web-01", hours_ago=2, minutes=14, error=None):
@@ -85,7 +89,7 @@ def _job(job_id, *, status="Completed", item="web-01", hours_ago=2, minutes=14, 
 
 
 ITEMS = [
-    _item("web-01"),
+    _item("web-01", extended={"recoveryPointCount": 30, "oldestRecoveryPoint": _iso(NOW - timedelta(days=30)), "policyInconsistent": False}),
     _item("db-01", status="Failed", last=NOW - timedelta(hours=40)),
     _item("old-app", state="ProtectionStopped", last=NOW - timedelta(days=60)),
     _item("new-vm", state="IRPending", status=None, last=None),
@@ -98,8 +102,52 @@ JOBS = [
 ]
 
 
+#: Documented shapes: an IaaS VM policy (daily schedule, long-term retention)
+#: and a SQL workload policy whose full backup sits under subProtectionPolicy.
+POLICIES = [
+    {
+        "id": f"{VAULT_ID}/backupPolicies/DailyPolicy",
+        "name": "DailyPolicy",
+        "properties": {
+            "backupManagementType": "AzureIaasVM",
+            "protectedItemsCount": 3,
+            "schedulePolicy": {"schedulePolicyType": "SimpleSchedulePolicy", "scheduleRunFrequency": "Daily",
+                               "scheduleRunTimes": ["2018-01-24T02:00:00Z"]},
+            "retentionPolicy": {
+                "retentionPolicyType": "LongTermRetentionPolicy",
+                "dailySchedule": {"retentionTimes": ["2018-01-24T02:00:00Z"], "retentionDuration": {"count": 30, "durationType": "Days"}},
+                "weeklySchedule": {"daysOfTheWeek": ["Sunday"], "retentionDuration": {"count": 12, "durationType": "Weeks"}},
+            },
+        },
+    },
+    {
+        "id": f"{VAULT_ID}/backupPolicies/SqlPolicy",
+        "name": "SqlPolicy",
+        "properties": {
+            "backupManagementType": "AzureWorkload",
+            "workLoadType": "SQLDataBase",
+            "subProtectionPolicy": [
+                {"policyType": "Log", "schedulePolicy": {"schedulePolicyType": "LogSchedulePolicy"}},
+                {"policyType": "Full",
+                 "schedulePolicy": {"schedulePolicyType": "SimpleSchedulePolicy", "scheduleRunFrequency": "Weekly",
+                                    "scheduleRunTimes": ["2018-01-24T22:30:00Z"]},
+                 "retentionPolicy": {"retentionPolicyType": "SimpleRetentionPolicy",
+                                     "retentionDuration": {"count": 2, "durationType": "Weeks"}}},
+            ],
+        },
+    },
+]
+#: Vault usage meters (bytes); the dedup meter measures the same data and is ignored.
+USAGES = [
+    {"unit": "Bytes", "currentValue": 1_500_000_000, "name": {"value": "GRSStorageUsage", "localizedValue": "Cloud - GRS"}},
+    {"unit": "Bytes", "currentValue": 500_000_000, "name": {"value": "LRSStorageUsage", "localizedValue": "Cloud - LRS"}},
+    {"unit": "Bytes", "currentValue": 900_000_000, "name": {"value": "GRSDedupStorageUsage", "localizedValue": "Dedup - GRS"}},
+    {"unit": "Count", "currentValue": 4, "name": {"value": "ProtectedItemCount", "localizedValue": "Protected Items"}},
+]
+
+
 def _arm_transport(*, items_fail=False, vaults_fail=False, seen: list | None = None):
-    """Replays the three ARM listings; the item list is split across two pages."""
+    """Replays the ARM listings; the item list is split across two pages."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         if seen is not None:
@@ -117,6 +165,10 @@ def _arm_transport(*, items_fail=False, vaults_fail=False, seen: list | None = N
             return httpx.Response(200, json={"value": ITEMS[:2], "nextLink": f"https://management.azure.com{path}?api-version=2023-04-01&page=2"})
         if path.endswith("/backupJobs"):
             return httpx.Response(200, json={"value": JOBS})
+        if path.endswith("/backupPolicies"):
+            return httpx.Response(200, json={"value": POLICIES})
+        if path.endswith("/usages"):
+            return httpx.Response(200, json={"value": USAGES})
         return httpx.Response(404)
 
     return httpx.MockTransport(handler)
@@ -160,10 +212,14 @@ async def test_collect_reads_every_page_and_only_issues_gets():
     job_call = next(r for r in seen if r.url.path.endswith("/backupJobs"))
     assert "startTime eq '" in job_call.url.params["$filter"] and "endTime eq '" in job_call.url.params["$filter"]
     assert sum(1 for r in seen if r.url.path.endswith("/backupProtectedItems")) == 2  # followed nextLink
-    assert bundle.backup_status == {"vaults": "collected", "items": "collected", "jobs": "collected"}
+    assert bundle.backup_status == {
+        "vaults": "collected", "items": "collected", "jobs": "collected", "policies": "collected", "usage": "collected",
+    }
 
     vault = bundle.backup_vaults[0]
     assert (vault.soft_delete_state, vault.immutability_state, vault.storage_redundancy) == ("enabled", "locked", "geo_redundant")
+    # GRS + LRS meters; the dedup meter re-counts the same data and is left out.
+    assert vault.storage_used_bytes == 2_000_000_000
     assert vault.resource_group == "rg-backup" and vault.subscription_id == SUB
     device = bundle.devices[0]
     assert (device.external_id, device.device_type, device.vendor) == (VAULT_ID.lower(), "cloud_resource", "Microsoft")
@@ -175,6 +231,19 @@ async def test_collect_reads_every_page_and_only_issues_gets():
     assert items["new-vm"].protection_state == "ir_pending"
     assert items["new-vm"].last_backup_at is None  # year 1 means "never"
     assert items["web-01"].policy_name == "DailyPolicy"
+    assert items["web-01"].recovery_point_count == 30
+    assert items["web-01"].oldest_recovery_point_at == NOW - timedelta(days=30)
+    assert items["db-01"].recovery_point_count is None, "not reported stays None, never 0"
+
+    policies = {p.name: p for p in bundle.backup_policies}
+    daily = policies["DailyPolicy"]
+    assert (daily.schedule_frequency, daily.schedule_times) == ("daily", ["02:00"])
+    assert (daily.daily_retention_days, daily.weekly_retention_weeks) == (30, 12)
+    assert (daily.monthly_retention_months, daily.yearly_retention_years) == (None, None)
+    assert daily.protected_items_count == 3
+    sql = policies["SqlPolicy"]  # full-backup tier nested under subProtectionPolicy
+    assert (sql.workload_type, sql.schedule_frequency, sql.schedule_times) == ("SQLDataBase", "weekly", ["22:30"])
+    assert sql.daily_retention_days == 14, "2 weeks of simple retention is 14 days"
 
     jobs = {j.external_id.rsplit("/", 1)[-1]: j for j in bundle.backup_jobs}
     assert jobs["job-1"].duration_seconds == 14 * 60
@@ -452,3 +521,120 @@ async def test_cloud_operations_backup_readiness(db, monitoring_source_factory):
     # 3 protected items (web-01, db-01, new-vm); only web-01 is inside the RPO.
     assert card.unavailable is False and card.value == 33
     assert card.detail["breaching_rpo"] == 1 and card.detail["never_backed_up"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: policies, storage, restore points, job retention, coverage, detail
+# ---------------------------------------------------------------------------
+
+
+async def test_save_stores_policies_storage_and_restore_points(db, monitoring_source_factory):
+    from app.models.backup import BackupPolicy
+
+    source = await monitoring_source_factory(source_type="azure_backup")
+    await _saver(db).save(source, await _bundle())
+    await db.commit()
+
+    vault = (await db.execute(select(BackupVault).where(BackupVault.tenant_id == source.tenant_id))).scalar_one()
+    assert vault.storage_used_bytes == 2_000_000_000
+    policies = {p.name: p for p in (await db.execute(select(BackupPolicy).where(BackupPolicy.vault_id == vault.id))).scalars()}
+    assert set(policies) == {"DailyPolicy", "SqlPolicy"}
+    assert policies["DailyPolicy"].schedule_times == ["02:00"] and policies["DailyPolicy"].daily_retention_days == 30
+    web = (await db.execute(select(BackupItem).where(BackupItem.vault_id == vault.id, BackupItem.name == "web-01"))).scalar_one()
+    assert web.recovery_point_count == 30
+
+    # A failed usage/policy read keeps what an earlier poll stored.
+    bundle = await _bundle()
+    bundle.backup_status.update(usage="failed", policies="failed")
+    bundle.backup_vaults[0].storage_used_bytes = None
+    bundle.backup_policies = []
+    await _saver(db).save(source, bundle)
+    await db.commit()
+    await db.refresh(vault)
+    assert vault.storage_used_bytes == 2_000_000_000
+    assert len((await db.execute(select(BackupPolicy).where(BackupPolicy.vault_id == vault.id))).scalars().all()) == 2
+
+
+async def test_job_history_older_than_retention_is_purged(db, monitoring_source_factory):
+    from app.core.config import get_settings
+
+    source = await monitoring_source_factory(source_type="azure_backup")
+    await _saver(db).save(source, await _bundle())
+    await db.commit()
+    vault = (await db.execute(select(BackupVault).where(BackupVault.tenant_id == source.tenant_id))).scalar_one()
+    keep_days = get_settings().backup_job_retention_days
+    db.add(BackupJob(
+        tenant_id=source.tenant_id, vault_id=vault.id, external_id="ancient", status="completed",
+        started_at=NOW - timedelta(days=keep_days + 1),
+    ))
+    await db.commit()
+
+    await _saver(db).save(source, await _bundle())
+    await db.commit()
+    ids = {j.external_id for j in (await db.execute(select(BackupJob).where(BackupJob.vault_id == vault.id))).scalars()}
+    assert "ancient" not in ids and len(ids) == 4
+
+
+async def _vm(db, tenant_id, name, sub=SUB, site_id=None):
+    from app.models.device import Device
+
+    device = Device(
+        tenant_id=tenant_id, name=name, device_type="cloud_resource", status="up", site_id=site_id,
+        external_id=f"/subscriptions/{sub}/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/{name}",
+    )
+    db.add(device)
+    await db.flush()
+    return device
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_coverage_item_detail_site_filter_and_isolation(db, monitoring_source_factory, other_tenant):
+    from app.models.site import Site
+
+    source = await monitoring_source_factory(
+        source_type="azure_backup", config={"tenant_id": "t", "subscription_id": SUB, "client_id": "c"},
+    )
+    site = Site(tenant_id=source.tenant_id, name="Mohali", code="MOH")
+    db.add(site)
+    await db.flush()
+    await _vm(db, source.tenant_id, "web-01", site_id=site.id)             # protected
+    await _vm(db, source.tenant_id, "old-app")                             # protection stopped
+    await _vm(db, source.tenant_id, "orphan-vm")                           # same subscription, no backup item
+    await _vm(db, source.tenant_id, "elsewhere", sub="11111111-2222-3333-4444-555555555555")  # not connected
+    await db.commit()
+    await _saver(db).save(source, await _bundle())
+    await db.commit()
+
+    async with _client(source.tenant_id) as client:
+        cov = (await client.get("/api/backup/coverage")).json()
+        assert cov["configured"] is True and cov["monitored_subscriptions"] == [SUB]
+        states = {r["name"]: r["state"] for r in cov["resources"]}
+        assert states == {
+            "web-01": "protected", "old-app": "protection_stopped",
+            "orphan-vm": "unprotected", "elsewhere": "not_monitored",
+        }
+        assert (cov["total"], cov["unprotected"], cov["not_monitored"]) == (4, 1, 1)
+        assert (await client.get("/api/backup/overview")).json()["unprotected_resources"] == 1
+
+        items = (await client.get("/api/backup/items")).json()
+        web = next(i for i in items if i["name"] == "web-01")
+        assert (web["recovery_point_count"], web["retention_days"]) == (30, 30)
+        assert web["site_id"] == str(site.id) and web["device_id"] is not None
+        at_site = (await client.get("/api/backup/items", params={"site_id": str(site.id)})).json()
+        assert [i["name"] for i in at_site] == ["web-01"]
+
+        detail = (await client.get(f"/api/backup/items/{web['id']}")).json()
+        assert detail["policy"]["name"] == "DailyPolicy" and detail["policy"]["weekly_retention_weeks"] == 12
+        assert {j["status"] for j in detail["jobs"]} == {"completed", "completed_with_warnings", "in_progress"}
+        assert all(j["item_name"] == "web-01" for j in detail["jobs"])
+        vaults = (await client.get("/api/backup/vaults")).json()
+        assert (vaults[0]["storage_used_bytes"], vaults[0]["policies"]) == (2_000_000_000, 2)
+
+    async with _client(other_tenant) as client:
+        assert (await client.get(f"/api/backup/items/{web['id']}")).status_code == 404
+        other = (await client.get("/api/backup/coverage")).json()
+        assert other["configured"] is False and other["resources"] == []
+
+    async with _client(source.tenant_id, permissions=frozenset({"devices.read"})) as client:
+        for path in ("/api/backup/coverage", f"/api/backup/items/{web['id']}"):
+            assert (await client.get(path)).status_code == 403, path

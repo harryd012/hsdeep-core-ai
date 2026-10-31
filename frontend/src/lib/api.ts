@@ -3576,6 +3576,12 @@ export interface BackupOverview {
   daily: { day: string; completed: number; completed_with_warnings: number; failed: number; other: number }[];
   last_job_at: string | null;
   observed_at: string | null;
+  /** Sum of the storage the vaults report, bytes; null until any vault reports it. */
+  storage_used_bytes: number | null;
+  /** Restore points across items that report a count; null if none do. */
+  recovery_points_total: number | null;
+  /** Azure VMs in a connected subscription with no backup; null when no source is configured. */
+  unprotected_resources: number | null;
 }
 
 export interface BackupVault {
@@ -3592,6 +3598,8 @@ export interface BackupVault {
   observed_at: string | null;
   items_total: number;
   items_breaching_rpo: number;
+  storage_used_bytes: number | null;
+  policies: number;
 }
 
 export interface BackupItem {
@@ -3608,6 +3616,52 @@ export interface BackupItem {
   policy_name: string | null;
   health_status: string | null;
   source_resource_id: string | null;
+  recovery_point_count: number | null;
+  oldest_recovery_point_at: string | null;
+  /** Daily restore points kept by the item's policy, days; null if not reported. */
+  retention_days: number | null;
+  /** Inventory device this item protects (matched by resource id). */
+  device_id: string | null;
+  site_id: string | null;
+}
+
+export interface BackupPolicy {
+  name: string;
+  workload_type: string | null;
+  schedule_frequency: string | null;
+  /** Start times, "HH:MM" UTC. */
+  schedule_times: string[];
+  daily_retention_days: number | null;
+  weekly_retention_weeks: number | null;
+  monthly_retention_months: number | null;
+  yearly_retention_years: number | null;
+  protected_items_count: number | null;
+}
+
+export interface BackupItemDetail {
+  item: BackupItem;
+  policy: BackupPolicy | null;
+  jobs: BackupJob[];
+}
+
+export type BackupCoverageState = "protected" | "protection_stopped" | "unprotected" | "not_monitored";
+
+export interface BackupCoverage {
+  configured: boolean;
+  monitored_subscriptions: string[];
+  total: number;
+  protected: number;
+  protection_stopped: number;
+  unprotected: number;
+  not_monitored: number;
+  resources: {
+    device_id: string;
+    name: string;
+    resource_id: string;
+    subscription_id: string | null;
+    site_id: string | null;
+    state: BackupCoverageState;
+  }[];
 }
 
 export interface BackupJob {
@@ -3632,10 +3686,11 @@ export function listBackupVaults(): Promise<BackupVault[]> {
   return apiFetch<BackupVault[]>("/api/backup/vaults");
 }
 
-export function listBackupItems(params: { vaultId?: string; rpoState?: BackupRpoState } = {}): Promise<BackupItem[]> {
+export function listBackupItems(params: { vaultId?: string; rpoState?: BackupRpoState; siteId?: string } = {}): Promise<BackupItem[]> {
   const qs = new URLSearchParams();
   if (params.vaultId) qs.set("vault_id", params.vaultId);
   if (params.rpoState) qs.set("rpo_state", params.rpoState);
+  if (params.siteId) qs.set("site_id", params.siteId);
   const q = qs.toString();
   return apiFetch<BackupItem[]>(`/api/backup/items${q ? `?${q}` : ""}`);
 }
@@ -3644,6 +3699,14 @@ export function listBackupJobs(params: { days?: number; status?: string; limit?:
   const qs = new URLSearchParams({ days: String(params.days ?? 7), limit: String(params.limit ?? 200) });
   if (params.status) qs.set("status", params.status);
   return apiFetch<BackupJob[]>(`/api/backup/jobs?${qs.toString()}`);
+}
+
+export function getBackupItem(id: string): Promise<BackupItemDetail> {
+  return apiFetch<BackupItemDetail>(`/api/backup/items/${encodeURIComponent(id)}`);
+}
+
+export function getBackupCoverage(): Promise<BackupCoverage> {
+  return apiFetch<BackupCoverage>("/api/backup/coverage");
 }
 
 // ---------------------------------------------------------------------------

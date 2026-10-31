@@ -9,15 +9,18 @@ provider did not report stay NULL.
 the provider's last backup verdict and time. Items a successful read no longer
 lists are deleted (the provider stopped reporting them).
 
-`backup_jobs`: job history, upserted by the provider's job id. Retention is
-applied separately (B2), never by a collection run.
+`backup_jobs`: job history, upserted by the provider's job id. Rows older
+than `backup_job_retention_days` are purged after each save.
+
+`backup_policies`: one row per policy in a vault - its schedule and how long
+each tier of restore points is kept. Items reference a policy by name.
 """
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -46,6 +49,8 @@ class BackupVault(Base, UUIDPKMixin, TimestampMixin):
     soft_delete_state: Mapped[str | None] = mapped_column(String(30), nullable=True)
     immutability_state: Mapped[str | None] = mapped_column(String(30), nullable=True)
     storage_redundancy: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    #: Backup storage the vault reports as used, bytes; NULL until reported.
+    storage_used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     #: Outcome per table from the last poll: {"vaults": "collected", ...}
     table_status: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -70,6 +75,8 @@ class BackupItem(Base, UUIDPKMixin, TimestampMixin):
     source_resource_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
     policy_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     health_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    recovery_point_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    oldest_recovery_point_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -92,3 +99,27 @@ class BackupJob(Base, UUIDPKMixin, TimestampMixin):
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class BackupPolicy(Base, UUIDPKMixin, TimestampMixin):
+    __tablename__ = "backup_policies"
+    __table_args__ = (UniqueConstraint("vault_id", "name", name="uq_backup_policies_vault_name"),)
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    vault_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("backup_vaults.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    workload_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    #: daily | weekly | hourly
+    schedule_frequency: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    #: Start times, "HH:MM" UTC.
+    schedule_times: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    daily_retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    weekly_retention_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    monthly_retention_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    yearly_retention_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    protected_items_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
