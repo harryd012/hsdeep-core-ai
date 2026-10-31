@@ -82,7 +82,11 @@ export const NAV_CONFIG: NavGroup[] = [
 
   // -- Respond --------------------------------------------------------------------
   { id: "incidents", label: "Incidents", icon: TriangleAlert, route: "/incidents", section: "Respond", permission: "incidents.read",
-    description: "Correlated incidents and their response workflow" },
+    description: "Correlated incidents and their response workflow",
+    children: [
+      { label: "All Incidents", route: "/incidents" },
+      { label: "NOC Event Log", route: "/noc-event-log", keywords: "noc events correlation timeline" },
+    ] },
   { id: "tickets", label: "Tickets", icon: Ticket, route: "/tickets", section: "Respond",
     description: "Service tickets with SLA tracking" },
   { id: "changes", label: "Changes", icon: ArrowLeftRight, route: "/changes", section: "Respond",
@@ -95,6 +99,7 @@ export const NAV_CONFIG: NavGroup[] = [
     children: [
       { label: "SOC Dashboard", route: "/soc-analysis" },
       { label: "Analyst Roster", route: "/soc-analyst-roster" },
+      { label: "Firewall Diagnostic", route: "/firewall-diagnostic", keywords: "palo alto runbook rca diagnostic" },
     ] },
 
   // -- Automation & AI --------------------------------------------------------------
@@ -107,7 +112,11 @@ export const NAV_CONFIG: NavGroup[] = [
 
   // -- Manage -------------------------------------------------------------------------
   { id: "subscription", label: "Subscription", icon: CreditCard, route: "/subscription", section: "Manage", permission: "usage.read",
-    description: "Plan, usage limits and billing" },
+    description: "Plan, usage limits and billing",
+    children: [
+      { label: "Plan & Billing", route: "/subscription" },
+      { label: "Usage", route: "/usage", keywords: "consumption metering quota" },
+    ] },
   { id: "settings", label: "Settings", icon: Settings, route: "/settings", section: "Manage",
     description: "Tenant, security, users, notifications and API keys",
     children: [

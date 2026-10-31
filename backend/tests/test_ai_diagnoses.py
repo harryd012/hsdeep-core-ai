@@ -94,3 +94,18 @@ async def test_delete_diagnosis(tenant: Tenant, db: AsyncSessionLocal):
     await service.delete(diagnosis.id, tenant.id)
     with pytest.raises(AiDiagnosisNotFound):
         await service.get(diagnosis.id, tenant.id)
+
+async def test_count_and_summary(tenant: Tenant, db: AsyncSessionLocal):
+    """GET /api/ai/diagnoses/summary used to raise NameError (model referenced
+    as AiDiagnosis instead of AIDiagnosis); no UI called it, so it went unseen."""
+    repo = AiDiagnosisRepository(db)
+    assert await repo.count(tenant.id) == 0
+    event = await _make_noc_event(tenant.id, db)
+    service = AiDiagnosisService(repo)
+    await service.create(tenant_id=tenant.id, noc_event_id=event.id, requested_by=None, context_snapshot={})
+    assert await repo.count(tenant.id) == 1
+    assert await repo.count(tenant.id, status="pending") == 1
+    summary = await repo.summary(tenant.id)
+    assert summary["total_diagnoses"] == 1
+    assert summary["by_status"]["pending"] == 1
+    assert isinstance(summary["avg_confidence"], float)

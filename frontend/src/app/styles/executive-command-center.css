@@ -317,3 +317,20 @@ a.ecc-kpi:hover { transform: translateY(-1px); box-shadow: 0 1px 0 rgba(255, 255
 .ecc-backup__stats dd.is-bad { color: var(--ecc-bad); }
 .ecc-backup__stats .is-warn { font-size: 12px; font-weight: 500; color: var(--ecc-warn); }
 @media (max-width: 1100px) { .ecc-backup { grid-template-columns: minmax(0, 1fr); } }
+
+/* -- half-width cards: Cloud Operations, Automation & Work --------------- */
+.ecc-span-half { grid-column: span 6; }
+@media (max-width: 1100px) { .ecc-span-half { grid-column: 1 / -1; } }
+.ecc-minis { margin: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 14px; }
+.ecc-mini { padding: 8px 10px; border: 1px solid var(--ecc-border); border-radius: 8px; min-width: 0; }
+.ecc-mini dt { font-size: 11px; color: var(--ecc-text-muted); }
+.ecc-mini dd { margin: 2px 0 0; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ecc-mini dd.is-bad { color: var(--ecc-bad); }
+.ecc-mini dd.is-warn { color: var(--ecc-warn); }
+.ecc-mini dd.is-good { color: var(--ecc-good); }
+.ecc-mini dd.ecc-mini__na { font-size: 12px; font-weight: 500; color: var(--ecc-text-muted); cursor: help; }
+.ecc-mini__sub { display: block; font-size: 11px; color: var(--ecc-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ecc-automation { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; align-items: start; }
+@media (max-width: 1400px) { .ecc-automation { grid-template-columns: minmax(0, 1fr); } }
+.ecc-subhead { margin: 0 0 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ecc-text-muted); }
+.ecc-alert-line { margin: 0 0 10px; padding: 6px 10px; font-size: 12px; border-radius: 8px; color: var(--ecc-warn); border: 1px solid var(--ecc-border-strong); background: var(--ecc-surface-raised); }

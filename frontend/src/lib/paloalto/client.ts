@@ -4,7 +4,7 @@
  * Follows lib/api.ts conventions: base URL + token from shared helpers,
  * tenant resolved from the JWT, predictable error responses.
  */
-import { apiFetch, API_BASE_URL } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 
 export interface PaRunbookStep {
   id: string;
@@ -46,7 +46,9 @@ export interface PaWorkspace {
   data_quality: Record<string, string>;
 }
 
-const BASE = `${API_BASE_URL}/api/paloalto`;
+// Path only: apiFetch prepends API_BASE_URL itself (an absolute URL here
+// produced "http://hosthttp://host/api/..." and every request failed).
+const BASE = "/api/paloalto";
 
 export async function fetchPaRunbooks(q?: string): Promise<PaRunbook[]> {
   const url = q ? `${BASE}/runbooks?q=${encodeURIComponent(q)}` : `${BASE}/runbooks`;

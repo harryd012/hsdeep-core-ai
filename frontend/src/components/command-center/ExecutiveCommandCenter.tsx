@@ -38,8 +38,9 @@ import SiteHoneycomb from "./SiteHoneycomb";
 import CoverageRow from "./CoverageRow";
 import AppearanceMenu from "@/components/AppearanceMenu";
 import SituationBriefing from "./SituationBriefing";
-import { getAlertSummary, getBackupOverview } from "@/lib/api";
-import { DayColumns } from "@/components/ui/PageKit";
+import { getAlertSummary, getBackupOverview, getTaskCounts, getWorkflowStatistics, type CloudOperationsKPI } from "@/lib/api";
+import { useCloudOperations } from "@/hooks/useCloudOperations";
+import { BarList, DayColumns } from "@/components/ui/PageKit";
 import type { BriefingInput } from "@/lib/commandCenter/briefing";
 
 /**
@@ -794,6 +795,11 @@ export default function ExecutiveCommandCenter() {
       <div className="ecc-row">
         <BackupHealthCard />
       </div>
+
+      <div className="ecc-row">
+        <CloudOperationsCard />
+        <AutomationWorkCard />
+      </div>
     </div>
   );
 }
@@ -862,6 +868,130 @@ function BackupHealthCard() {
           </div>
         </div>
       )}
+    </CardShell>
+  );
+}
+
+/** One compact figure in a dashboard card; "Not configured" (with the reason
+ *  as a tooltip) instead of a number when the integration does not exist. */
+function MiniStat({ label, value, sub, reason, tone }: { label: string; value: string | null; sub?: string; reason?: string | null; tone?: "bad" | "warn" | "good" }) {
+  return (
+    <div className="ecc-mini">
+      <dt>{label}</dt>
+      {value === null ? (
+        <dd className="ecc-mini__na" title={reason ?? undefined}>Not configured</dd>
+      ) : (
+        <dd className={tone ? `is-${tone}` : undefined}>{value}</dd>
+      )}
+      {sub && <span className="ecc-mini__sub">{sub}</span>}
+    </div>
+  );
+}
+
+/** Cloud Operations: the six-card snapshot (GET /api/dashboard/cloud-operations),
+ *  including Backup Readiness. Unconfigured integrations say so with the reason. */
+function CloudOperationsCard() {
+  const q = useCloudOperations();
+  const c = q.data;
+  const state: CardState = q.isLoading ? "loading" : q.error ? "error" : "ready";
+  const num = (k: CloudOperationsKPI | undefined) => (k && !k.unavailable && typeof k.value === "number" ? k.value : null);
+  const health = c?.resource_health.value as { online?: number; total?: number } | null | undefined;
+  const readiness = num(c?.backup_readiness);
+  const critical = (c?.active_incidents.detail as { critical?: number } | null)?.critical;
+  return (
+    <CardShell
+      title="Cloud Operations"
+      info="Cloud resources and their health, active incidents, and cloud integrations (spend, policy, backup). Integrations that are not connected say so instead of showing 0."
+      state={state}
+      onRetry={() => q.refetch()}
+      className="ecc-span-half"
+    >
+      {c && (
+        <dl className="ecc-minis">
+          <MiniStat label="Cloud resources" value={num(c.cloud_resources) === null ? null : formatCount(num(c.cloud_resources)!)} reason={c.cloud_resources.unavailable_reason} />
+          <MiniStat
+            label="Resources online"
+            value={health && typeof health.total === "number" ? `${formatCount(health.online ?? 0)} / ${formatCount(health.total)}` : null}
+            reason={c.resource_health.unavailable_reason}
+            tone={health && health.total && (health.online ?? 0) < health.total ? "warn" : undefined}
+          />
+          <MiniStat label="Active incidents" value={num(c.active_incidents) === null ? null : formatCount(num(c.active_incidents)!)} sub={critical !== undefined ? `${formatCount(critical)} critical` : undefined} reason={c.active_incidents.unavailable_reason} tone={critical ? "bad" : undefined} />
+          <MiniStat label="Backup readiness" value={readiness === null ? null : `${readiness}%`} sub={readiness === null ? undefined : "protected items inside RPO"} reason={c.backup_readiness.unavailable_reason} tone={readiness !== null && readiness < 95 ? "warn" : undefined} />
+          <MiniStat label="Cloud spend" value={num(c.cloud_spend) === null ? null : formatCount(num(c.cloud_spend)!)} reason={c.cloud_spend.unavailable_reason} />
+          <MiniStat label="Policy compliance" value={num(c.policy_compliance) === null ? null : `${num(c.policy_compliance)}%`} reason={c.policy_compliance.unavailable_reason} />
+        </dl>
+      )}
+    </CardShell>
+  );
+}
+
+const TASK_STATE_ORDER = ["assigned", "accepted", "in_progress", "verifying", "recorded", "completed", "failed", "cancelled"];
+/** Lifecycle order; states the backend adds later sort last. */
+const taskRank = (state: string) => {
+  const i = TASK_STATE_ORDER.indexOf(state);
+  return i === -1 ? TASK_STATE_ORDER.length : i;
+};
+
+/** Automation & Work: workflow executions (GET /api/workflows/statistics) and
+ *  the task queue by state (GET /api/tasks/counts). */
+function AutomationWorkCard() {
+  const wf = useQuery({ queryKey: ["dashboard", "workflow-statistics"], queryFn: getWorkflowStatistics, refetchInterval: POLL_MS, retry: false });
+  const tasks = useQuery({ queryKey: ["dashboard", "task-counts"], queryFn: getTaskCounts, refetchInterval: POLL_MS, retry: false });
+  const s = wf.data;
+  const state: CardState = wf.isLoading || tasks.isLoading ? "loading" : wf.error && tasks.error ? "error" : "ready";
+  const taskRows = Object.entries(tasks.data ?? {})
+    .filter(([, n]) => n > 0)
+    .sort(([a], [b]) => taskRank(a) - taskRank(b))
+    .map(([k, n]) => ({
+      key: k,
+      label: titleCase(k.replace(/_/g, " ")),
+      value: n,
+      color: k === "failed" ? "var(--ecc-bad)" : k === "cancelled" ? "var(--ecc-unknown)" : k === "completed" || k === "recorded" ? "var(--ecc-good)" : "var(--ecc-accent)",
+    }));
+  return (
+    <CardShell
+      title="Automation & Work"
+      info="Workflow executions by state and the operations task queue. A growing queue with nothing running means work is not being picked up."
+      aside={<Link href="/automation">Open Automation →</Link>}
+      state={state}
+      onRetry={() => { wf.refetch(); tasks.refetch(); }}
+      className="ecc-span-half"
+    >
+      {s && s.queued > 0 && s.running === 0 && (
+        <p className="ecc-alert-line" role="status">
+          {formatCount(s.queued)} workflow execution{s.queued === 1 ? " is" : "s are"} queued and none is running.
+        </p>
+      )}
+      <div className="ecc-automation">
+        {s ? (
+          <dl className="ecc-minis ecc-minis--3">
+            <MiniStat label="Executions" value={formatCount(s.total_executions)} />
+            <MiniStat label="Queued" value={formatCount(s.queued)} tone={s.queued > 0 && s.running === 0 ? "warn" : undefined} />
+            <MiniStat label="Awaiting approval" value={formatCount(s.waiting_approval)} tone={s.waiting_approval > 0 ? "warn" : undefined} />
+            <MiniStat label="Running" value={formatCount(s.running)} />
+            <MiniStat
+              label="Success rate"
+              value={s.success_rate === null ? NOT_MEASURED : `${Math.round(s.success_rate * 100)}%`}
+              sub={`${s.succeeded} succeeded · ${s.failed + s.rolled_back} failed · ${s.cancelled} cancelled`}
+              tone={s.success_rate !== null && s.success_rate < 0.8 ? "warn" : undefined}
+            />
+            <MiniStat
+              label="Avg duration"
+              value={s.avg_duration_seconds === null ? NOT_MEASURED : s.avg_duration_seconds < 60 ? `${Math.round(s.avg_duration_seconds)} s` : formatMinutes(s.avg_duration_seconds / 60)}
+            />
+          </dl>
+        ) : (
+          <p className="ecc-quiet__detail">{wf.error ? "Workflow statistics unavailable (needs workflows.read)." : ""}</p>
+        )}
+        <div>
+          <h3 className="ecc-subhead">Task queue</h3>
+          {tasks.error ? (
+            <p className="ecc-quiet__detail">Task counts unavailable (needs tasks.read).</p>
+          ) : (
+            <BarList rows={taskRows} emptyText="No tasks yet." />
+          )}
+        </div>
+      </div>
     </CardShell>
   );
 }

@@ -243,6 +243,8 @@ function LoginForm() {
 
             <p className="login-card__enterprise">
               <a href="/forgot-password">Forgot password?</a>
+              {" · "}
+              <a href="/signup">Create an account</a>
             </p>
 
             <div className="login-card__divider">

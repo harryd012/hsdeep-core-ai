@@ -3643,3 +3643,31 @@ export function listBackupJobs(params: { days?: number; status?: string; limit?:
   if (params.status) qs.set("status", params.status);
   return apiFetch<BackupJob[]>(`/api/backup/jobs?${qs.toString()}`);
 }
+
+// ---------------------------------------------------------------------------
+// Automation and work queue (GET /api/workflows/statistics, /api/tasks/counts)
+// ---------------------------------------------------------------------------
+
+/** Mirrors backend WorkflowStatisticsOut. success_rate is a 0-1 fraction over
+ *  finished executions; null (not 0) when none has finished yet. */
+export interface WorkflowStatistics {
+  total_executions: number;
+  queued: number;
+  waiting_approval: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  rolled_back: number;
+  success_rate: number | null;
+  avg_duration_seconds: number | null;
+}
+
+export function getWorkflowStatistics(): Promise<WorkflowStatistics> {
+  return apiFetch<WorkflowStatistics>("/api/workflows/statistics");
+}
+
+/** Task counts by status (only statuses that have tasks are present). */
+export function getTaskCounts(): Promise<Record<string, number>> {
+  return apiFetch<Record<string, number>>("/api/tasks/counts");
+}
