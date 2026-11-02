@@ -38,6 +38,7 @@ PERMISSION_CATALOG: Final[list[tuple[str, str]]] = [
     ("devices.read", "View devices, interfaces, sensors and metrics"),
     ("devices.write", "Create/update/delete devices"),
     ("backup.read", "View backup vaults, protected items and backup jobs"),
+    ("backup.write", "Change backup targets (RPO) for the tenant"),
     ("business_services.read", "View business services"),
     ("business_services.write", "Create/update/delete business services"),
     # Alerts / incidents

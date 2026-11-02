@@ -3555,12 +3555,19 @@ export interface BackupJobCounts {
 }
 
 export interface BackupOverview {
-  /** False until an Azure Backup source exists; counts are real zeros only when true. */
+  /** False until a backup source exists; counts are real zeros only when true. */
   configured: boolean;
   generated_at: string;
+  /** The tenant's RPO (its own, or the platform default when rpo_is_default). */
   rpo_hours: number;
-  sources: { id: string; name: string; status: string; is_active: boolean; last_sync_at: string | null; last_error: string | null }[];
+  rpo_is_default: boolean;
+  sources: { id: string; name: string; status: string; is_active: boolean; last_sync_at: string | null; last_error: string | null; provider: string | null }[];
+  /** Providers with at least one storage location, e.g. ["azure"]. */
+  providers: string[];
   vaults: number;
+  /** Storage locations that keep an off-site copy / are irreversibly immutable. */
+  vaults_offsite: number;
+  vaults_immutable: number;
   vaults_soft_delete_off: number;
   items_total: number;
   items_protected: number;
@@ -3589,6 +3596,11 @@ export interface BackupVault {
   device_id: string | null;
   name: string;
   provider: string;
+  /** vault | repository | bucket */
+  kind: string;
+  /** null when the provider does not report it. */
+  offsite: boolean | null;
+  immutable: boolean | null;
   location: string | null;
   resource_group: string | null;
   subscription_id: string | null;
@@ -3618,6 +3630,8 @@ export interface BackupItem {
   source_resource_id: string | null;
   recovery_point_count: number | null;
   oldest_recovery_point_at: string | null;
+  /** Backup data held for this item, bytes; null when the provider does not report it. */
+  size_bytes: number | null;
   /** Daily restore points kept by the item's policy, days; null if not reported. */
   retention_days: number | null;
   /** Inventory device this item protects (matched by resource id). */
@@ -3707,6 +3721,25 @@ export function getBackupItem(id: string): Promise<BackupItemDetail> {
 
 export function getBackupCoverage(): Promise<BackupCoverage> {
   return apiFetch<BackupCoverage>("/api/backup/coverage");
+}
+
+export interface BackupSettings {
+  /** The RPO every verdict and alert for this tenant uses. */
+  rpo_hours: number;
+  rpo_is_default: boolean;
+  default_rpo_hours: number;
+}
+
+export function getBackupSettings(): Promise<BackupSettings> {
+  return apiFetch<BackupSettings>("/api/backup/settings");
+}
+
+/** Set the tenant RPO (1-720 h); null returns it to the platform default. Needs backup.write. */
+export function updateBackupSettings(rpoHours: number | null): Promise<BackupSettings> {
+  return apiFetch<BackupSettings>("/api/backup/settings", {
+    method: "PUT",
+    body: JSON.stringify({ rpo_hours: rpoHours }),
+  });
 }
 
 // ---------------------------------------------------------------------------

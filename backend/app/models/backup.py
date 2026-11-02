@@ -14,13 +14,20 @@ than `backup_job_retention_days` are purged after each save.
 
 `backup_policies`: one row per policy in a vault - its schedule and how long
 each tier of restore points is kept. Items reference a policy by name.
+
+`backup_settings`: per-tenant (per-customer) backup targets; at most one row
+per tenant. A tenant without a row uses the platform default RPO.
+
+The tables are provider-neutral: a "vault" is any backup storage location
+(`kind`: vault | repository | bucket) and every status uses the vocabulary in
+`app.collectors.backup_vocabulary`.
 """
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -43,6 +50,12 @@ class BackupVault(Base, UUIDPKMixin, TimestampMixin):
     external_id: Mapped[str] = mapped_column(String(500), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     provider: Mapped[str] = mapped_column(String(30), nullable=False, default="azure", server_default="azure")
+    #: vault | repository | bucket
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="vault", server_default="vault")
+    #: A copy is kept off-site / in another region; NULL when not reported.
+    offsite: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    #: Restore points are irreversibly immutable until they expire; NULL when not reported.
+    immutable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     location: Mapped[str | None] = mapped_column(String(100), nullable=True)
     resource_group: Mapped[str | None] = mapped_column(String(255), nullable=True)
     subscription_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -77,6 +90,8 @@ class BackupItem(Base, UUIDPKMixin, TimestampMixin):
     health_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
     recovery_point_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     oldest_recovery_point_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Backup data held for this item, bytes; NULL when not reported.
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -123,3 +138,15 @@ class BackupPolicy(Base, UUIDPKMixin, TimestampMixin):
     yearly_retention_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
     protected_items_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BackupSettings(Base, UUIDPKMixin, TimestampMixin):
+    __tablename__ = "backup_settings"
+    __table_args__ = (UniqueConstraint("tenant_id", name="uq_backup_settings_tenant"),)
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    #: Hours a protected item may go without a successful backup; NULL uses
+    #: the platform default (settings.backup_rpo_hours).
+    rpo_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)

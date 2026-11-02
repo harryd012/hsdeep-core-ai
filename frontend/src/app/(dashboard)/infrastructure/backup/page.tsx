@@ -9,6 +9,7 @@ import {
   listBackupItems,
   listBackupJobs,
   listBackupVaults,
+  updateBackupSettings,
   type BackupCoverage,
   type BackupCoverageState,
   type BackupItem,
@@ -19,6 +20,7 @@ import {
 } from "@/lib/api";
 import { downloadCsv, formatBytes, type CsvColumn } from "@/lib/csv";
 import { useSiteHealth } from "@/hooks/useSiteHealth";
+import { useAuth } from "@/lib/auth-context";
 import { createMonitoringSource, syncMonitoringSource } from "@/lib/monitoringApi";
 import { DonutRing, Legend } from "@/components/command-center/primitives";
 import {
@@ -93,6 +95,66 @@ function duration(s: number | null): string {
 function posture(value: string | null, good: string[], label = titleCaseWords): { text: string; tone: Tone } {
   if (!value) return { text: "Not reported", tone: "neutral" };
   return { text: label(value), tone: good.includes(value) ? "good" : "warn" };
+}
+
+/** Yes / No / Not reported for a provider-reported flag (never inferred). */
+function flag(value: boolean | null): { text: string; tone: Tone } {
+  if (value === null) return { text: "Not reported", tone: "neutral" };
+  return value ? { text: "Yes", tone: "good" } : { text: "No", tone: "warn" };
+}
+
+/** The tenant's RPO target. Everyone sees it; backup.write can change it or
+ *  return it to the platform default. Alerts use the new value from the next poll. */
+function RpoTarget({ overview, onSaved }: { overview: BackupOverview; onSaved: () => void }) {
+  const { user } = useAuth();
+  const canEdit = !!user && (user.is_superuser || user.permissions.includes("backup.write"));
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(String(overview.rpo_hours));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const hoursValue = Number(value);
+  const valid = Number.isInteger(hoursValue) && hoursValue >= 1 && hoursValue <= 720;
+
+  async function save(rpoHours: number | null) {
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await updateBackupSettings(rpoHours);
+      setValue(String(saved.rpo_hours));
+      setEditing(false);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the RPO.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <div className="pk-toolbar">
+        <span className="pk-help">
+          Target: <strong>{overview.rpo_hours} h</strong> {overview.rpo_is_default ? "(platform default)" : "(set for this customer)"}
+        </span>
+        {canEdit && (
+          <button type="button" className="pk-button" onClick={() => { setValue(String(overview.rpo_hours)); setEditing(true); }}>
+            Change
+          </button>
+        )}
+      </div>
+    );
+  }
+  return (
+    <form className="pk-toolbar" onSubmit={(e) => { e.preventDefault(); if (valid) void save(hoursValue); }}>
+      <label htmlFor="bk-rpo" className="pk-help">RPO (hours)</label>
+      <input id="bk-rpo" className="pk-input" type="number" min={1} max={720} step={1} value={value} onChange={(e) => setValue(e.target.value)} style={{ width: 90 }} />
+      <button type="submit" className="pk-button pk-button--primary" disabled={!valid || busy}>{busy ? "Saving…" : "Save"}</button>
+      {!overview.rpo_is_default && <button type="button" className="pk-button" disabled={busy} onClick={() => void save(null)}>Use default</button>}
+      <button type="button" className="pk-button" disabled={busy} onClick={() => setEditing(false)}>Cancel</button>
+      {!valid && <span className="pk-help">1 to 720 hours.</span>}
+      {error && <Banner tone="bad">{error}</Banner>}
+    </form>
+  );
 }
 
 /** Connect an Azure subscription: creates an `azure_backup` monitoring source
@@ -313,7 +375,7 @@ export default function BackupPage() {
       render: (v) => (
         <>
           <span className="pk-cell-main">{v.name}</span>
-          <span className="pk-cell-sub">{[v.resource_group, v.location].filter(Boolean).join(" · ")}</span>
+          <span className="pk-cell-sub">{[titleCaseWords(v.provider), v.resource_group, v.location].filter(Boolean).join(" · ")}</span>
         </>
       ),
     },
@@ -321,6 +383,7 @@ export default function BackupPage() {
     { key: "breach", header: "Outside RPO", numeric: true, sortValue: (v) => v.items_breaching_rpo, render: (v) => (v.items_breaching_rpo ? <span style={{ color: "var(--ecc-bad)" }}>{v.items_breaching_rpo}</span> : "0") },
     { key: "soft", header: "Soft delete", sortValue: (v) => v.soft_delete_state, render: (v) => { const p = posture(v.soft_delete_state, ["enabled", "always_on"]); return <Pill tone={p.tone}>{p.text}</Pill>; } },
     { key: "immut", header: "Immutability", sortValue: (v) => v.immutability_state, render: (v) => { const p = posture(v.immutability_state, ["locked", "unlocked"]); return <Pill tone={p.tone}>{p.text}</Pill>; } },
+    { key: "offsite", header: "Off-site copy", sortValue: (v) => (v.offsite === null ? null : Number(v.offsite)), render: (v) => { const f = flag(v.offsite); return <Pill tone={f.tone}>{f.text}</Pill>; } },
     { key: "redundancy", header: "Storage redundancy", sortValue: (v) => v.storage_redundancy, render: (v) => titleCaseWords(v.storage_redundancy) || <span className="pk-muted">Not reported</span> },
     { key: "storage", header: "Storage used", numeric: true, sortValue: (v) => v.storage_used_bytes, render: (v) => (v.storage_used_bytes === null ? <span className="pk-muted">Not reported</span> : formatBytes(v.storage_used_bytes)) },
     { key: "policies", header: "Policies", numeric: true, sortValue: (v) => v.policies, render: (v) => v.policies },
@@ -348,7 +411,7 @@ export default function BackupPage() {
       title="Backup"
       icon={DatabaseBackup}
       crumbs={[{ label: "Infrastructure", href: "/infrastructure" }, { label: "Backup" }]}
-      subtitle="Azure Backup: whether every workload has a recent good backup, which servers have none, what failed, how long restore points are kept and how the vaults are secured."
+      subtitle={`${o?.providers.length ? o.providers.map((p) => titleCaseWords(p)).join(", ") : "Azure"} Backup: whether every workload has a recent good backup, which servers have none, what failed, how long restore points are kept and how the backup storage is secured.`}
       actions={
         configured ? (
           <button type="button" className="pk-button" onClick={() => setShowConnect((s) => !s)}>
@@ -382,7 +445,7 @@ export default function BackupPage() {
         <StatTile label="Job success" badge="24h" value={configured && o?.success_rate_24h !== null && o?.success_rate_24h !== undefined ? `${o.success_rate_24h}%` : "—"} naText={configured ? "No job finished in 24h" : "Not configured"} sub={o && configured ? `${o.jobs_24h.failed} failed of ${o.jobs_24h.total}` : undefined} info="Completed (including with warnings) over finished jobs in the last 24 hours." loading={loadingOverview} />
         <StatTile label="Unprotected VMs" value={configured && o?.unprotected_resources !== null && o?.unprotected_resources !== undefined ? o.unprotected_resources.toLocaleString("en-US") : "—"} alarm={(o?.unprotected_resources ?? 0) > 0} info="Azure VMs in a connected subscription that no backup item protects. VMs in subscriptions without a backup source are listed as not monitored in Coverage." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
         <StatTile label="Storage used" value={configured && o?.storage_used_bytes !== null && o?.storage_used_bytes !== undefined ? formatBytes(o.storage_used_bytes) : "—"} sub={o && configured && o.recovery_points_total !== null ? `${o.recovery_points_total.toLocaleString("en-US")} restore points` : undefined} info="Backup storage the vaults report (all redundancy tiers)." loading={loadingOverview} naText={configured ? "Not reported" : "Not configured"} />
-        <StatTile label="Vaults" value={n(o?.vaults)} sub={o && configured && o.vaults_soft_delete_off ? `${o.vaults_soft_delete_off} with soft delete off` : undefined} alarm={(o?.vaults_soft_delete_off ?? 0) > 0} info="Recovery Services vaults read from the connected subscriptions." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="Vaults" value={n(o?.vaults)} sub={o && configured ? (o.vaults_soft_delete_off ? `${o.vaults_soft_delete_off} with soft delete off` : `${o.vaults_offsite} off-site · ${o.vaults_immutable} immutable`) : undefined} alarm={(o?.vaults_soft_delete_off ?? 0) > 0} info="Backup storage locations read from the connected sources. Off-site: a copy is kept in another region or site. Immutable: restore points are locked against deletion until they expire." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
       </StatStrip>
 
       {configured && (
@@ -402,6 +465,7 @@ export default function BackupPage() {
                 <Legend total={o!.items_total} rows={RPO.map((r) => ({ key: r.key, label: r.label, value: rpoCounts[r.key], color: r.color }))} />
               </div>
             )}
+            <RpoTarget overview={o!} onSaved={refresh} />
           </Panel>
 
           <Panel

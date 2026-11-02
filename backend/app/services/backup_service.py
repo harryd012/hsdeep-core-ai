@@ -4,8 +4,12 @@ Tenant-scoped reads over backup_vaults / backup_items / backup_jobs /
 backup_policies for the Backup page, the dashboard panel and the Cloud
 Operations "Backup Readiness" card, plus backup coverage: which Azure VMs in
 inventory have no backup. The RPO verdict is computed here once (``rpo_state``) so every surface
-agrees, and it uses the same rule as the alerting readings in
-`app.services.monitoring.backup_saver`.
+agrees, and it uses the same rule and the same tenant RPO as the alerting
+readings in `app.services.monitoring.backup_saver`.
+
+Provider-neutral: backup sources are every collector that declares a
+``backup_provider``, so a new backup connector appears here without edits.
+Coverage stays Azure-specific (it matches Azure VM resource ids).
 """
 from __future__ import annotations
 
@@ -16,6 +20,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.collectors.backup_vocabulary import ACTIVE_PROTECTION
+from app.collectors.base import CollectorRegistry
 from app.core.config import get_settings
 from app.models.backup import BackupItem, BackupJob, BackupPolicy, BackupVault
 from app.models.device import Device
@@ -30,12 +36,15 @@ from app.schemas.backup import (
     BackupJobOut,
     BackupOverview,
     BackupPolicyOut,
+    BackupSettingsOut,
     BackupSourceSummary,
     BackupVaultOut,
 )
+from app.services.backup_settings import tenant_rpo_override
 
+#: The Azure Backup collector's source type (coverage reads its subscriptions).
 SOURCE_TYPE = "azure_backup"
-_ACTIVE = ("protected", "protection_error", "ir_pending")
+_ACTIVE = ACTIVE_PROTECTION
 _SUCCESS = ("completed", "completed_with_warnings")
 _FINISHED = ("completed", "completed_with_warnings", "failed", "cancelled")
 DAILY_DAYS = 14
@@ -46,6 +55,18 @@ _PROTECTABLE = "/providers/microsoft.compute/virtualmachines/"
 def _subscription(resource_id: str | None) -> str | None:
     match = re.search(r"/subscriptions/([^/]+)", resource_id or "", re.IGNORECASE)
     return match.group(1).lower() if match else None
+
+
+def backup_source_types(provider: str | None = None) -> dict[str, str]:
+    """{source_type: provider} for every registered backup collector,
+    optionally only one provider's."""
+    import app.services.monitoring  # noqa: F401  (registers every collector)
+
+    return {
+        cls.source_type: cls.backup_provider
+        for cls in CollectorRegistry.list_types()
+        if cls.backup_provider and (provider is None or cls.backup_provider == provider)
+    }
 
 
 def _policy_out(p: BackupPolicy) -> BackupPolicyOut:
@@ -82,15 +103,30 @@ class BackupService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def _sources(self, tenant_id: uuid.UUID) -> list[MonitoringSource]:
+    async def _sources(self, tenant_id: uuid.UUID, provider: str | None = None) -> list[MonitoringSource]:
+        """The tenant's backup sources (all providers, or one)."""
+        types = list(backup_source_types(provider))
         return list(
             (
                 await self.db.execute(
                     select(MonitoringSource)
-                    .where(MonitoringSource.tenant_id == tenant_id, MonitoringSource.source_type == SOURCE_TYPE)
+                    .where(MonitoringSource.tenant_id == tenant_id, MonitoringSource.source_type.in_(types))
                     .order_by(MonitoringSource.name)
                 )
             ).scalars()
+        )
+
+    async def _rpo(self, tenant_id: uuid.UUID) -> tuple[int, bool]:
+        """(RPO hours, True when it is the platform default)."""
+        override = await tenant_rpo_override(self.db, tenant_id)
+        if override is None:
+            return get_settings().backup_rpo_hours, True
+        return override, False
+
+    async def settings(self, tenant_id: uuid.UUID) -> BackupSettingsOut:
+        rpo_hours, is_default = await self._rpo(tenant_id)
+        return BackupSettingsOut(
+            rpo_hours=rpo_hours, rpo_is_default=is_default, default_rpo_hours=get_settings().backup_rpo_hours,
         )
 
     async def _protectable_devices(self, tenant_id: uuid.UUID) -> list[Device]:
@@ -125,8 +161,9 @@ class BackupService:
 
     async def overview(self, tenant_id: uuid.UUID, now: datetime | None = None) -> BackupOverview:
         now = now or datetime.now(timezone.utc)
-        rpo_hours = get_settings().backup_rpo_hours
+        rpo_hours, rpo_is_default = await self._rpo(tenant_id)
         sources = await self._sources(tenant_id)
+        provider_of = backup_source_types()
         vaults = list((await self.db.execute(select(BackupVault).where(BackupVault.tenant_id == tenant_id))).scalars())
         items = list((await self.db.execute(select(BackupItem).where(BackupItem.tenant_id == tenant_id))).scalars())
 
@@ -162,20 +199,25 @@ class BackupService:
         ).scalar()
         storage = [v.storage_used_bytes for v in vaults if v.storage_used_bytes is not None]
         points = [i.recovery_point_count for i in items if i.recovery_point_count is not None]
-        coverage = await self.coverage(tenant_id) if sources else None
+        coverage = await self.coverage(tenant_id) if any(s.source_type == SOURCE_TYPE for s in sources) else None
 
         return BackupOverview(
             configured=bool(sources),
             generated_at=now,
             rpo_hours=rpo_hours,
+            rpo_is_default=rpo_is_default,
             sources=[
                 BackupSourceSummary(
                     id=s.id, name=s.name, status=s.status, is_active=s.is_active,
                     last_sync_at=s.last_sync_at, last_error=s.last_error,
+                    provider=provider_of.get(s.source_type),
                 )
                 for s in sources
             ],
+            providers=sorted({v.provider for v in vaults}),
             vaults=len(vaults),
+            vaults_offsite=sum(1 for v in vaults if v.offsite),
+            vaults_immutable=sum(1 for v in vaults if v.immutable),
             vaults_soft_delete_off=sum(1 for v in vaults if v.soft_delete_state == "disabled"),
             items_total=len(items),
             items_protected=sum(1 for i in items if i.protection_state in _ACTIVE),
@@ -197,7 +239,7 @@ class BackupService:
 
     async def vaults(self, tenant_id: uuid.UUID, now: datetime | None = None) -> list[BackupVaultOut]:
         now = now or datetime.now(timezone.utc)
-        rpo_hours = get_settings().backup_rpo_hours
+        rpo_hours, _ = await self._rpo(tenant_id)
         vaults = list(
             (await self.db.execute(select(BackupVault).where(BackupVault.tenant_id == tenant_id).order_by(BackupVault.name))).scalars()
         )
@@ -208,7 +250,8 @@ class BackupService:
             mine = [i for i in items if i.vault_id == v.id]
             out.append(
                 BackupVaultOut(
-                    id=v.id, device_id=v.device_id, name=v.name, provider=v.provider, location=v.location,
+                    id=v.id, device_id=v.device_id, name=v.name, provider=v.provider, kind=v.kind,
+                    offsite=v.offsite, immutable=v.immutable, location=v.location,
                     resource_group=v.resource_group, subscription_id=v.subscription_id,
                     soft_delete_state=v.soft_delete_state, immutability_state=v.immutability_state,
                     storage_redundancy=v.storage_redundancy, observed_at=v.observed_at,
@@ -225,7 +268,7 @@ class BackupService:
         site_id: uuid.UUID | None = None, now: datetime | None = None,
     ) -> list[BackupItemOut]:
         now = now or datetime.now(timezone.utc)
-        rpo_hours = get_settings().backup_rpo_hours
+        rpo_hours, _ = await self._rpo(tenant_id)
         stmt = (
             select(BackupItem, BackupVault.name)
             .join(BackupVault, BackupVault.id == BackupItem.vault_id)
@@ -261,6 +304,7 @@ class BackupService:
             source_resource_id=item.source_resource_id,
             recovery_point_count=item.recovery_point_count,
             oldest_recovery_point_at=item.oldest_recovery_point_at,
+            size_bytes=item.size_bytes,
             retention_days=policy.daily_retention_days if policy else None,
             device_id=device.id if device else None,
             site_id=device.site_id if device else None,
@@ -281,7 +325,7 @@ class BackupService:
         if found is None:
             return None
         item, vault_name = found
-        verdict, age = rpo_state(item, now, get_settings().backup_rpo_hours)
+        verdict, age = rpo_state(item, now, (await self._rpo(tenant_id))[0])
         policies = await self._policies(tenant_id)
         devices = {(d.external_id or "").lower(): d for d in await self._protectable_devices(tenant_id)}
         policy = policies.get((item.vault_id, item.policy_name)) if item.policy_name else None
@@ -317,7 +361,7 @@ class BackupService:
         A VM is only called unprotected when its subscription has an active
         backup source (an Azure vault backs up VMs in its own subscription);
         otherwise it is not monitored - we cannot see its backups."""
-        sources = [s for s in await self._sources(tenant_id) if s.is_active and not s.is_deleted]
+        sources = [s for s in await self._sources(tenant_id, "azure") if s.is_active and not s.is_deleted]
         monitored = sorted(
             {str((s.config or {}).get("subscription_id") or "").lower() for s in sources} - {""}
         )
@@ -401,4 +445,4 @@ def readiness_from_overview(o: BackupOverview) -> tuple[int | None, dict]:
     }
 
 
-__all__ = ["BackupService", "readiness_from_overview", "rpo_state", "SOURCE_TYPE"]
+__all__ = ["BackupService", "backup_source_types", "readiness_from_overview", "rpo_state", "SOURCE_TYPE"]

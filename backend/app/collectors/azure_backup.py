@@ -168,6 +168,22 @@ def _storage_used(usages: list[dict] | None) -> int | None:
     return total if seen else None
 
 
+def _offsite(redundancy: str | None) -> bool | None:
+    """A geo-redundant vault keeps a copy in the paired region; LRS and ZRS
+    stay in one region. None when Azure did not report redundancy."""
+    if redundancy is None:
+        return None
+    return "geo" in redundancy
+
+
+def _immutable(state: str | None) -> bool | None:
+    """Only *locked* immutability is irreversible; an unlocked vault's
+    immutability can be switched off, so it does not count."""
+    if state is None:
+        return None
+    return state == "locked"
+
+
 def _resource_group(resource_id: str) -> str | None:
     match = re.search(r"/resourceGroups/([^/]+)", resource_id, re.IGNORECASE)
     return match.group(1) if match else None
@@ -178,6 +194,7 @@ class AzureBackupCollector(AzureCollector):
     display_name = "Azure Backup (Recovery Services vaults)"
     implemented = True
     category = "cloud"
+    backup_provider = "azure"
 
     #: Injected by tests (httpx.MockTransport); None uses the real network.
     transport: httpx.AsyncBaseTransport | None = None
@@ -306,6 +323,8 @@ class AzureBackupCollector(AzureCollector):
                 )
             )
             soft = snake((security.get("softDeleteSettings") or {}).get("softDeleteState"))
+            immutability = snake((security.get("immutabilitySettings") or {}).get("state"))
+            redundancy = snake(redundancy)
             bundle.backup_vaults.append(
                 NormalizedBackupVault(
                     external_id=vault_id,
@@ -314,8 +333,10 @@ class AzureBackupCollector(AzureCollector):
                     resource_group=_resource_group(vault_id),
                     subscription_id=subscription_id,
                     soft_delete_state=_SOFT_DELETE.get(soft or "", soft),
-                    immutability_state=snake((security.get("immutabilitySettings") or {}).get("state")),
-                    storage_redundancy=snake(redundancy),
+                    immutability_state=immutability,
+                    storage_redundancy=redundancy,
+                    offsite=_offsite(redundancy),
+                    immutable=_immutable(immutability),
                     storage_used_bytes=_storage_used(entry.get("usages")),
                 )
             )

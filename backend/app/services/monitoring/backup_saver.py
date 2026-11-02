@@ -17,25 +17,40 @@ Called by `BundleSaver.save()` for bundles that carry backup tables
     exactly like firewall state - no second alerting mechanism.
 
 Rules (all from what the provider reported; nothing is inferred):
-  * RPO        - a protected item with no backup inside `backup_rpo_hours`.
+  * RPO        - a protected item with no backup inside the tenant's RPO
+                 (its own, or `backup_rpo_hours`).
   * last backup - the provider's last backup verdict (failed / with warnings).
   * protection - protection stopped, paused or in error.
   * soft delete - vault soft delete disabled.
 Items whose protection was stopped get an "unknown" RPO reading, which
 resolves an RPO alert instead of paging about an item nobody protects.
+
+Provider-neutral: every item and job is passed through the shared status
+vocabulary (`app.collectors.backup_vocabulary`) before it is stored or
+judged, and the RPO is the tenant's own (`app.services.backup_settings`).
 """
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.collectors.backup_vocabulary import (
+    ACTIVE_PROTECTION,
+    BACKUP_RESULTS,
+    JOB_STATUSES,
+    PROTECTION_STATES,
+    STOPPED_PROTECTION,
+    STORAGE_KINDS,
+    canonical,
+)
 from app.collectors.base import (
     NormalizedBackupItem,
+    NormalizedBackupJob,
     NormalizedBackupPolicy,
     NormalizedBackupVault,
     NormalizedBundle,
@@ -43,6 +58,7 @@ from app.collectors.base import (
 )
 from app.core.config import get_settings
 from app.models.backup import BackupItem, BackupJob, BackupPolicy, BackupVault
+from app.services.backup_settings import effective_rpo_hours
 
 _READ_OK = ("collected", "empty")
 #: Prefix of every sensor external_id this module produces.
@@ -51,15 +67,27 @@ SENSOR_PREFIX = "bk:"
 _ITEM_FIELDS = (
     "name", "workload_type", "protection_state", "last_backup_status", "last_backup_at",
     "source_resource_id", "policy_name", "health_status",
-    "recovery_point_count", "oldest_recovery_point_at",
+    "recovery_point_count", "oldest_recovery_point_at", "size_bytes",
 )
 _POLICY_FIELDS = (
     "workload_type", "schedule_frequency", "schedule_times", "daily_retention_days",
     "weekly_retention_weeks", "monthly_retention_months", "yearly_retention_years",
     "protected_items_count",
 )
-_ACTIVE_PROTECTION = ("protected", "protection_error", "ir_pending")
-_STOPPED_PROTECTION = ("protection_stopped", "protection_paused")
+
+
+def canonical_item(item: NormalizedBackupItem) -> NormalizedBackupItem:
+    """The item with its states in the shared vocabulary. Pure."""
+    return replace(
+        item,
+        protection_state=canonical(item.protection_state, PROTECTION_STATES),
+        last_backup_status=canonical(item.last_backup_status, BACKUP_RESULTS),
+    )
+
+
+def canonical_job(job: NormalizedBackupJob) -> NormalizedBackupJob:
+    """The job with its status in the shared vocabulary. Pure."""
+    return replace(job, status=canonical(job.status, JOB_STATUSES) or "other")
 
 
 @dataclass
@@ -99,13 +127,13 @@ def item_readings(item: NormalizedBackupItem, vault_name: str, now: datetime, rp
     key = f"item:{item.external_id.rsplit('/', 1)[-1]}"
     out: list[NormalizedSensorReading] = []
 
-    if item.protection_state in _ACTIVE_PROTECTION:
+    if item.protection_state in ACTIVE_PROTECTION:
         age = (now - item.last_backup_at).total_seconds() / 3600 if item.last_backup_at else None
         breached = age is None or age > rpo_hours
         out.append(_reading(item.vault_external_id, f"{key}:rpo", f"{label} backup age", "backup_age_hours",
                             round(age, 1) if age is not None else None, "down" if breached else "up",
                             "h", critical=float(rpo_hours)))
-    elif item.protection_state in _STOPPED_PROTECTION:
+    elif item.protection_state in STOPPED_PROTECTION:
         # Nobody protects it any more: resolve an RPO alert rather than page.
         out.append(_reading(item.vault_external_id, f"{key}:rpo", f"{label} backup age", "backup_age_hours",
                             None, "unknown", "h", critical=float(rpo_hours)))
@@ -119,7 +147,7 @@ def item_readings(item: NormalizedBackupItem, vault_name: str, now: datetime, rp
     if item.protection_state is not None:
         status = (
             "down" if item.protection_state == "protection_error"
-            else "warning" if item.protection_state in _STOPPED_PROTECTION
+            else "warning" if item.protection_state in STOPPED_PROTECTION
             else "up"
         )
         out.append(_reading(item.vault_external_id, f"{key}:protection", f"{label} protection",
@@ -152,14 +180,14 @@ async def save_backup(
     if not tables or tables.get("vaults") not in _READ_OK:
         return result
     settings = get_settings()
-    rpo_hours = settings.backup_rpo_hours
+    rpo_hours = await effective_rpo_hours(db, tenant_id)
 
     items_by_vault: dict[str, list[NormalizedBackupItem]] = {}
     for item in bundle.backup_items:
-        items_by_vault.setdefault(item.vault_external_id, []).append(item)
+        items_by_vault.setdefault(item.vault_external_id, []).append(canonical_item(item))
     jobs_by_vault: dict[str, list] = {}
     for job in bundle.backup_jobs:
-        jobs_by_vault.setdefault(job.vault_external_id, []).append(job)
+        jobs_by_vault.setdefault(job.vault_external_id, []).append(canonical_job(job))
     policies_by_vault: dict[str, list[NormalizedBackupPolicy]] = {}
     for policy in bundle.backup_policies:
         policies_by_vault.setdefault(policy.vault_external_id, []).append(policy)
@@ -177,6 +205,9 @@ async def save_backup(
         vault.monitoring_source_id = source_id
         vault.name = nv.name
         vault.provider = nv.provider
+        vault.kind = nv.kind if nv.kind in STORAGE_KINDS else "vault"
+        vault.offsite = nv.offsite
+        vault.immutable = nv.immutable
         vault.location = nv.location
         vault.resource_group = nv.resource_group
         vault.subscription_id = nv.subscription_id

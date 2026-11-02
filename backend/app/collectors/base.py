@@ -251,16 +251,26 @@ FIREWALL_TABLES = ("status", "vpn", "licences")
 
 @dataclass
 class NormalizedBackupVault:
-    """A backup vault (Azure Recovery Services vault) and its security posture.
+    """A backup storage location (Azure Recovery Services vault, Veeam
+    repository, S3 bucket ...) and its security posture.
 
-    The vault itself is also reported as a `NormalizedDevice` (cloud_resource)
-    with the same external_id, so it appears in inventory and alerts link to it.
-    Settings the provider did not report stay None.
+    The location itself is also reported as a `NormalizedDevice` with the same
+    external_id, so it appears in inventory and alerts link to it. Settings
+    the provider did not report stay None. Status values follow
+    `app.collectors.backup_vocabulary`.
     """
 
     external_id: str
     name: str
     provider: str = "azure"
+    #: vault | repository | bucket (backup_vocabulary.STORAGE_KINDS)
+    kind: str = "vault"
+    #: True when a copy is kept away from the primary site/region (3-2-1);
+    #: None when the provider does not say.
+    offsite: bool | None = None
+    #: True when restore points cannot be deleted or altered before they
+    #: expire, irreversibly (locked immutability / object lock); None if unknown.
+    immutable: bool | None = None
     location: str | None = None
     resource_group: str | None = None
     subscription_id: str | None = None
@@ -294,6 +304,8 @@ class NormalizedBackupItem:
     #: Restore points the provider holds for this item, and the oldest one.
     recovery_point_count: int | None = None
     oldest_recovery_point_at: datetime | None = None
+    #: Backup data held for this item, bytes; None when the provider does not report it.
+    size_bytes: int | None = None
 
 
 @dataclass
@@ -457,6 +469,10 @@ class BaseCollector(abc.ABC):
     #: Firewall tables (FIREWALL_TABLES) this collector reads, so the UI can
     #: say "not supported by this adapter" instead of "no data".
     firewall_capabilities: ClassVar[tuple[str, ...]] = ()
+    #: Set by backup collectors to the provider name they store on vaults
+    #: ("azure", "veeam" ...), so backup views find every backup source
+    #: without listing source types by hand.
+    backup_provider: ClassVar[str | None] = None
 
     def __init__(self, source: "MonitoringSourceConnectionInfo"):
         """`source` exposes the typed columns (hostname, ip_address, port,

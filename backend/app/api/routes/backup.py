@@ -3,8 +3,10 @@ Backup monitoring API (docs/engineering/azure-backup-monitoring.md).
 
 Read-only, tenant-scoped views over what the Azure Backup collector stored:
 the overview (KPIs, job outcomes per day, RPO verdicts), vaults with their
-security posture, protected items and job history. Every route needs
-``backup.read``; the tenant always comes from the authenticated principal.
+security posture, protected items and job history, for every backup
+provider. Every read needs ``backup.read``; changing the tenant's backup
+targets (``PUT /settings``) needs ``backup.write`` and is audited. The tenant
+always comes from the authenticated principal.
 """
 from __future__ import annotations
 
@@ -14,7 +16,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_tenant_id, require_permission
+from app.core.auth import Principal, get_tenant_id, require_permission
 from app.core.db import get_db
 from app.core.entitlements import require_active_subscription
 from app.schemas.backup import (
@@ -23,9 +25,13 @@ from app.schemas.backup import (
     BackupItemOut,
     BackupJobOut,
     BackupOverview,
+    BackupSettingsOut,
+    BackupSettingsUpdate,
     BackupVaultOut,
 )
+from app.services.audit_service import AuditService
 from app.services.backup_service import BackupService
+from app.services.backup_settings import set_tenant_rpo
 
 router = APIRouter(
     prefix="/backup",
@@ -95,3 +101,37 @@ async def backup_jobs(
     db: AsyncSession = Depends(get_db),
 ) -> list[BackupJobOut]:
     return await BackupService(db).jobs(tenant_id, days=days, status=status, limit=limit)
+
+
+@router.get("/settings", response_model=BackupSettingsOut, dependencies=_READ)
+async def backup_settings(
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> BackupSettingsOut:
+    """The tenant's RPO and the platform default it falls back to."""
+    return await BackupService(db).settings(tenant_id)
+
+
+@router.put("/settings", response_model=BackupSettingsOut)
+async def update_backup_settings(
+    payload: BackupSettingsUpdate,
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    principal: Principal = Depends(require_permission("backup.write")),
+    db: AsyncSession = Depends(get_db),
+) -> BackupSettingsOut:
+    """Set the tenant's RPO (null = platform default). Alerts use it from the next poll."""
+    previous = await set_tenant_rpo(db, tenant_id, payload.rpo_hours)
+    if previous != payload.rpo_hours:
+        await AuditService(db).record_entity(
+            tenant_id=tenant_id,
+            action="backup.settings.updated",
+            entity_type="backup_settings",
+            entity_id=None,
+            actor_id=principal.user_id,
+            actor_email=principal.email,
+            description="Backup RPO changed",
+            old_values={"rpo_hours": previous},
+            new_values={"rpo_hours": payload.rpo_hours},
+        )
+    await db.commit()
+    return await BackupService(db).settings(tenant_id)

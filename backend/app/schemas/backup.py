@@ -5,7 +5,9 @@ import uuid
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.services.backup_settings import RPO_MAX_HOURS, RPO_MIN_HOURS
 
 #: within | breached (no backup inside the RPO) | never (protected, never backed
 #: up) | not_protected (protection stopped/paused, or not reported).
@@ -19,6 +21,8 @@ class BackupSourceSummary(BaseModel):
     is_active: bool
     last_sync_at: datetime | None
     last_error: str | None
+    #: azure | veeam | ... (the collector's backup_provider)
+    provider: str | None = None
 
 
 class BackupJobCounts(BaseModel):
@@ -43,9 +47,16 @@ class BackupOverview(BaseModel):
     #: below is then a real zero only when ``configured`` is True.
     configured: bool
     generated_at: datetime
+    #: The tenant's RPO (its own, or the platform default).
     rpo_hours: int
+    rpo_is_default: bool = True
     sources: list[BackupSourceSummary]
+    #: Providers with at least one storage location, e.g. ["azure"].
+    providers: list[str] = []
     vaults: int
+    #: Storage locations that keep an off-site copy / are immutable.
+    vaults_offsite: int = 0
+    vaults_immutable: int = 0
     vaults_soft_delete_off: int
     items_total: int
     items_protected: int
@@ -76,6 +87,11 @@ class BackupVaultOut(BaseModel):
     device_id: uuid.UUID | None
     name: str
     provider: str
+    #: vault | repository | bucket
+    kind: str = "vault"
+    #: None when the provider does not report it.
+    offsite: bool | None = None
+    immutable: bool | None = None
     location: str | None
     resource_group: str | None
     subscription_id: str | None
@@ -105,6 +121,8 @@ class BackupItemOut(BaseModel):
     source_resource_id: str | None
     recovery_point_count: int | None = None
     oldest_recovery_point_at: datetime | None = None
+    #: Backup data held for this item; None when the provider does not report it.
+    size_bytes: int | None = None
     #: Daily restore points kept by the item's policy; None if not reported.
     retention_days: int | None = None
     #: The inventory device this item protects (matched by resource id).
@@ -172,3 +190,19 @@ class BackupCoverage(BaseModel):
     unprotected: int
     not_monitored: int
     resources: list[BackupCoverageResource]
+
+
+class BackupSettingsOut(BaseModel):
+    """The tenant's backup targets."""
+
+    #: The RPO every verdict and alert for this tenant uses.
+    rpo_hours: int
+    #: True when the tenant has not set its own RPO.
+    rpo_is_default: bool
+    default_rpo_hours: int
+
+
+class BackupSettingsUpdate(BaseModel):
+    """Set the tenant's RPO; null returns it to the platform default."""
+
+    rpo_hours: int | None = Field(..., ge=RPO_MIN_HOURS, le=RPO_MAX_HOURS)

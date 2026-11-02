@@ -3,8 +3,11 @@
 Status: **B1 shipped** (collection, alerts, API, Backup page, dashboard row, Backup Readiness card).
 **Phase 1 shipped** (2026-10-31): policies (schedule and retention), restore points, vault storage
 used, backup coverage of Azure VMs, item detail page, site filter, CSV export, job history retention.
-Next (approved plan): one provider-neutral backup model, then Veeam, AWS Backup and S3-compatible
-storage connectors, then a backup storage cost/SLA advisor.
+**Phase 2 shipped** (2026-11-03): one provider-neutral backup model (shared status vocabulary,
+storage kind, off-site and immutable flags, item size, backup providers found from the collector
+registry) and an RPO per customer (tenant), editable on the Backup page.
+Next (approved plan): Veeam, AWS Backup and S3-compatible storage connectors, then a backup
+storage cost/SLA advisor.
 
 ## What it answers
 
@@ -57,7 +60,7 @@ incidents, notify and auto-resolve through the existing pipeline, exactly like f
 
 | Rule | Alert |
 |---|---|
-| Protected item with no backup within `backup_rpo_hours` (24) | critical |
+| Protected item with no backup within the tenant's RPO (its own, else `backup_rpo_hours`, 24) | critical |
 | Item's last backup failed / completed with warnings | critical / warning |
 | Protection stopped or paused / protection error | warning / critical |
 | Vault soft delete disabled | warning |
@@ -65,16 +68,48 @@ incidents, notify and auto-resolve through the existing pipeline, exactly like f
 An item whose protection was stopped resolves its RPO alert (nobody is paged about an item
 that is intentionally unprotected); an item that disappears resolves all of its alerts.
 
+## Provider-neutral model
+
+Every backup connector produces the same shapes (`app/collectors/base.py`):
+`NormalizedBackupVault` (any storage location), `NormalizedBackupItem`, `NormalizedBackupJob` and
+`NormalizedBackupPolicy`, and declares `backup_provider` on its collector class. Nothing outside
+the collector knows the vendor.
+
+| Field | Values | Azure Backup maps |
+|---|---|---|
+| vault `kind` | vault / repository / bucket | `vault` |
+| vault `offsite` | true / false / null | geo-redundant storage -> true; LRS / ZRS -> false |
+| vault `immutable` | true / false / null | immutability `Locked` -> true; `Unlocked` / `Disabled` -> false (unlocked can be switched off) |
+| item `size_bytes` | bytes / null | not reported by Recovery Services (null) |
+| item `protection_state` | protected, protection_error, ir_pending, protection_stopped, protection_paused, other | Azure states |
+| item `last_backup_status` | completed, completed_with_warnings, failed, in_progress, other | Azure verdicts |
+| job `status` | completed, completed_with_warnings, failed, in_progress, cancelled, other | Azure job states |
+
+The vocabulary lives in `app/collectors/backup_vocabulary.py`. The saver passes every item and
+job through it before storing or judging them, so a vendor term a connector did not map is
+stored as `other` and never reaches the RPO rule, the alerts or the API. The backup views list
+sources from every registered collector with a `backup_provider` (`backup_source_types()`), so a
+new connector needs no change to the service, API or page. Coverage stays Azure-specific: it
+matches Azure VM resource ids.
+
+**RPO per customer.** `backup_settings` holds one optional `rpo_hours` (1-720) per tenant. The
+alert rule (`backup_saver`) and every verdict (`backup_service`) resolve it through
+`app/services/backup_settings.py`, so they always agree; a tenant without its own RPO uses
+`backup_rpo_hours`. A change applies to verdicts at once and to alerts from the next collection.
+
 ## Data and API
 
-Tables (migrations `7826ac6377f8`, `a4c8e2f6b1d3`): `backup_vaults` (incl. `storage_used_bytes`),
-`backup_items` (incl. `recovery_point_count`, `oldest_recovery_point_at`), `backup_jobs`,
-`backup_policies`, all tenant-scoped with cascade on tenant delete. Jobs are upserted by the
+Tables (migrations `7826ac6377f8`, `a4c8e2f6b1d3`, `b7d2f4a9c1e6`): `backup_vaults` (incl.
+`storage_used_bytes`, `kind`, `offsite`, `immutable`), `backup_items` (incl. `recovery_point_count`,
+`oldest_recovery_point_at`, `size_bytes`), `backup_jobs`, `backup_policies`, `backup_settings`, all
+tenant-scoped with cascade on tenant delete. `b7d2f4a9c1e6` backfills `offsite` and `immutable`
+for existing Azure vaults from their stored redundancy and immutability. Jobs are upserted by the
 provider's job id; jobs that started more than `backup_job_retention_days` (90) ago are purged
 after each save.
 
-All routes need the `backup.read` permission (Owner, Admin, Operator, Viewer) and take the
-tenant from the signed-in principal:
+Reads need the `backup.read` permission (Owner, Admin, Operator, Viewer); changing the RPO needs
+`backup.write` (Owner, Admin) and is audited (`backup.settings.updated`, old and new value). Every
+route takes the tenant from the signed-in principal:
 
 | Route | Returns |
 |---|---|
@@ -84,6 +119,8 @@ tenant from the signed-in principal:
 | `GET /api/backup/items/{id}` | one item with its policy (schedule, retention per tier) and its latest 50 jobs; 404 for another tenant's item |
 | `GET /api/backup/coverage` | every Azure VM in inventory as protected / protection_stopped / unprotected / not_monitored |
 | `GET /api/backup/jobs?days=&status=&limit=` | job history with error codes |
+| `GET /api/backup/settings` | the tenant's RPO, whether it is the default, and the default |
+| `PUT /api/backup/settings` `{"rpo_hours": 1-720 \| null}` | sets the tenant's RPO; null returns it to the default (`backup.write`) |
 
 The RPO verdict is computed in one place (`app/services/backup_service.py::rpo_state`) and
 matches the alert rule.
@@ -97,9 +134,10 @@ is never reported as unprotected. An item whose protection is stopped or paused 
 
 ## Product surfaces
 
-- **Infrastructure → Backup**: KPIs (incl. unprotected VMs and storage used), job outcomes per
-  day, RPO compliance, items / coverage / jobs / vaults tables with a site filter and CSV export,
-  connect form.
+- **Infrastructure → Backup**: KPIs (incl. unprotected VMs, storage used, off-site and immutable
+  vaults), job outcomes per day, RPO compliance with the customer's RPO target (editable with
+  `backup.write`), items / coverage / jobs / vaults tables (vaults show provider and off-site copy)
+  with a site filter and CSV export, connect form.
 - **Infrastructure → Backup → item** (`/infrastructure/backup/items/{id}`): protection, restore
   points, policy schedule and retention, and the item's job history.
 - **Dashboard → Backup Health** row: RPO compliance, failures, job outcomes; a connect link
@@ -115,6 +153,7 @@ query (tested); RBAC on every route (tested). The collector only issues GET requ
 ## Not yet
 
 Azure Backup *vaults* (Data Protection, `Microsoft.DataProtection/backupVaults`), Log Analytics
-queries, per-tenant RPO and the multi-vault report. Item size is not reported by the Recovery
-Services API, so per-item storage is not shown; vault storage is. Other providers (Veeam, AWS
-Backup, S3-compatible storage) follow the approved plan.
+queries and the multi-vault report. Item size is not reported by the Recovery Services API, so
+per-item storage is not shown; vault storage is. RPO is per tenant, not yet per site or per item.
+Other providers (Veeam, AWS Backup, S3-compatible storage) follow the approved plan and plug into
+the provider-neutral model above.

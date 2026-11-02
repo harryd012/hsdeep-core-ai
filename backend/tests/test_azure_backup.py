@@ -450,9 +450,9 @@ async def other_tenant(seeded_subscription):
         await s.commit()
 
 
-def _client(tenant_id, permissions=frozenset({"backup.read"})):
+def _client(tenant_id, permissions=frozenset({"backup.read"}), user_id: uuid.UUID | None = None):
     token = create_access_token(
-        user_id=uuid.uuid4(), tenant_id=tenant_id, email="noc@hsdeep.local",
+        user_id=user_id or uuid.uuid4(), tenant_id=tenant_id, email="noc@hsdeep.local",
         is_superuser=False, permissions=permissions,
     )
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test",
@@ -638,3 +638,119 @@ async def test_coverage_item_detail_site_filter_and_isolation(db, monitoring_sou
     async with _client(source.tenant_id, permissions=frozenset({"devices.read"})) as client:
         for path in ("/api/backup/coverage", f"/api/backup/items/{web['id']}"):
             assert (await client.get(path)).status_code == 403, path
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: provider-neutral model, status vocabulary, per-tenant RPO
+# ---------------------------------------------------------------------------
+
+
+def test_vocabulary_maps_unknown_vendor_terms_to_other():
+    from app.collectors.backup_vocabulary import JOB_STATUSES, PROTECTION_STATES, canonical
+    from app.collectors.base import NormalizedBackupJob
+    from app.services.monitoring.backup_saver import canonical_item, canonical_job
+
+    assert canonical("protected", PROTECTION_STATES) == "protected"
+    assert canonical("invalid", PROTECTION_STATES) == "other"
+    assert canonical(None, JOB_STATUSES) is None
+    item = canonical_item(NormalizedBackupItem(
+        external_id="x", vault_external_id="v", name="x", protection_state="soft_deleted", last_backup_status="partial",
+    ))
+    assert (item.protection_state, item.last_backup_status) == ("other", "other")
+    job = canonical_job(NormalizedBackupJob(external_id="j", vault_external_id="v", item_name=None, operation=None,
+                                            status="queued"))
+    assert job.status == "other"
+
+
+@pytest.mark.parametrize(
+    ("redundancy", "immutability", "offsite", "immutable"),
+    [("GeoRedundant", "Locked", True, True), ("LocallyRedundant", "Unlocked", False, False),
+     ("ZoneRedundant", "Disabled", False, False)],
+)
+async def test_azure_vault_reports_offsite_and_immutable(redundancy, immutability, offsite, immutable):
+    def handler(request):
+        if request.url.path.endswith("/vaults"):
+            return httpx.Response(200, json={"value": [_vault(immutability=immutability, redundancy=redundancy)]})
+        return httpx.Response(200, json={"value": []})
+
+    collector = _collector(httpx.MockTransport(handler))
+    vault = collector.normalize(await collector.collect()).backup_vaults[0]
+    assert (vault.kind, vault.offsite, vault.immutable) == ("vault", offsite, immutable)
+
+
+def test_backup_sources_come_from_the_collector_registry():
+    from app.services.backup_service import backup_source_types
+
+    assert backup_source_types()["azure_backup"] == "azure"
+    assert backup_source_types("azure") == {"azure_backup": "azure"}
+    assert backup_source_types("veeam") == {}
+
+
+async def test_tenant_rpo_drives_alerts_and_verdicts(db, monitoring_source_factory):
+    from app.services.backup_service import BackupService
+    from app.services.backup_settings import set_tenant_rpo
+
+    source = await monitoring_source_factory(source_type="azure_backup")
+    # db-01's last backup is 40 h old: breached at the default 24 h, within at 48 h.
+    await set_tenant_rpo(db, source.tenant_id, 48)
+    await db.commit()
+    result = await _saver(db).save(source, await _bundle())
+    await db.commit()
+    open_titles = [a.title for a in await _evaluate(db, result) if a.status == "open"]
+    await db.commit()
+    # The alert rule uses the tenant RPO too: no backup-age alert for db-01.
+    assert not any("db-01" in t and "backup age" in t for t in open_titles)
+    assert any("new-vm" in t and "backup age" in t for t in open_titles)
+    items = {i.name: i for i in await BackupService(db).items(source.tenant_id)}
+    assert items["db-01"].rpo_state == "within"
+    overview = await BackupService(db).overview(source.tenant_id)
+    assert (overview.rpo_hours, overview.rpo_is_default) == (48, False)
+    assert (overview.vaults_offsite, overview.vaults_immutable, overview.providers) == (1, 1, ["azure"])
+
+    await set_tenant_rpo(db, source.tenant_id, None)
+    await db.commit()
+    items = {i.name: i for i in await BackupService(db).items(source.tenant_id)}
+    assert items["db-01"].rpo_state == "breached"
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_settings_api_rbac_validation_audit_and_isolation(db, monitoring_source_factory, other_tenant):
+    from app.core.config import get_settings
+    from app.models.knowledge_audit import AuditEvent
+
+    source = await monitoring_source_factory(source_type="azure_backup")
+    default = get_settings().backup_rpo_hours
+
+    async with _client(source.tenant_id) as client:
+        assert (await client.get("/api/backup/settings")).json() == {
+            "rpo_hours": default, "rpo_is_default": True, "default_rpo_hours": default,
+        }
+        # backup.read alone cannot change targets.
+        assert (await client.put("/api/backup/settings", json={"rpo_hours": 12})).status_code == 403
+
+    writer = frozenset({"backup.read", "backup.write"})
+    async with _client(source.tenant_id, permissions=writer, user_id=uuid.UUID(int=0)) as client:
+        for bad in (0, 721, "x"):
+            assert (await client.put("/api/backup/settings", json={"rpo_hours": bad})).status_code == 422, bad
+        body = (await client.put("/api/backup/settings", json={"rpo_hours": 12})).json()
+        assert (body["rpo_hours"], body["rpo_is_default"]) == (12, False)
+        assert (await client.get("/api/backup/overview")).json()["rpo_hours"] == 12
+
+    async with _client(other_tenant) as client:
+        assert (await client.get("/api/backup/settings")).json()["rpo_is_default"] is True
+
+    async with _client(source.tenant_id, permissions=writer, user_id=uuid.UUID(int=0)) as client:
+        body = (await client.put("/api/backup/settings", json={"rpo_hours": None})).json()
+        assert (body["rpo_hours"], body["rpo_is_default"]) == (default, True)
+
+    events = (
+        await db.execute(
+            select(AuditEvent)
+            .where(AuditEvent.tenant_id == source.tenant_id, AuditEvent.action == "backup.settings.updated")
+            .order_by(AuditEvent.created_at)
+        )
+    ).scalars().all()
+    assert [(e.old_values, e.new_values) for e in events] == [
+        ({"rpo_hours": None}, {"rpo_hours": 12}), ({"rpo_hours": 12}, {"rpo_hours": None}),
+    ]
+    assert events[0].actor_email == "noc@hsdeep.local"
