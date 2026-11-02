@@ -3611,6 +3611,9 @@ export interface BackupVault {
   items_total: number;
   items_breaching_rpo: number;
   storage_used_bytes: number | null;
+  /** Size and free space of a fixed-size location (Veeam repository); null otherwise. */
+  capacity_bytes: number | null;
+  free_bytes: number | null;
   policies: number;
 }
 

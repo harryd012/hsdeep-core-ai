@@ -282,6 +282,12 @@ class NormalizedBackupVault:
     storage_redundancy: str | None = None
     #: Backup storage the vault reports as used, in bytes (all redundancy tiers).
     storage_used_bytes: int | None = None
+    #: Total and free space of a storage location that has a fixed size (a
+    #: Veeam repository); None for elastic storage (Azure vault, S3 bucket).
+    capacity_bytes: int | None = None
+    free_bytes: int | None = None
+    #: Whether the location is reachable; None when the provider does not say.
+    online: bool | None = None
 
 
 @dataclass

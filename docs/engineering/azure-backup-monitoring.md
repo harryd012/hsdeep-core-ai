@@ -6,8 +6,11 @@ used, backup coverage of Azure VMs, item detail page, site filter, CSV export, j
 **Phase 2 shipped** (2026-11-03): one provider-neutral backup model (shared status vocabulary,
 storage kind, off-site and immutable flags, item size, backup providers found from the collector
 registry) and an RPO per customer (tenant), editable on the Backup page.
-Next (approved plan): Veeam, AWS Backup and S3-compatible storage connectors, then a backup
-storage cost/SLA advisor.
+**Phase 3.1 shipped** (2026-11-03): Veeam Backup & Replication connector
+([veeam-backup-monitoring.md](veeam-backup-monitoring.md)), plus capacity and free space of
+fixed-size storage and a free-space alert.
+Next (approved plan): Veeam Service Provider Console, AWS Backup and S3-compatible storage
+connectors, then a backup storage cost/SLA advisor.
 
 ## What it answers
 
@@ -64,6 +67,7 @@ incidents, notify and auto-resolve through the existing pipeline, exactly like f
 | Item's last backup failed / completed with warnings | critical / warning |
 | Protection stopped or paused / protection error | warning / critical |
 | Vault soft delete disabled | warning |
+| Fixed-size storage (Veeam repository) free space below 15 % / 5 % | warning / critical |
 
 An item whose protection was stopped resolves its RPO alert (nobody is paged about an item
 that is intentionally unprotected); an item that disappears resolves all of its alerts.

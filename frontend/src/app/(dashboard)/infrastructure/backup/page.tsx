@@ -157,6 +157,93 @@ function RpoTarget({ overview, onSaved }: { overview: BackupOverview; onSaved: (
   );
 }
 
+/** Connect a Veeam Backup & Replication server: creates a `veeam_backup`
+ *  monitoring source, then runs one collection immediately. */
+function ConnectVeeam({ onDone }: { onDone: () => void }) {
+  const [form, setForm] = useState({ name: "Veeam Backup", hostname: "", port: "9419", username: "", secret: "" });
+  const [verifyTls, setVerifyTls] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ tone: "good" | "bad" | "warn"; text: string } | null>(null);
+  const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const port = Number(form.port);
+  const ready = form.name && form.hostname && form.username && form.secret && Number.isInteger(port) && port > 0 && port < 65536;
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!ready) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const source = await createMonitoringSource({
+        name: form.name,
+        source_type: "veeam_backup",
+        hostname: form.hostname.trim(),
+        port,
+        protocol: "https",
+        username: form.username.trim(),
+        verify_ssl: verifyTls,
+        is_active: true,
+        poll_interval_seconds: 900,
+        credential: form.secret,
+      });
+      setForm((f) => ({ ...f, secret: "" }));
+      const sync = await syncMonitoringSource(source.id).catch((err: unknown) => ({ status: "error", error: err instanceof Error ? err.message : String(err) }));
+      setMessage(
+        sync.status === "error"
+          ? { tone: "warn", text: `Source saved, but the first collection failed: ${sync.error ?? "unknown error"}. Check the server name, port 9419 is reachable, and the user's password.` }
+          : { tone: "good", text: "Connected. The first collection finished; it repeats every 15 minutes." },
+      );
+      onDone();
+    } catch (err) {
+      setMessage({ tone: "bad", text: err instanceof Error ? err.message : "Could not save the source." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="pk-form pk-form--wide" onSubmit={submit}>
+      <p className="pk-help">
+        Read-only. Uses the Veeam Backup &amp; Replication REST API (version 12 or later, port 9419). Create a Veeam user with the
+        built-in <strong>Veeam Backup Viewer</strong> role and enter it below. The password is encrypted at rest and never shown again.
+      </p>
+      <div className="pk-field"><label htmlFor="vb-name">Name</label><input id="vb-name" className="pk-input" value={form.name} onChange={set("name")} required /></div>
+      <div className="pk-field"><label htmlFor="vb-host">Backup server</label><input id="vb-host" className="pk-input" value={form.hostname} onChange={set("hostname")} placeholder="vbr01.corp.local" required /></div>
+      <div className="pk-field"><label htmlFor="vb-port">REST API port</label><input id="vb-port" className="pk-input" type="number" min={1} max={65535} value={form.port} onChange={set("port")} required /></div>
+      <div className="pk-field"><label htmlFor="vb-user">Username</label><input id="vb-user" className="pk-input" value={form.username} onChange={set("username")} placeholder="svc-veeam" autoComplete="off" required /></div>
+      <div className="pk-field"><label htmlFor="vb-secret">Password</label><input id="vb-secret" className="pk-input" type="password" autoComplete="new-password" value={form.secret} onChange={set("secret")} required /></div>
+      <div className="pk-field">
+        <label htmlFor="vb-tls">TLS certificate</label>
+        <span className="pk-help"><input id="vb-tls" type="checkbox" checked={verifyTls} onChange={(e) => setVerifyTls(e.target.checked)} /> Verify (leave off for Veeam&apos;s default self-signed certificate)</span>
+      </div>
+      <div>
+        <button type="submit" className="pk-button pk-button--primary" disabled={!ready || busy}>{busy ? "Connecting…" : "Connect and collect"}</button>
+      </div>
+      {message && <Banner tone={message.tone}>{message.text}</Banner>}
+    </form>
+  );
+}
+
+type Provider = "azure" | "veeam";
+
+/** Provider choice, then that provider's connect form. */
+function ConnectBackup({ onDone }: { onDone: () => void }) {
+  const [provider, setProvider] = useState<Provider>("azure");
+  return (
+    <>
+      <div className="pk-toolbar">
+        <Tabs<Provider>
+          value={provider}
+          onChange={setProvider}
+          label="Backup provider"
+          tabs={[{ key: "azure", label: "Azure Backup" }, { key: "veeam", label: "Veeam Backup & Replication" }]}
+        />
+      </div>
+      {provider === "azure" ? <ConnectAzureBackup onDone={onDone} /> : <ConnectVeeam onDone={onDone} />}
+    </>
+  );
+}
+
 /** Connect an Azure subscription: creates an `azure_backup` monitoring source
  *  through the existing sources API, then runs one collection immediately. */
 function ConnectAzureBackup({ onDone }: { onDone: () => void }) {
@@ -370,7 +457,7 @@ export default function BackupPage() {
   const vaultColumns: Column<BackupVault>[] = [
     {
       key: "name",
-      header: "Vault",
+      header: "Storage location",
       sortValue: (v) => v.name,
       render: (v) => (
         <>
@@ -379,12 +466,25 @@ export default function BackupPage() {
         </>
       ),
     },
+    { key: "kind", header: "Type", sortValue: (v) => v.kind, render: (v) => titleCaseWords(v.kind) },
     { key: "items", header: "Items", numeric: true, sortValue: (v) => v.items_total, render: (v) => v.items_total },
     { key: "breach", header: "Outside RPO", numeric: true, sortValue: (v) => v.items_breaching_rpo, render: (v) => (v.items_breaching_rpo ? <span style={{ color: "var(--ecc-bad)" }}>{v.items_breaching_rpo}</span> : "0") },
     { key: "soft", header: "Soft delete", sortValue: (v) => v.soft_delete_state, render: (v) => { const p = posture(v.soft_delete_state, ["enabled", "always_on"]); return <Pill tone={p.tone}>{p.text}</Pill>; } },
     { key: "immut", header: "Immutability", sortValue: (v) => v.immutability_state, render: (v) => { const p = posture(v.immutability_state, ["locked", "unlocked"]); return <Pill tone={p.tone}>{p.text}</Pill>; } },
     { key: "offsite", header: "Off-site copy", sortValue: (v) => (v.offsite === null ? null : Number(v.offsite)), render: (v) => { const f = flag(v.offsite); return <Pill tone={f.tone}>{f.text}</Pill>; } },
     { key: "redundancy", header: "Storage redundancy", sortValue: (v) => v.storage_redundancy, render: (v) => titleCaseWords(v.storage_redundancy) || <span className="pk-muted">Not reported</span> },
+    {
+      key: "free",
+      header: "Free space",
+      numeric: true,
+      sortValue: (v) => (v.capacity_bytes && v.free_bytes !== null ? v.free_bytes / v.capacity_bytes : null),
+      render: (v) => {
+        if (!v.capacity_bytes || v.free_bytes === null) return <span className="pk-muted">—</span>;
+        const pct = (v.free_bytes / v.capacity_bytes) * 100;
+        const color = pct < 5 ? "var(--ecc-bad)" : pct < 15 ? "var(--ecc-warn)" : undefined;
+        return <span style={color ? { color } : undefined} title={`${formatBytes(v.free_bytes)} free of ${formatBytes(v.capacity_bytes)}`}>{Math.round(pct)}%</span>;
+      },
+    },
     { key: "storage", header: "Storage used", numeric: true, sortValue: (v) => v.storage_used_bytes, render: (v) => (v.storage_used_bytes === null ? <span className="pk-muted">Not reported</span> : formatBytes(v.storage_used_bytes)) },
     { key: "policies", header: "Policies", numeric: true, sortValue: (v) => v.policies, render: (v) => v.policies },
     { key: "seen", header: "Last collected", sortValue: (v) => v.observed_at, render: (v) => <span className="pk-muted">{ago(v.observed_at)}</span> },
@@ -415,7 +515,7 @@ export default function BackupPage() {
       actions={
         configured ? (
           <button type="button" className="pk-button" onClick={() => setShowConnect((s) => !s)}>
-            {showConnect ? "Close" : "Add subscription"}
+            {showConnect ? "Close" : "Add source"}
           </button>
         ) : undefined
       }
@@ -426,13 +526,13 @@ export default function BackupPage() {
       {configured && !failingSource && stale && <Banner tone="warn">The last successful collection was {ago(o!.observed_at)}. Figures may be out of date.</Banner>}
 
       {o && !configured && (
-        <Panel title="Connect Azure Backup" info="Adds an Azure Backup monitoring source for one subscription." state="ready" className="pk-col-12">
-          <ConnectAzureBackup onDone={refresh} />
+        <Panel title="Connect a backup provider" info="Adds a backup monitoring source: one Azure subscription or one Veeam backup server." state="ready" className="pk-col-12">
+          <ConnectBackup onDone={refresh} />
         </Panel>
       )}
       {configured && showConnect && (
-        <Panel title="Add an Azure subscription" info="Each subscription is one source; vaults from every source are combined below." state="ready" className="pk-col-12">
-          <ConnectAzureBackup onDone={() => { refresh(); }} />
+        <Panel title="Add a backup source" info="Each Azure subscription or Veeam server is one source; storage from every source is combined below." state="ready" className="pk-col-12">
+          <ConnectBackup onDone={refresh} />
         </Panel>
       )}
 
@@ -445,7 +545,7 @@ export default function BackupPage() {
         <StatTile label="Job success" badge="24h" value={configured && o?.success_rate_24h !== null && o?.success_rate_24h !== undefined ? `${o.success_rate_24h}%` : "—"} naText={configured ? "No job finished in 24h" : "Not configured"} sub={o && configured ? `${o.jobs_24h.failed} failed of ${o.jobs_24h.total}` : undefined} info="Completed (including with warnings) over finished jobs in the last 24 hours." loading={loadingOverview} />
         <StatTile label="Unprotected VMs" value={configured && o?.unprotected_resources !== null && o?.unprotected_resources !== undefined ? o.unprotected_resources.toLocaleString("en-US") : "—"} alarm={(o?.unprotected_resources ?? 0) > 0} info="Azure VMs in a connected subscription that no backup item protects. VMs in subscriptions without a backup source are listed as not monitored in Coverage." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
         <StatTile label="Storage used" value={configured && o?.storage_used_bytes !== null && o?.storage_used_bytes !== undefined ? formatBytes(o.storage_used_bytes) : "—"} sub={o && configured && o.recovery_points_total !== null ? `${o.recovery_points_total.toLocaleString("en-US")} restore points` : undefined} info="Backup storage the vaults report (all redundancy tiers)." loading={loadingOverview} naText={configured ? "Not reported" : "Not configured"} />
-        <StatTile label="Vaults" value={n(o?.vaults)} sub={o && configured ? (o.vaults_soft_delete_off ? `${o.vaults_soft_delete_off} with soft delete off` : `${o.vaults_offsite} off-site · ${o.vaults_immutable} immutable`) : undefined} alarm={(o?.vaults_soft_delete_off ?? 0) > 0} info="Backup storage locations read from the connected sources. Off-site: a copy is kept in another region or site. Immutable: restore points are locked against deletion until they expire." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="Storage" value={n(o?.vaults)} sub={o && configured ? (o.vaults_soft_delete_off ? `${o.vaults_soft_delete_off} with soft delete off` : `${o.vaults_offsite} off-site · ${o.vaults_immutable} immutable`) : undefined} alarm={(o?.vaults_soft_delete_off ?? 0) > 0} info="Backup storage locations read from the connected sources. Off-site: a copy is kept in another region or site. Immutable: restore points are locked against deletion until they expire." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
       </StatStrip>
 
       {configured && (
@@ -469,7 +569,7 @@ export default function BackupPage() {
           </Panel>
 
           <Panel
-            title={tab === "items" ? "Protected items" : tab === "coverage" ? "Backup coverage" : tab === "jobs" ? "Backup jobs (7 days)" : "Vaults"}
+            title={tab === "items" ? "Protected items" : tab === "coverage" ? "Backup coverage" : tab === "jobs" ? "Backup jobs (7 days)" : "Backup storage"}
             info="Select a tab for protected items, coverage of your VMs, jobs or vault security posture. Select an item to see its policy, restore points and job history."
             aside={
               <Tabs<"items" | "coverage" | "jobs" | "vaults">
@@ -480,7 +580,7 @@ export default function BackupPage() {
                   { key: "items", label: "Items", count: items.data?.length },
                   { key: "coverage", label: "Coverage", count: coverage.data?.total },
                   { key: "jobs", label: "Jobs", count: jobs.data?.length },
-                  { key: "vaults", label: "Vaults", count: vaults.data?.length },
+                  { key: "vaults", label: "Storage", count: vaults.data?.length },
                 ]}
               />
             }
@@ -534,7 +634,7 @@ export default function BackupPage() {
               </>
             )}
             {tab === "vaults" && (
-              <DataTable caption="Vaults" columns={vaultColumns} rows={vaults.data ?? []} rowKey={(v) => v.id} rowHref={(v) => (v.device_id ? `/infrastructure/hosts/${v.device_id}` : null)} maxHeight={480} emptyText="No vault reported." />
+              <DataTable caption="Backup storage" columns={vaultColumns} rows={vaults.data ?? []} rowKey={(v) => v.id} rowHref={(v) => (v.device_id ? `/infrastructure/hosts/${v.device_id}` : null)} maxHeight={480} emptyText="No backup storage reported." />
             )}
           </Panel>
         </div>

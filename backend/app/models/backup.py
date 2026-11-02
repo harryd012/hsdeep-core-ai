@@ -64,6 +64,9 @@ class BackupVault(Base, UUIDPKMixin, TimestampMixin):
     storage_redundancy: Mapped[str | None] = mapped_column(String(30), nullable=True)
     #: Backup storage the vault reports as used, bytes; NULL until reported.
     storage_used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: Size and free space of a fixed-size location (Veeam repository); NULL otherwise.
+    capacity_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    free_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     #: Outcome per table from the last poll: {"vaults": "collected", ...}
     table_status: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

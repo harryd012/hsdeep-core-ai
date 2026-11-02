@@ -22,6 +22,8 @@ Rules (all from what the provider reported; nothing is inferred):
   * last backup - the provider's last backup verdict (failed / with warnings).
   * protection - protection stopped, paused or in error.
   * soft delete - vault soft delete disabled.
+  * free space  - a fixed-size repository with less free space than
+                  `backup_repository_free_warning_pct` / `_critical_pct`.
 Items whose protection was stopped get an "unknown" RPO reading, which
 resolves an RPO alert instead of paging about an item nobody protects.
 
@@ -110,15 +112,20 @@ def _reading(vault_ext: str, key: str, name: str, metric: str, value: float | No
     )
 
 
-def vault_readings(vault: NormalizedBackupVault) -> list[NormalizedSensorReading]:
-    """Posture readings for one vault. Pure."""
-    if vault.soft_delete_state is None:
-        return []
-    on = vault.soft_delete_state in ("enabled", "always_on")
-    return [
-        _reading(vault.external_id, "soft_delete", f"{vault.name} soft delete", "backup_soft_delete",
-                 1.0 if on else 0.0, "up" if on else "warning")
-    ]
+def vault_readings(vault: NormalizedBackupVault, warning_pct: float = 15.0,
+                   critical_pct: float = 5.0) -> list[NormalizedSensorReading]:
+    """Posture and capacity readings for one vault. Pure."""
+    out: list[NormalizedSensorReading] = []
+    if vault.soft_delete_state is not None:
+        on = vault.soft_delete_state in ("enabled", "always_on")
+        out.append(_reading(vault.external_id, "soft_delete", f"{vault.name} soft delete", "backup_soft_delete",
+                            1.0 if on else 0.0, "up" if on else "warning"))
+    if vault.capacity_bytes and vault.free_bytes is not None:
+        free_pct = round(vault.free_bytes / vault.capacity_bytes * 100, 1)
+        status = "down" if free_pct < critical_pct else "warning" if free_pct < warning_pct else "up"
+        out.append(_reading(vault.external_id, "free_space", f"{vault.name} free space", "backup_free_space_pct",
+                            free_pct, status, "%", warning=warning_pct, critical=critical_pct))
+    return out
 
 
 def item_readings(item: NormalizedBackupItem, vault_name: str, now: datetime, rpo_hours: int) -> list[NormalizedSensorReading]:
@@ -216,11 +223,15 @@ async def save_backup(
         vault.storage_redundancy = nv.storage_redundancy
         if tables.get("usage") in _READ_OK:
             vault.storage_used_bytes = nv.storage_used_bytes
+            vault.capacity_bytes = nv.capacity_bytes
+            vault.free_bytes = nv.free_bytes
         vault.table_status = dict(tables)
         vault.observed_at = now
         await db.flush()
         result.vaults_updated += 1
-        result.readings.extend(vault_readings(nv))
+        result.readings.extend(vault_readings(
+            nv, settings.backup_repository_free_warning_pct, settings.backup_repository_free_critical_pct,
+        ))
 
         if tables.get("items") in _READ_OK:
             await _sync_items(db, tenant_id, vault, nv, items_by_vault.get(nv.external_id, []), now, rpo_hours, result)

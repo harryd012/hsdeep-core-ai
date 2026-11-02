@@ -151,6 +151,10 @@ class Settings(BaseSettings):
     backup_job_lookback_hours: int = 72
     # Stored backup job history older than this is purged after each save.
     backup_job_retention_days: int = 90
+    # A backup repository with less free space than this (% of capacity)
+    # alerts; full repositories are the most common cause of failed backups.
+    backup_repository_free_warning_pct: float = 15.0
+    backup_repository_free_critical_pct: float = 5.0
 
     # Correlation: how long an open incident may be quiet before a new alert
     # starts a fresh incident instead of reopening it. Replaces the hardcoded

@@ -102,6 +102,9 @@ class BackupVaultOut(BaseModel):
     items_total: int
     items_breaching_rpo: int
     storage_used_bytes: int | None = None
+    #: Size and free space of a fixed-size location (Veeam repository); None otherwise.
+    capacity_bytes: int | None = None
+    free_bytes: int | None = None
     policies: int = 0
 
 

@@ -683,7 +683,8 @@ def test_backup_sources_come_from_the_collector_registry():
 
     assert backup_source_types()["azure_backup"] == "azure"
     assert backup_source_types("azure") == {"azure_backup": "azure"}
-    assert backup_source_types("veeam") == {}
+    assert backup_source_types("veeam") == {"veeam_backup": "veeam"}
+    assert backup_source_types("nobody") == {}
 
 
 async def test_tenant_rpo_drives_alerts_and_verdicts(db, monitoring_source_factory):

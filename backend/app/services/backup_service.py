@@ -258,6 +258,8 @@ class BackupService:
                     items_total=len(mine),
                     items_breaching_rpo=sum(1 for i in mine if rpo_state(i, now, rpo_hours)[0] in ("breached", "never")),
                     storage_used_bytes=v.storage_used_bytes,
+                    capacity_bytes=v.capacity_bytes,
+                    free_bytes=v.free_bytes,
                     policies=sum(1 for vault_id, _ in policies if vault_id == v.id),
                 )
             )
