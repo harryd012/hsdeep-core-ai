@@ -248,7 +248,8 @@ export default memo(function CommandCenterBrief({
               {infrastructure_health.devices.healthy} healthy ·{" "}
               {infrastructure_health.devices.warning} warning ·{" "}
               {infrastructure_health.devices.critical} critical ·{" "}
-              {infrastructure_health.devices.down} down
+              {infrastructure_health.devices.down} down ·{" "}
+              {infrastructure_health.devices.stale} not reporting
             </span>
           </div>
           <div className="brief-row">

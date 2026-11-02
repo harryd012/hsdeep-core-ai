@@ -62,6 +62,13 @@ class BackupOverview(BaseModel):
     daily: list[BackupDailyJobs]
     last_job_at: datetime | None
     observed_at: datetime | None
+    #: Sum of the storage the vaults report; None until any vault reports it.
+    storage_used_bytes: int | None = None
+    #: Restore points across items that report a count; None if none do.
+    recovery_points_total: int | None = None
+    #: Azure VMs in a connected subscription with no backup item. None when
+    #: no backup source is configured (coverage cannot be judged).
+    unprotected_resources: int | None = None
 
 
 class BackupVaultOut(BaseModel):
@@ -78,6 +85,8 @@ class BackupVaultOut(BaseModel):
     observed_at: datetime | None
     items_total: int
     items_breaching_rpo: int
+    storage_used_bytes: int | None = None
+    policies: int = 0
 
 
 class BackupItemOut(BaseModel):
@@ -94,6 +103,13 @@ class BackupItemOut(BaseModel):
     policy_name: str | None
     health_status: str | None
     source_resource_id: str | None
+    recovery_point_count: int | None = None
+    oldest_recovery_point_at: datetime | None = None
+    #: Daily restore points kept by the item's policy; None if not reported.
+    retention_days: int | None = None
+    #: The inventory device this item protects (matched by resource id).
+    device_id: uuid.UUID | None = None
+    site_id: uuid.UUID | None = None
 
 
 class BackupJobOut(BaseModel):
@@ -108,3 +124,51 @@ class BackupJobOut(BaseModel):
     duration_seconds: float | None
     error_code: str | None
     error_message: str | None
+
+
+class BackupPolicyOut(BaseModel):
+    name: str
+    workload_type: str | None
+    schedule_frequency: str | None
+    schedule_times: list[str]
+    daily_retention_days: int | None
+    weekly_retention_weeks: int | None
+    monthly_retention_months: int | None
+    yearly_retention_years: int | None
+    protected_items_count: int | None
+
+
+class BackupItemDetail(BaseModel):
+    """One protected item with its policy and recent job history."""
+
+    item: BackupItemOut
+    policy: BackupPolicyOut | None
+    jobs: list[BackupJobOut]
+
+
+#: protected | protection_stopped (item exists, protection stopped or paused)
+#: | unprotected (no backup item) | not_monitored (subscription not connected)
+CoverageState = Literal["protected", "protection_stopped", "unprotected", "not_monitored"]
+
+
+class BackupCoverageResource(BaseModel):
+    device_id: uuid.UUID
+    name: str
+    resource_id: str
+    subscription_id: str | None
+    site_id: uuid.UUID | None
+    state: CoverageState
+
+
+class BackupCoverage(BaseModel):
+    """Which inventory resources a backup provider could protect, and do."""
+
+    configured: bool
+    #: Subscriptions with an active backup source.
+    monitored_subscriptions: list[str]
+    total: int
+    protected: int
+    protection_stopped: int
+    unprotected: int
+    not_monitored: int
+    resources: list[BackupCoverageResource]

@@ -270,6 +270,8 @@ class NormalizedBackupVault:
     immutability_state: str | None = None
     #: locally_redundant | geo_redundant | zone_redundant
     storage_redundancy: str | None = None
+    #: Backup storage the vault reports as used, in bytes (all redundancy tiers).
+    storage_used_bytes: int | None = None
 
 
 @dataclass
@@ -289,6 +291,31 @@ class NormalizedBackupItem:
     source_resource_id: str | None = None
     policy_name: str | None = None
     health_status: str | None = None
+    #: Restore points the provider holds for this item, and the oldest one.
+    recovery_point_count: int | None = None
+    oldest_recovery_point_at: datetime | None = None
+
+
+@dataclass
+class NormalizedBackupPolicy:
+    """A backup policy: when an item is backed up and how long points are kept.
+
+    Retention counts are in the policy's own unit (days / weeks / months /
+    years); a tier the policy does not keep stays None.
+    """
+
+    vault_external_id: str
+    name: str
+    workload_type: str | None = None
+    #: daily | weekly | hourly
+    schedule_frequency: str | None = None
+    #: Times of day the backup starts, "HH:MM" UTC.
+    schedule_times: list[str] = field(default_factory=list)
+    daily_retention_days: int | None = None
+    weekly_retention_weeks: int | None = None
+    monthly_retention_months: int | None = None
+    yearly_retention_years: int | None = None
+    protected_items_count: int | None = None
 
 
 @dataclass
@@ -309,7 +336,7 @@ class NormalizedBackupJob:
 
 
 #: Backup tables a collector can read; keys of NormalizedBundle.backup_status.
-BACKUP_TABLES = ("vaults", "items", "jobs")
+BACKUP_TABLES = ("vaults", "items", "jobs", "policies", "usage")
 
 
 @dataclass
@@ -347,6 +374,7 @@ class NormalizedBundle:
     backup_vaults: list[NormalizedBackupVault] = field(default_factory=list)
     backup_items: list[NormalizedBackupItem] = field(default_factory=list)
     backup_jobs: list[NormalizedBackupJob] = field(default_factory=list)
+    backup_policies: list[NormalizedBackupPolicy] = field(default_factory=list)
     #: Outcome per backup table ("vaults", "items", "jobs"), same values and
     #: retirement rule as ``l3_status``. A missing key means not read.
     backup_status: dict[str, str] = field(default_factory=dict)

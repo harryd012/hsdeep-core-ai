@@ -15,8 +15,10 @@ subscription (or on each vault).
 
 Calls (one subscription, then per vault), following ``nextLink`` paging:
     GET /subscriptions/{sub}/providers/Microsoft.RecoveryServices/vaults
-    GET {vault}/backupProtectedItems
+    GET {vault}/backupProtectedItems     (restore points from extendedInfo)
     GET {vault}/backupJobs?$filter=startTime eq '...' and endTime eq '...'
+    GET {vault}/backupPolicies           (schedule and retention)
+    GET {vault}/usages                   (backup storage used, bytes)
 
 Each table reports collected | empty | failed in ``bundle.backup_status``, so
 a failed read never wipes what an earlier poll stored. Nothing is inferred: a
@@ -38,6 +40,7 @@ from app.collectors.base import (
     CollectorRegistry,
     NormalizedBackupItem,
     NormalizedBackupJob,
+    NormalizedBackupPolicy,
     NormalizedBackupVault,
     NormalizedBundle,
     NormalizedDevice,
@@ -88,6 +91,81 @@ def _ts(value: Any) -> datetime | None:
 def _filter_time(dt: datetime) -> str:
     """The job filter's documented time format: '2024-01-31 11:59:59 PM' (UTC)."""
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %I:%M:%S %p")
+
+
+#: Days per retention unit, to express any duration in the tier's own unit.
+_UNIT_DAYS = {"days": 1, "weeks": 7, "months": 30, "years": 365}
+
+
+def _duration(value: Any, unit: str) -> int | None:
+    """A ``retentionDuration`` ({count, durationType}) in ``unit``; None if absent."""
+    if not isinstance(value, dict):
+        return None
+    count, kind = value.get("count"), str(value.get("durationType") or "").lower()
+    if not isinstance(count, int) or kind not in _UNIT_DAYS:
+        return None
+    if kind == unit:
+        return count
+    return max(1, round(count * _UNIT_DAYS[kind] / _UNIT_DAYS[unit]))
+
+
+def _run_times(values: Any) -> list[str]:
+    """``scheduleRunTimes`` -> sorted unique "HH:MM" (UTC)."""
+    times = {t.strftime("%H:%M") for t in (_ts(v) for v in values or []) if t}
+    return sorted(times)
+
+
+def _policy(vault_id: str, row: dict) -> NormalizedBackupPolicy | None:
+    """One backup policy. A workload (SQL/SAP) policy nests its full-backup
+    schedule and retention under ``subProtectionPolicy``."""
+    name = row.get("name")
+    if not name:
+        return None
+    props = row.get("properties") or {}
+    schedule, retention = props.get("schedulePolicy"), props.get("retentionPolicy")
+    if schedule is None and retention is None:
+        full = next((p for p in props.get("subProtectionPolicy") or [] if p.get("policyType") == "Full"), {})
+        schedule, retention = full.get("schedulePolicy"), full.get("retentionPolicy")
+    schedule, retention = schedule or {}, retention or {}
+    frequency = (schedule.get("scheduleRunFrequency") or "").lower() or None
+    times = _run_times(schedule.get("scheduleRunTimes") or (schedule.get("dailySchedule") or {}).get("scheduleRunTimes"))
+    if not times and (schedule.get("hourlySchedule") or {}).get("scheduleWindowStartTime"):
+        times = _run_times([schedule["hourlySchedule"]["scheduleWindowStartTime"]])
+    if retention.get("retentionPolicyType") == "SimpleRetentionPolicy":
+        daily = _duration(retention.get("retentionDuration"), "days")
+        weekly = monthly = yearly = None
+    else:
+        daily = _duration((retention.get("dailySchedule") or {}).get("retentionDuration"), "days")
+        weekly = _duration((retention.get("weeklySchedule") or {}).get("retentionDuration"), "weeks")
+        monthly = _duration((retention.get("monthlySchedule") or {}).get("retentionDuration"), "months")
+        yearly = _duration((retention.get("yearlySchedule") or {}).get("retentionDuration"), "years")
+    count = props.get("protectedItemsCount")
+    return NormalizedBackupPolicy(
+        vault_external_id=vault_id,
+        name=name,
+        workload_type=props.get("workLoadType") or props.get("backupManagementType"),
+        schedule_frequency=frequency,
+        schedule_times=times,
+        daily_retention_days=daily,
+        weekly_retention_weeks=weekly,
+        monthly_retention_months=monthly,
+        yearly_retention_years=yearly,
+        protected_items_count=count if isinstance(count, int) else None,
+    )
+
+
+def _storage_used(usages: list[dict] | None) -> int | None:
+    """Backup storage in bytes: the sum of the vault's ``*StorageUsage`` meters
+    (LRS, GRS, ZRS ...), excluding the dedup meters, which measure the same
+    data after deduplication. None when the vault reported no storage meter."""
+    total, seen = 0, False
+    for usage in usages or []:
+        name = (usage.get("name") or {}).get("value") or ""
+        value = usage.get("currentValue")
+        if name.endswith("StorageUsage") and "Dedup" not in name and isinstance(value, (int, float)):
+            total += int(value)
+            seen = True
+    return total if seen else None
 
 
 def _resource_group(resource_id: str) -> str | None:
@@ -151,10 +229,10 @@ class AzureBackupCollector(AzureCollector):
                 {"api-version": VAULTS_API},
             )
             raw["status"]["vaults"] = "collected" if vaults else "empty"
-            items_failed = jobs_failed = False
+            items_failed = jobs_failed = policies_failed = usage_failed = False
             for vault in vaults:
                 vault_id = vault.get("id") or ""
-                entry: dict[str, Any] = {"vault": vault, "items": None, "jobs": None}
+                entry: dict[str, Any] = {"vault": vault, "items": None, "jobs": None, "policies": None, "usages": None}
                 try:
                     entry["items"] = await self._list(client, f"{vault_id}/backupProtectedItems", {"api-version": BACKUP_API})
                 except httpx.HTTPError as exc:
@@ -172,14 +250,29 @@ class AzureBackupCollector(AzureCollector):
                 except httpx.HTTPError as exc:
                     jobs_failed = True
                     logger.warning("Azure Backup: jobs read failed for %s: %s", vault_id, exc)
+                try:
+                    entry["policies"] = await self._list(client, f"{vault_id}/backupPolicies", {"api-version": BACKUP_API})
+                except httpx.HTTPError as exc:
+                    policies_failed = True
+                    logger.warning("Azure Backup: policies read failed for %s: %s", vault_id, exc)
+                try:
+                    entry["usages"] = await self._list(client, f"{vault_id}/usages", {"api-version": VAULTS_API})
+                except httpx.HTTPError as exc:
+                    usage_failed = True
+                    logger.warning("Azure Backup: usage read failed for %s: %s", vault_id, exc)
                 raw["vaults"].append(entry)
             if vaults:
                 any_items = any(e["items"] for e in raw["vaults"])
                 any_jobs = any(e["jobs"] for e in raw["vaults"])
                 raw["status"]["items"] = "failed" if items_failed else ("collected" if any_items else "empty")
                 raw["status"]["jobs"] = "failed" if jobs_failed else ("collected" if any_jobs else "empty")
+                any_policies = any(e["policies"] for e in raw["vaults"])
+                any_usage = any(e["usages"] for e in raw["vaults"])
+                raw["status"]["policies"] = "failed" if policies_failed else ("collected" if any_policies else "empty")
+                raw["status"]["usage"] = "failed" if usage_failed else ("collected" if any_usage else "empty")
             else:
                 raw["status"]["items"] = raw["status"]["jobs"] = "empty"
+                raw["status"]["policies"] = raw["status"]["usage"] = "empty"
         return raw
 
     def normalize(self, raw: dict[str, Any]) -> NormalizedBundle:
@@ -223,8 +316,13 @@ class AzureBackupCollector(AzureCollector):
                     soft_delete_state=_SOFT_DELETE.get(soft or "", soft),
                     immutability_state=snake((security.get("immutabilitySettings") or {}).get("state")),
                     storage_redundancy=snake(redundancy),
+                    storage_used_bytes=_storage_used(entry.get("usages")),
                 )
             )
+            for row in entry.get("policies") or []:
+                policy = _policy(vault_id, row)
+                if policy:
+                    bundle.backup_policies.append(policy)
 
             for item in entry.get("items") or []:
                 ip = item.get("properties") or {}
@@ -233,6 +331,8 @@ class AzureBackupCollector(AzureCollector):
                     continue
                 state = snake(ip.get("protectionState"))
                 policy_id = ip.get("policyId") or ""
+                extended = ip.get("extendedInfo") or {}
+                points = extended.get("recoveryPointCount")
                 bundle.backup_items.append(
                     NormalizedBackupItem(
                         external_id=item_id,
@@ -245,6 +345,8 @@ class AzureBackupCollector(AzureCollector):
                         source_resource_id=ip.get("sourceResourceId"),
                         policy_name=ip.get("policyName") or (policy_id.rsplit("/", 1)[-1] or None),
                         health_status=snake(ip.get("healthStatus")),
+                        recovery_point_count=points if isinstance(points, int) else None,
+                        oldest_recovery_point_at=_ts(extended.get("oldestRecoveryPoint")),
                     )
                 )
 

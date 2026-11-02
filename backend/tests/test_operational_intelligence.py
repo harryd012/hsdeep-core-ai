@@ -102,6 +102,10 @@ class _FakeDeviceRepo:
         _, state = await self.counts_by_status_and_state(tenant_id, **kw)
         return state
 
+    async def freshness_breakdown(self, tenant_id, **kw):
+        statuses, state = await self.counts_by_status_and_state(tenant_id, **kw)
+        return statuses, state, {}
+
 
 class _FakeAlertRepo:
     def __init__(self, last_24h: int = 0, unack: int = 0, auto: int = 0):

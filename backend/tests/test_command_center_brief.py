@@ -97,9 +97,15 @@ class _FakeSensorRepo:
 
 
 class _FakeDeviceRepo:
-    def __init__(self, statuses=None, by_source=None):
+    def __init__(self, statuses=None, by_source=None, stale_by_status=None):
         self.statuses = statuses or {}
         self.by_source = by_source or {}
+        # {raw status: devices of that status not seen within the window}
+        self.stale_by_status = stale_by_status or {}
+
+    async def freshness_breakdown(self, tenant_id, **kw):
+        statuses, state = await self.counts_by_status_and_state(tenant_id, **kw)
+        return statuses, state, self.stale_by_status
 
     async def counts_by_status(self, tenant_id, **kw):
         return self.statuses
@@ -253,8 +259,30 @@ class TestBucketSums:
 
         d = brief.infrastructure_health.devices
         assert d.total == 11
-        assert d.healthy + d.warning + d.critical + d.down + d.unknown == d.total
+        assert d.healthy + d.warning + d.critical + d.down + d.stale + d.unknown == d.total
         assert d.unknown == 4, "an unmodelled status must be visible, not dropped"
+        assert d.stale == 0
+
+    async def test_silent_devices_are_stale_not_down(self):
+        """A device not seen within the window is stale, whatever its last status.
+
+        Regression: 254 simulator devices last seen weeks ago kept their final
+        "down" and the dashboard reported 95% of the estate down.
+        """
+        brief = await _svc(
+            device_repo=_FakeDeviceRepo(
+                {"up": 10, "down": 254, "critical": 2},
+                stale_by_status={"down": 250, "up": 6},
+            )
+        ).command_center_brief(uuid.uuid4())
+
+        d = brief.infrastructure_health.devices
+        assert d.total == 266
+        assert d.stale == 256
+        assert d.down == 4, "only devices with recent evidence may count as down"
+        assert d.healthy == 4, "a silent device is not confirmed healthy either"
+        assert d.critical == 2
+        assert d.healthy + d.warning + d.critical + d.down + d.stale + d.unknown == d.total
 
     async def test_sensor_buckets_sum_to_total(self):
         brief = await _svc(

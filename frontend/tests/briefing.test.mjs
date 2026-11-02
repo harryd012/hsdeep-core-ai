@@ -26,6 +26,25 @@ test("a clean estate scores 100 with no findings", () => {
   assert.equal(b.rulesEvaluated, 5);
 });
 
+test("a silent estate is reported as unseen, not as an outage", () => {
+  // Brief with freshness applied: 254 devices last seen weeks ago are stale.
+  const b = buildBriefing({
+    devices: { total: 269, healthy: 1, warning: 0, critical: 0, down: 0, stale: 268, unknown: 0 },
+    collectors: { total: 5, healthy: 0, degraded: 0, failed: 5, stale: 0, unknown: 0 },
+  });
+  const stale = b.findings.find((f) => f.id === "estate-stale");
+  assert.ok(stale, "a mostly silent estate is called out");
+  assert.equal(stale.severity, "warning");
+  assert.match(stale.title, /^100% of devices have not reported in 24 hours$/);
+  assert.equal(stale.action.href, "/monitoring");
+  assert.equal(b.findings.find((f) => f.id === "estate-down"), undefined, "stale devices are not a mass outage");
+});
+
+test("a fresh estate raises no stale finding", () => {
+  const b = buildBriefing({ devices: { ...healthyDevices, stale: 2 } });
+  assert.equal(b.findings.find((f) => f.id === "estate-stale"), undefined);
+});
+
 test("dev-tenant shape: blind collection reframes the mass outage as a data problem", () => {
   const b = buildBriefing({
     devices: { total: 269, healthy: 13, warning: 0, critical: 0, down: 255, unknown: 1 },

@@ -4,16 +4,21 @@ import { useMemo, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DatabaseBackup } from "lucide-react";
 import {
+  getBackupCoverage,
   getBackupOverview,
   listBackupItems,
   listBackupJobs,
   listBackupVaults,
+  type BackupCoverage,
+  type BackupCoverageState,
   type BackupItem,
   type BackupJob,
   type BackupOverview,
   type BackupRpoState,
   type BackupVault,
 } from "@/lib/api";
+import { downloadCsv, formatBytes, type CsvColumn } from "@/lib/csv";
+import { useSiteHealth } from "@/hooks/useSiteHealth";
 import { createMonitoringSource, syncMonitoringSource } from "@/lib/monitoringApi";
 import { DonutRing, Legend } from "@/components/command-center/primitives";
 import {
@@ -38,6 +43,13 @@ const RPO: { key: BackupRpoState; label: string; color: string; tone: Tone }[] =
   { key: "never", label: "Never backed up", color: "var(--ecc-warn)", tone: "warn" },
   { key: "not_protected", label: "Not protected", color: "var(--ecc-unknown)", tone: "neutral" },
 ];
+const COVERAGE: { key: BackupCoverageState; label: string; tone: Tone; info: string }[] = [
+  { key: "unprotected", label: "Unprotected", tone: "bad", info: "In a connected subscription, but no backup item protects it." },
+  { key: "protection_stopped", label: "Protection stopped", tone: "warn", info: "Has a backup item, but protection is stopped or paused." },
+  { key: "not_monitored", label: "Not monitored", tone: "neutral", info: "Its subscription has no backup source connected, so its backups cannot be seen." },
+  { key: "protected", label: "Protected", tone: "good", info: "Under active backup protection." },
+];
+type CoverageRow = BackupCoverage["resources"][number];
 const JOB_SERIES = [
   { key: "completed", label: "Completed", color: "var(--ecc-good)" },
   { key: "completed_with_warnings", label: "With warnings", color: "var(--ecc-warn)" },
@@ -58,6 +70,16 @@ function hours(h: number | null): string {
   if (h < 1) return `${Math.round(h * 60)} min`;
   if (h < 48) return `${h.toFixed(1)} h`;
   return `${Math.round(h / 24)} d`;
+}
+
+/** Site filter: "all", "none" (no site assigned) or a site id. */
+function inSite(siteId: string | null, filter: string): boolean {
+  return filter === "all" || (filter === "none" ? siteId === null : siteId === filter);
+}
+
+function retention(days: number | null): string {
+  if (days === null) return "—";
+  return days % 365 === 0 ? `${days / 365} y` : days % 7 === 0 && days >= 14 ? `${days / 7} wk` : `${days} d`;
 }
 
 function duration(s: number | null): string {
@@ -132,8 +154,10 @@ function ConnectAzureBackup({ onDone }: { onDone: () => void }) {
 
 export default function BackupPage() {
   const qc = useQueryClient();
-  const [tab, setTab] = useState<"items" | "jobs" | "vaults">("items");
+  const [tab, setTab] = useState<"items" | "coverage" | "jobs" | "vaults">("items");
   const [rpoFilter, setRpoFilter] = useState<BackupRpoState | "all">("all");
+  const [coverageFilter, setCoverageFilter] = useState<BackupCoverageState | "all">("all");
+  const [siteFilter, setSiteFilter] = useState<string>("all");
   const [showConnect, setShowConnect] = useState(false);
 
   const overview = useQuery({ queryKey: ["backup", "overview"], queryFn: getBackupOverview, refetchInterval: 60_000 });
@@ -142,9 +166,23 @@ export default function BackupPage() {
   const items = useQuery({ queryKey: ["backup", "items"], queryFn: () => listBackupItems(), enabled: configured, refetchInterval: 60_000 });
   const jobs = useQuery({ queryKey: ["backup", "jobs"], queryFn: () => listBackupJobs({ days: 7, limit: 500 }), enabled: configured, refetchInterval: 60_000 });
   const vaults = useQuery({ queryKey: ["backup", "vaults"], queryFn: listBackupVaults, enabled: configured, refetchInterval: 120_000 });
+  const coverage = useQuery({ queryKey: ["backup", "coverage"], queryFn: getBackupCoverage, enabled: configured, refetchInterval: 120_000 });
+  const siteHealth = useSiteHealth();
   const refresh = () => qc.invalidateQueries({ queryKey: ["backup"] });
 
-  const itemRows = useMemo(() => (items.data ?? []).filter((i) => rpoFilter === "all" || i.rpo_state === rpoFilter), [items.data, rpoFilter]);
+  const siteName = useMemo(() => new Map((siteHealth.data?.sites ?? []).map((s) => [s.site_id, s.name])), [siteHealth.data]);
+  const itemRows = useMemo(
+    () => (items.data ?? []).filter((i) => (rpoFilter === "all" || i.rpo_state === rpoFilter) && inSite(i.site_id, siteFilter)),
+    [items.data, rpoFilter, siteFilter],
+  );
+  const coverageRows = useMemo(
+    () => (coverage.data?.resources ?? []).filter((r) => (coverageFilter === "all" || r.state === coverageFilter) && inSite(r.site_id, siteFilter)),
+    [coverage.data, coverageFilter, siteFilter],
+  );
+  const sitesInUse = useMemo(() => {
+    const ids = new Set<string | null>([...(items.data ?? []).map((i) => i.site_id), ...(coverage.data?.resources ?? []).map((r) => r.site_id)]);
+    return [...ids];
+  }, [items.data, coverage.data]);
   const rpoCounts = o
     ? { within: o.items_within_rpo, breached: o.items_breaching_rpo, never: o.items_never_backed_up, not_protected: o.items_not_protected }
     : null;
@@ -175,7 +213,55 @@ export default function BackupPage() {
     { key: "age", header: "Last backup", numeric: true, sortValue: (i) => i.age_hours, render: (i) => (i.last_backup_at ? <span title={i.last_backup_at}>{hours(i.age_hours)} ago</span> : <span className="pk-muted">Never</span>) },
     { key: "result", header: "Last result", sortValue: (i) => i.last_backup_status, render: (i) => (i.last_backup_status ? <Pill tone={jobTone(i.last_backup_status)}>{titleCaseWords(i.last_backup_status)}</Pill> : <span className="pk-muted">—</span>) },
     { key: "protection", header: "Protection", sortValue: (i) => i.protection_state, render: (i) => titleCaseWords(i.protection_state) || "—" },
+    { key: "points", header: "Restore points", numeric: true, sortValue: (i) => i.recovery_point_count, render: (i) => (i.recovery_point_count === null ? <span className="pk-muted">—</span> : i.recovery_point_count.toLocaleString("en-US")) },
+    { key: "retention", header: "Retention", numeric: true, sortValue: (i) => i.retention_days, render: (i) => (i.retention_days === null ? <span className="pk-muted">—</span> : retention(i.retention_days)) },
     { key: "policy", header: "Policy", sortValue: (i) => i.policy_name, render: (i) => i.policy_name ?? <span className="pk-muted">—</span> },
+  ];
+  const itemCsv: CsvColumn<BackupItem>[] = [
+    { header: "Item", value: (i) => i.name },
+    { header: "Workload", value: (i) => i.workload_type },
+    { header: "Vault", value: (i) => i.vault_name },
+    { header: "Site", value: (i) => (i.site_id ? siteName.get(i.site_id) ?? i.site_id : "") },
+    { header: "RPO state", value: (i) => i.rpo_state },
+    { header: "Last backup (UTC)", value: (i) => i.last_backup_at },
+    { header: "Last result", value: (i) => i.last_backup_status },
+    { header: "Protection", value: (i) => i.protection_state },
+    { header: "Restore points", value: (i) => i.recovery_point_count },
+    { header: "Oldest restore point (UTC)", value: (i) => i.oldest_recovery_point_at },
+    { header: "Retention (days)", value: (i) => i.retention_days },
+    { header: "Policy", value: (i) => i.policy_name },
+    { header: "Resource ID", value: (i) => i.source_resource_id },
+  ];
+
+  const coverageColumns: Column<CoverageRow>[] = [
+    {
+      key: "name",
+      header: "Resource",
+      sortValue: (r) => r.name,
+      render: (r) => (
+        <>
+          <span className="pk-cell-main">{r.name}</span>
+          <span className="pk-cell-sub">{r.subscription_id ? `Subscription ${r.subscription_id}` : "Subscription not reported"}</span>
+        </>
+      ),
+    },
+    {
+      key: "state",
+      header: "Backup",
+      sortValue: (r) => COVERAGE.findIndex((c) => c.key === r.state),
+      render: (r) => {
+        const c = COVERAGE.find((x) => x.key === r.state)!;
+        return <span title={c.info}><Pill tone={c.tone}>{c.label}</Pill></span>;
+      },
+    },
+    { key: "site", header: "Site", sortValue: (r) => (r.site_id ? siteName.get(r.site_id) ?? "" : null), render: (r) => (r.site_id ? siteName.get(r.site_id) ?? "—" : <span className="pk-muted">Unassigned</span>) },
+  ];
+  const coverageCsv: CsvColumn<CoverageRow>[] = [
+    { header: "Resource", value: (r) => r.name },
+    { header: "Backup", value: (r) => r.state },
+    { header: "Subscription", value: (r) => r.subscription_id },
+    { header: "Site", value: (r) => (r.site_id ? siteName.get(r.site_id) ?? r.site_id : "") },
+    { header: "Resource ID", value: (r) => r.resource_id },
   ];
 
   const jobColumns: Column<BackupJob>[] = [
@@ -207,6 +293,17 @@ export default function BackupPage() {
         ),
     },
   ];
+  const jobCsv: CsvColumn<BackupJob>[] = [
+    { header: "Started (UTC)", value: (j) => j.started_at },
+    { header: "Ended (UTC)", value: (j) => j.ended_at },
+    { header: "Item", value: (j) => j.item_name },
+    { header: "Operation", value: (j) => j.operation },
+    { header: "Vault", value: (j) => j.vault_name },
+    { header: "Status", value: (j) => j.status },
+    { header: "Duration (s)", value: (j) => j.duration_seconds },
+    { header: "Error code", value: (j) => j.error_code },
+    { header: "Error", value: (j) => j.error_message },
+  ];
 
   const vaultColumns: Column<BackupVault>[] = [
     {
@@ -225,18 +322,33 @@ export default function BackupPage() {
     { key: "soft", header: "Soft delete", sortValue: (v) => v.soft_delete_state, render: (v) => { const p = posture(v.soft_delete_state, ["enabled", "always_on"]); return <Pill tone={p.tone}>{p.text}</Pill>; } },
     { key: "immut", header: "Immutability", sortValue: (v) => v.immutability_state, render: (v) => { const p = posture(v.immutability_state, ["locked", "unlocked"]); return <Pill tone={p.tone}>{p.text}</Pill>; } },
     { key: "redundancy", header: "Storage redundancy", sortValue: (v) => v.storage_redundancy, render: (v) => titleCaseWords(v.storage_redundancy) || <span className="pk-muted">Not reported</span> },
+    { key: "storage", header: "Storage used", numeric: true, sortValue: (v) => v.storage_used_bytes, render: (v) => (v.storage_used_bytes === null ? <span className="pk-muted">Not reported</span> : formatBytes(v.storage_used_bytes)) },
+    { key: "policies", header: "Policies", numeric: true, sortValue: (v) => v.policies, render: (v) => v.policies },
     { key: "seen", header: "Last collected", sortValue: (v) => v.observed_at, render: (v) => <span className="pk-muted">{ago(v.observed_at)}</span> },
   ];
 
   const loadingOverview = overview.isLoading;
   const n = (v: number | undefined) => (v === undefined || !configured ? "—" : v.toLocaleString("en-US"));
+  const stamp = new Date().toISOString().slice(0, 10);
+  const exportButton = (onClick: () => void, disabled: boolean) => (
+    <button type="button" className="pk-button" onClick={onClick} disabled={disabled}>Export CSV</button>
+  );
+  const siteSelect = sitesInUse.length > 1 || sitesInUse.some((id) => id !== null) ? (
+    <select className="pk-input" aria-label="Filter by site" value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} style={{ width: "auto" }}>
+      <option value="all">All sites</option>
+      {sitesInUse.filter((id): id is string => id !== null).map((id) => (
+        <option key={id} value={id}>{siteName.get(id) ?? "Unknown site"}</option>
+      ))}
+      {sitesInUse.includes(null) && <option value="none">Unassigned</option>}
+    </select>
+  ) : null;
 
   return (
     <PageShell
       title="Backup"
       icon={DatabaseBackup}
       crumbs={[{ label: "Infrastructure", href: "/infrastructure" }, { label: "Backup" }]}
-      subtitle="Azure Backup: whether every protected workload has a recent good backup, what failed and how the vaults are secured."
+      subtitle="Azure Backup: whether every workload has a recent good backup, which servers have none, what failed, how long restore points are kept and how the vaults are secured."
       actions={
         configured ? (
           <button type="button" className="pk-button" onClick={() => setShowConnect((s) => !s)}>
@@ -268,6 +380,8 @@ export default function BackupPage() {
         <StatTile label="Never backed up" value={n(o?.items_never_backed_up)} tone="warn" info="Protected items with no backup yet (for example, initial backup pending)." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
         <StatTile label="Last backup failed" value={n(o?.items_last_failed)} alarm={(o?.items_last_failed ?? 0) > 0} info="Items whose most recent backup failed." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
         <StatTile label="Job success" badge="24h" value={configured && o?.success_rate_24h !== null && o?.success_rate_24h !== undefined ? `${o.success_rate_24h}%` : "—"} naText={configured ? "No job finished in 24h" : "Not configured"} sub={o && configured ? `${o.jobs_24h.failed} failed of ${o.jobs_24h.total}` : undefined} info="Completed (including with warnings) over finished jobs in the last 24 hours." loading={loadingOverview} />
+        <StatTile label="Unprotected VMs" value={configured && o?.unprotected_resources !== null && o?.unprotected_resources !== undefined ? o.unprotected_resources.toLocaleString("en-US") : "—"} alarm={(o?.unprotected_resources ?? 0) > 0} info="Azure VMs in a connected subscription that no backup item protects. VMs in subscriptions without a backup source are listed as not monitored in Coverage." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="Storage used" value={configured && o?.storage_used_bytes !== null && o?.storage_used_bytes !== undefined ? formatBytes(o.storage_used_bytes) : "—"} sub={o && configured && o.recovery_points_total !== null ? `${o.recovery_points_total.toLocaleString("en-US")} restore points` : undefined} info="Backup storage the vaults report (all redundancy tiers)." loading={loadingOverview} naText={configured ? "Not reported" : "Not configured"} />
         <StatTile label="Vaults" value={n(o?.vaults)} sub={o && configured && o.vaults_soft_delete_off ? `${o.vaults_soft_delete_off} with soft delete off` : undefined} alarm={(o?.vaults_soft_delete_off ?? 0) > 0} info="Recovery Services vaults read from the connected subscriptions." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
       </StatStrip>
 
@@ -291,21 +405,22 @@ export default function BackupPage() {
           </Panel>
 
           <Panel
-            title={tab === "items" ? "Protected items" : tab === "jobs" ? "Backup jobs (7 days)" : "Vaults"}
-            info="Select a tab for items, jobs or vault security posture."
+            title={tab === "items" ? "Protected items" : tab === "coverage" ? "Backup coverage" : tab === "jobs" ? "Backup jobs (7 days)" : "Vaults"}
+            info="Select a tab for protected items, coverage of your VMs, jobs or vault security posture. Select an item to see its policy, restore points and job history."
             aside={
-              <Tabs<"items" | "jobs" | "vaults">
+              <Tabs<"items" | "coverage" | "jobs" | "vaults">
                 value={tab}
                 onChange={setTab}
                 label="Backup view"
                 tabs={[
                   { key: "items", label: "Items", count: items.data?.length },
+                  { key: "coverage", label: "Coverage", count: coverage.data?.total },
                   { key: "jobs", label: "Jobs", count: jobs.data?.length },
                   { key: "vaults", label: "Vaults", count: vaults.data?.length },
                 ]}
               />
             }
-            state={(tab === "items" ? items : tab === "jobs" ? jobs : vaults).isLoading ? "loading" : "ready"}
+            state={(tab === "items" ? items : tab === "coverage" ? coverage : tab === "jobs" ? jobs : vaults).isLoading ? "loading" : "ready"}
             className="pk-col-12"
           >
             {tab === "items" && (
@@ -317,12 +432,42 @@ export default function BackupPage() {
                     label="RPO filter"
                     tabs={[{ key: "all", label: "All" }, ...RPO.map((r) => ({ key: r.key, label: r.label, count: rpoCounts?.[r.key] }))]}
                   />
+                  {siteSelect}
+                  {exportButton(() => downloadCsv(`backup-items-${stamp}.csv`, itemCsv, itemRows), itemRows.length === 0)}
                 </div>
-                <DataTable caption="Protected items" columns={itemColumns} rows={itemRows} rowKey={(i) => i.id} defaultSort={{ key: "rpo", dir: "desc" }} maxHeight="max(420px, calc(100vh - 520px))" emptyText={rpoFilter === "all" ? "No protected items reported." : "No item in this state."} />
+                <DataTable caption="Protected items" columns={itemColumns} rows={itemRows} rowKey={(i) => i.id} rowHref={(i) => `/infrastructure/backup/items/${i.id}`} defaultSort={{ key: "rpo", dir: "desc" }} maxHeight="max(420px, calc(100vh - 520px))" emptyText={rpoFilter === "all" && siteFilter === "all" ? "No protected items reported." : "No item matches these filters."} />
+              </>
+            )}
+            {tab === "coverage" && (
+              <>
+                {coverage.data && coverage.data.total === 0 ? (
+                  <p className="pk-help">
+                    No Azure VMs are in inventory yet, so coverage cannot be checked. Connect the Azure subscription as an Azure monitoring source to list its VMs.
+                  </p>
+                ) : (
+                  <>
+                    <div className="pk-toolbar">
+                      <Tabs<BackupCoverageState | "all">
+                        value={coverageFilter}
+                        onChange={setCoverageFilter}
+                        label="Coverage filter"
+                        tabs={[{ key: "all", label: "All" }, ...COVERAGE.map((c) => ({ key: c.key, label: c.label, count: coverage.data?.[c.key] }))]}
+                      />
+                      {siteSelect}
+                      {exportButton(() => downloadCsv(`backup-coverage-${stamp}.csv`, coverageCsv, coverageRows), coverageRows.length === 0)}
+                    </div>
+                    <DataTable caption="Backup coverage" columns={coverageColumns} rows={coverageRows} rowKey={(r) => r.device_id} rowHref={(r) => `/infrastructure/hosts/${r.device_id}`} defaultSort={{ key: "state", dir: "asc" }} maxHeight="max(420px, calc(100vh - 520px))" emptyText="No resource in this state." />
+                  </>
+                )}
               </>
             )}
             {tab === "jobs" && (
-              <DataTable caption="Backup jobs" columns={jobColumns} rows={jobs.data ?? []} rowKey={(j) => j.id} defaultSort={{ key: "started", dir: "desc" }} maxHeight="max(420px, calc(100vh - 480px))" emptyText="No backup job in the last 7 days." />
+              <>
+                <div className="pk-toolbar">
+                  {exportButton(() => downloadCsv(`backup-jobs-${stamp}.csv`, jobCsv, jobs.data ?? []), (jobs.data ?? []).length === 0)}
+                </div>
+                <DataTable caption="Backup jobs" columns={jobColumns} rows={jobs.data ?? []} rowKey={(j) => j.id} defaultSort={{ key: "started", dir: "desc" }} maxHeight="max(420px, calc(100vh - 480px))" emptyText="No backup job in the last 7 days." />
+              </>
             )}
             {tab === "vaults" && (
               <DataTable caption="Vaults" columns={vaultColumns} rows={vaults.data ?? []} rowKey={(v) => v.id} rowHref={(v) => (v.device_id ? `/infrastructure/hosts/${v.device_id}` : null)} maxHeight={480} emptyText="No vault reported." />

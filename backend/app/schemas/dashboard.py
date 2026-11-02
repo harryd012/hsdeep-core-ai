@@ -356,7 +356,12 @@ class AttentionBrief(BaseModel):
 
 
 class DeviceHealthBuckets(BaseModel):
-    """Spec vocabulary for devices: HEALTHY / WARNING / CRITICAL / DOWN / UNKNOWN."""
+    """Spec vocabulary for devices: HEALTHY / WARNING / CRITICAL / DOWN / STALE / UNKNOWN.
+
+    ``stale`` (freshness-derived) holds devices not seen within the freshness
+    window, whatever their last status; it defaults to 0 for reads that do not
+    track freshness, so older payloads stay valid.
+    """
 
     healthy: int
     warning: int
@@ -364,6 +369,7 @@ class DeviceHealthBuckets(BaseModel):
     down: int
     unknown: int
     total: int
+    stale: int = 0
 
 
 class SensorHealthBuckets(BaseModel):
