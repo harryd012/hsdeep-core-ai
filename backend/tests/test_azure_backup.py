@@ -755,3 +755,204 @@ async def test_settings_api_rbac_validation_audit_and_isolation(db, monitoring_s
         ({"rpo_hours": None}, {"rpo_hours": 12}), ({"rpo_hours": 12}, {"rpo_hours": None}),
     ]
     assert events[0].actor_email == "noc@hsdeep.local"
+
+
+# ---------------------------------------------------------------------------
+# BR-1 Backup Command Center: filters, workloads, failures, security, history
+# ---------------------------------------------------------------------------
+
+
+async def test_azure_vault_security_settings_are_read_as_reported():
+    vault = _vault()
+    vault["properties"]["securitySettings"]["multiUserAuthorization"] = "Enabled"
+    vault["properties"]["redundancySettings"]["crossRegionRestore"] = "Disabled"
+    vault["properties"]["publicNetworkAccess"] = "Enabled"
+    vault["properties"]["encryption"] = {"keyVaultProperties": {"keyUri": "https://kv.vault.azure.net/keys/k/1"}}
+
+    def handler(request):
+        if request.url.path.endswith("/vaults"):
+            return httpx.Response(200, json={"value": [vault, {**_vault(), "id": VAULT_ID + "-2", "name": "vault-2"}]})
+        return httpx.Response(200, json={"value": []})
+
+    collector = _collector(httpx.MockTransport(handler))
+    first, second = collector.normalize(await collector.collect()).backup_vaults
+    assert (first.multi_user_authorization, first.encryption, first.cross_region_restore, first.public_network_access) == (
+        "enabled", "customer_managed", False, "enabled",
+    )
+    # Not in the response: not reported - except encryption, which Azure always applies.
+    assert (second.multi_user_authorization, second.cross_region_restore, second.public_network_access) == (None, None, None)
+    assert second.encryption == "platform_managed"
+
+
+def _sv(**kw):
+    base = dict(
+        provider="azure", soft_delete_state=None, immutable=None, immutability_state=None, offsite=None,
+        storage_redundancy=None, multi_user_authorization=None, cross_region_restore=None, encryption=None,
+        public_network_access=None,
+    )
+    return SimpleNamespace(**{**base, **kw})
+
+
+def test_security_checks_never_pass_what_is_not_reported():
+    from app.services.backup_service import security_checks
+
+    status = lambda v: {c.key: c.status for c in security_checks(v)}  # noqa: E731
+    assert set(status(_sv(provider="veeam")).values()) == {"not_reported"}
+    hardened = status(_sv(
+        soft_delete_state="always_on", immutable=True, immutability_state="locked", offsite=True,
+        storage_redundancy="geo_redundant", multi_user_authorization="enabled", cross_region_restore=True,
+        encryption="customer_managed", public_network_access="disabled",
+    ))
+    assert set(hardened.values()) == {"pass"}
+    weak = status(_sv(
+        soft_delete_state="disabled", immutable=False, immutability_state="unlocked", offsite=False,
+        storage_redundancy="locally_redundant", multi_user_authorization="disabled", encryption="platform_managed",
+        public_network_access="enabled",
+    ))
+    assert weak == {
+        "soft_delete": "fail", "immutability": "warn", "offsite": "warn", "multi_user_authorization": "warn",
+        "cross_region_restore": "not_applicable", "encryption": "pass", "public_network_access": "warn",
+    }
+    assert status(_sv(immutable=False, immutability_state="disabled"))["immutability"] == "fail"
+
+
+def test_growth_estimate_is_a_least_squares_slope():
+    from datetime import date
+
+    from app.services.backup_service import _growth_per_day
+
+    start = date(2026, 1, 1)
+    assert _growth_per_day([(start + timedelta(days=d), 1000 + 50 * d) for d in range(14)]) == pytest.approx(50.0)
+    assert _growth_per_day([(start, 1), (start, 2)]) is None
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_command_center_filters_failures_security_and_isolation(db, monitoring_source_factory, other_tenant):
+    source = await monitoring_source_factory(source_type="azure_backup")
+    bundle = await _bundle()
+    for item in bundle.backup_items:
+        if item.name == "db-01":
+            item.workload_type = "SQLDataBase"
+    await _saver(db).save(source, bundle)
+    await db.commit()
+    vault_id = (await db.execute(select(BackupVault.id).where(BackupVault.tenant_id == source.tenant_id))).scalar_one()
+
+    async with _client(source.tenant_id) as client:
+        overview = (await client.get("/api/backup/overview")).json()
+        assert overview["filtered"] is False
+        workloads = {w["workload_type"]: w for w in overview["workloads"]}
+        assert workloads["SQLDataBase"]["items_total"] == 1 and workloads["SQLDataBase"]["items_last_failed"] == 1
+        assert sum(w["items_total"] for w in overview["workloads"]) == 4
+        options = overview["filter_options"]
+        assert options["subscriptions"] == [SUB] and options["resource_groups"] == ["rg-backup"]
+        assert options["locations"] == ["westeurope"] and "SQLDataBase" in options["workload_types"]
+        assert options["vaults"] == [{"value": str(vault_id), "label": "vault-prod"}]
+
+        # Workload filter narrows items and, through them, jobs.
+        sql = (await client.get("/api/backup/overview", params={"workload_type": "SQLDataBase"})).json()
+        assert sql["filtered"] is True and sql["items_total"] == 1 and sql["unprotected_resources"] is None
+        assert sql["jobs_7d"]["total"] == 1 and sql["jobs_7d"]["failed"] == 1
+        names = [i["name"] for i in (await client.get("/api/backup/items", params={"workload_type": "SQLDataBase"})).json()]
+        assert names == ["db-01"]
+        assert len((await client.get("/api/backup/jobs", params={"workload_type": "SQLDataBase"})).json()) == 1
+
+        # Storage filters: a region with no storage shows nothing.
+        empty = (await client.get("/api/backup/overview", params={"location": "eastus"})).json()
+        assert (empty["vaults"], empty["items_total"], empty["jobs_7d"]["total"]) == (0, 0, 0)
+        same = (await client.get("/api/backup/overview", params={"storage_id": str(vault_id), "resource_group": "RG-BACKUP"})).json()
+        assert (same["vaults"], same["items_total"]) == (1, 4)
+        assert (await client.get("/api/backup/vaults", params={"location": "eastus"})).json() == []
+
+        failures = (await client.get("/api/backup/failures")).json()
+        assert (failures["failed_jobs"], failures["items_affected"]) == (1, 1)
+        group = failures["groups"][0]
+        assert (group["error_code"], group["items"], group["vaults"]) == ("UserErrorVmNotFound", ["db-01"], ["vault-prod"])
+        assert group["sample_message"] == "The VM was not found."
+        assert (await client.get("/api/backup/failures", params={"workload_type": "VM"})).json()["failed_jobs"] == 0
+
+        security = (await client.get("/api/backup/security")).json()
+        checks = {c["key"]: c["status"] for c in security["locations"][0]["checks"]}
+        # Fixture vault: soft delete on, locked, geo-redundant; MUA / CRR / network not in the response.
+        assert (checks["soft_delete"], checks["immutability"], checks["offsite"]) == ("pass", "pass", "pass")
+        assert (checks["multi_user_authorization"], checks["public_network_access"]) == ("not_reported", "not_reported")
+        assert security["score"] == 100.0
+
+        history = (await client.get("/api/backup/storage/history")).json()
+        assert history["history_days"] == 1 and history["growth_bytes_per_day"] is None
+        assert history["points"][0]["storage_used_bytes"] == 2_000_000_000
+
+        assert (await client.get("/api/backup/storage/history", params={"days": 3})).status_code == 422
+
+    async with _client(other_tenant) as client:
+        assert (await client.get("/api/backup/failures")).json()["failed_jobs"] == 0
+        assert (await client.get("/api/backup/security")).json() == {"locations": [], "summary": [], "score": None}
+        assert (await client.get("/api/backup/storage/history")).json()["points"] == []
+        assert (await client.get("/api/backup/overview")).json()["filter_options"]["vaults"] == []
+
+    async with _client(source.tenant_id, permissions=frozenset({"devices.read"})) as client:
+        for path in ("/api/backup/failures", "/api/backup/security", "/api/backup/storage/history"):
+            assert (await client.get(path)).status_code == 403, path
+
+
+async def test_storage_snapshots_are_daily_and_give_a_growth_estimate(db, monitoring_source_factory):
+    from app.models.backup import BackupStorageSnapshot
+    from app.services.backup_service import BackupService
+
+    source = await monitoring_source_factory(source_type="azure_backup")
+    saver = _saver(db)
+    await saver.save(source, await _bundle())
+    await saver.save(source, await _bundle())  # same day: one row, updated
+    await db.commit()
+    vault = (await db.execute(select(BackupVault).where(BackupVault.tenant_id == source.tenant_id))).scalar_one()
+    rows = (await db.execute(select(BackupStorageSnapshot).where(BackupStorageSnapshot.vault_id == vault.id))).scalars().all()
+    assert len(rows) == 1 and (rows[0].storage_used_bytes, rows[0].items_total) == (2_000_000_000, 4)
+
+    today = datetime.now(timezone.utc).date()
+    for back in range(1, 20):
+        db.add(BackupStorageSnapshot(
+            tenant_id=source.tenant_id, vault_id=vault.id, day=today - timedelta(days=back),
+            storage_used_bytes=2_000_000_000 - back * 10_000_000,
+        ))
+    await db.commit()
+
+    now = datetime.now(timezone.utc)
+    short = await BackupService(db).storage_history(source.tenant_id, days=7, now=now)
+    assert short.history_days == 7 and short.growth_bytes_per_day is None
+    history = await BackupService(db).storage_history(source.tenant_id, days=30, now=now)
+    assert history.history_days == 20 and history.points[0].day == today - timedelta(days=19)
+    assert history.growth_bytes_per_day == pytest.approx(10_000_000)
+    assert history.projected_used_bytes_30d == 2_000_000_000 + 300_000_000
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_overview_time_range_breakdowns_age_and_item_search(db, monitoring_source_factory):
+    source = await monitoring_source_factory(source_type="azure_backup")
+    await _saver(db).save(source, await _bundle())
+    await db.commit()
+
+    async with _client(source.tenant_id) as client:
+        default = (await client.get("/api/backup/overview")).json()
+        assert default["range_days"] == 14 and len(default["daily"]) == 14
+        month = (await client.get("/api/backup/overview", params={"days": 30})).json()
+        assert month["range_days"] == 30 and len(month["daily"]) == 30
+        assert month["jobs_range"]["total"] == 4
+        day = (await client.get("/api/backup/overview", params={"days": 1})).json()
+        # job-3 started 26 h ago: outside a 1-day range.
+        assert day["jobs_range"]["total"] == 3 and len(day["daily"]) == 1
+        for bad in (0, 91):
+            assert (await client.get("/api/backup/overview", params={"days": bad})).status_code == 422
+
+        # Every item sits in one subscription and one region.
+        assert [(g["key"], g["items_total"], g["items_breaching_rpo"]) for g in default["by_subscription"]] == [(SUB, 4, 1)]
+        assert [(g["key"], g["items_within_rpo"]) for g in default["by_region"]] == [("westeurope", 1)]
+        # Protected items only: web-01 (3 h), db-01 (40 h), new-vm (never); old-app is stopped.
+        ages = {b["key"]: b["items"] for b in default["recovery_point_age"]}
+        assert ages == {"lt_24h": 1, "1_3d": 1, "3_7d": 0, "7_30d": 0, "gt_30d": 0, "never": 1}
+
+        search = lambda **p: client.get("/api/backup/items", params=p)  # noqa: E731
+        assert [i["name"] for i in (await search(q="DB-0")).json()] == ["db-01"]
+        assert [i["name"] for i in (await search(q="virtualmachines/web")).json()] == ["web-01"]
+        assert (await search(q="%")).json() == []  # wildcards are literal
+        assert [i["name"] for i in (await search(protection_state="protection_stopped")).json()] == ["old-app"]
+        assert [i["name"] for i in (await search(last_backup_status="failed")).json()] == ["db-01"]
+        assert len((await search(policy_name="DailyPolicy")).json()) == 4

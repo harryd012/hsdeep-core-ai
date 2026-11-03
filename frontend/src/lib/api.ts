@@ -3587,8 +3587,54 @@ export interface BackupOverview {
   storage_used_bytes: number | null;
   /** Restore points across items that report a count; null if none do. */
   recovery_points_total: number | null;
-  /** Azure VMs in a connected subscription with no backup; null when no source is configured. */
+  /** Azure VMs in a connected subscription with no backup; null when no source is configured or filters are applied. */
   unprotected_resources: number | null;
+  /** Items by workload type (filters applied). */
+  workloads: BackupWorkloadSummary[];
+  /** True when a filter narrowed the figures. */
+  filtered: boolean;
+  filter_options: BackupFilterOptions | null;
+}
+
+export interface BackupWorkloadSummary {
+  /** As the provider reports it; null when it does not. */
+  workload_type: string | null;
+  items_total: number;
+  items_protected: number;
+  items_within_rpo: number;
+  items_breaching_rpo: number;
+  items_never_backed_up: number;
+  items_not_protected: number;
+  items_last_failed: number;
+  size_bytes: number | null;
+  recovery_points_total: number | null;
+}
+
+export interface BackupFilterOptions {
+  providers: string[];
+  subscriptions: string[];
+  resource_groups: string[];
+  locations: string[];
+  workload_types: string[];
+  /** Storage locations: value = id, label = name. */
+  vaults: { value: string; label: string }[];
+}
+
+/** Command Center filters, shared by overview, storage, items, jobs, failures, security and storage history. */
+export interface BackupFilters {
+  provider?: string;
+  subscription_id?: string;
+  resource_group?: string;
+  location?: string;
+  storage_id?: string;
+  workload_type?: string;
+}
+
+function backupFilterParams(filters: BackupFilters = {}, base: Record<string, string> = {}): string {
+  const qs = new URLSearchParams(base);
+  for (const [k, v] of Object.entries(filters)) if (v) qs.set(k, v);
+  const q = qs.toString();
+  return q ? `?${q}` : "";
 }
 
 export interface BackupVault {
@@ -3614,6 +3660,13 @@ export interface BackupVault {
   /** Size and free space of a fixed-size location (Veeam repository); null otherwise. */
   capacity_bytes: number | null;
   free_bytes: number | null;
+  /** enabled | disabled; null when not reported. */
+  multi_user_authorization: string | null;
+  /** customer_managed | platform_managed; null when not reported. */
+  encryption: string | null;
+  cross_region_restore: boolean | null;
+  /** enabled | disabled; null when not reported. */
+  public_network_access: string | null;
   policies: number;
 }
 
@@ -3695,27 +3748,99 @@ export interface BackupJob {
   error_message: string | null;
 }
 
-export function getBackupOverview(): Promise<BackupOverview> {
-  return apiFetch<BackupOverview>("/api/backup/overview");
+export function getBackupOverview(filters: BackupFilters = {}): Promise<BackupOverview> {
+  return apiFetch<BackupOverview>(`/api/backup/overview${backupFilterParams(filters)}`);
 }
 
-export function listBackupVaults(): Promise<BackupVault[]> {
-  return apiFetch<BackupVault[]>("/api/backup/vaults");
+export function listBackupVaults(filters: BackupFilters = {}): Promise<BackupVault[]> {
+  return apiFetch<BackupVault[]>(`/api/backup/vaults${backupFilterParams(filters)}`);
 }
 
-export function listBackupItems(params: { vaultId?: string; rpoState?: BackupRpoState; siteId?: string } = {}): Promise<BackupItem[]> {
-  const qs = new URLSearchParams();
-  if (params.vaultId) qs.set("vault_id", params.vaultId);
-  if (params.rpoState) qs.set("rpo_state", params.rpoState);
-  if (params.siteId) qs.set("site_id", params.siteId);
-  const q = qs.toString();
-  return apiFetch<BackupItem[]>(`/api/backup/items${q ? `?${q}` : ""}`);
+export function listBackupItems(
+  params: { vaultId?: string; rpoState?: BackupRpoState; siteId?: string } = {},
+  filters: BackupFilters = {},
+): Promise<BackupItem[]> {
+  const base: Record<string, string> = {};
+  if (params.vaultId) base.vault_id = params.vaultId;
+  if (params.rpoState) base.rpo_state = params.rpoState;
+  if (params.siteId) base.site_id = params.siteId;
+  return apiFetch<BackupItem[]>(`/api/backup/items${backupFilterParams(filters, base)}`);
 }
 
-export function listBackupJobs(params: { days?: number; status?: string; limit?: number } = {}): Promise<BackupJob[]> {
-  const qs = new URLSearchParams({ days: String(params.days ?? 7), limit: String(params.limit ?? 200) });
-  if (params.status) qs.set("status", params.status);
-  return apiFetch<BackupJob[]>(`/api/backup/jobs?${qs.toString()}`);
+export function listBackupJobs(params: { days?: number; status?: string; limit?: number } = {}, filters: BackupFilters = {}): Promise<BackupJob[]> {
+  const base: Record<string, string> = { days: String(params.days ?? 7), limit: String(params.limit ?? 200) };
+  if (params.status) base.status = params.status;
+  return apiFetch<BackupJob[]>(`/api/backup/jobs${backupFilterParams(filters, base)}`);
+}
+
+export interface BackupFailureGroup {
+  /** null when the provider did not report a code. */
+  error_code: string | null;
+  failed_jobs: number;
+  items_affected: number;
+  /** Up to 10 item names, most recent failure first. */
+  items: string[];
+  vaults: string[];
+  operations: string[];
+  first_seen: string | null;
+  last_seen: string | null;
+  sample_message: string | null;
+}
+
+export interface BackupFailureAnalysis {
+  days: number;
+  failed_jobs: number;
+  items_affected: number;
+  groups: BackupFailureGroup[];
+}
+
+export function getBackupFailures(days = 7, filters: BackupFilters = {}): Promise<BackupFailureAnalysis> {
+  return apiFetch<BackupFailureAnalysis>(`/api/backup/failures${backupFilterParams(filters, { days: String(days) })}`);
+}
+
+export type BackupCheckStatus = "pass" | "warn" | "fail" | "not_reported" | "not_applicable";
+
+export interface BackupSecurityCheck {
+  key: string;
+  label: string;
+  status: BackupCheckStatus;
+  /** What the provider reported; null when not reported. */
+  value: string | null;
+}
+
+export interface BackupSecurityPosture {
+  locations: {
+    vault_id: string;
+    name: string;
+    provider: string;
+    kind: string;
+    location: string | null;
+    checks: BackupSecurityCheck[];
+    passed: number;
+    /** Checks with a verdict (pass, warn or fail). */
+    evaluated: number;
+  }[];
+  summary: { key: string; label: string; passed: number; warned: number; failed: number; not_reported: number; not_applicable: number }[];
+  /** Passed / evaluated checks, %; null when none evaluated. */
+  score: number | null;
+}
+
+export function getBackupSecurity(filters: BackupFilters = {}): Promise<BackupSecurityPosture> {
+  return apiFetch<BackupSecurityPosture>(`/api/backup/security${backupFilterParams(filters)}`);
+}
+
+export interface BackupStorageHistory {
+  days: number;
+  points: { day: string; storage_used_bytes: number | null; capacity_bytes: number | null; free_bytes: number | null; locations_reporting: number }[];
+  history_days: number;
+  min_history_days: number;
+  /** Least-squares growth, bytes/day: an estimate; null until min_history_days are recorded. */
+  growth_bytes_per_day: number | null;
+  projected_used_bytes_30d: number | null;
+}
+
+export function getBackupStorageHistory(days = 30, filters: BackupFilters = {}): Promise<BackupStorageHistory> {
+  return apiFetch<BackupStorageHistory>(`/api/backup/storage/history${backupFilterParams(filters, { days: String(days) })}`);
 }
 
 export function getBackupItem(id: string): Promise<BackupItemDetail> {

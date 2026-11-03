@@ -184,6 +184,20 @@ def _immutable(state: str | None) -> bool | None:
     return state == "locked"
 
 
+def _enabled(value: str | None) -> str | None:
+    """'Enabled' / 'Disabled' -> 'enabled' / 'disabled'; anything else (Azure's
+    'Invalid', or not reported) -> None."""
+    value = (value or "").lower()
+    return value if value in ("enabled", "disabled") else None
+
+
+def _encryption(props: dict) -> str:
+    """Azure always encrypts backup data at rest; with a Key Vault key set the
+    key is the customer's, otherwise Microsoft's (platform-managed)."""
+    key = ((props.get("encryption") or {}).get("keyVaultProperties") or {}).get("keyUri")
+    return "customer_managed" if key else "platform_managed"
+
+
 def _resource_group(resource_id: str) -> str | None:
     match = re.search(r"/resourceGroups/([^/]+)", resource_id, re.IGNORECASE)
     return match.group(1) if match else None
@@ -302,7 +316,9 @@ class AzureBackupCollector(AzureCollector):
                 continue
             props = vault.get("properties") or {}
             security = props.get("securitySettings") or {}
-            redundancy = (props.get("redundancySettings") or {}).get("standardTierStorageRedundancy")
+            redundancy_settings = props.get("redundancySettings") or {}
+            redundancy = redundancy_settings.get("standardTierStorageRedundancy")
+            cross_region = _enabled(redundancy_settings.get("crossRegionRestore"))
             provisioning = (props.get("provisioningState") or "").lower()
             name = vault.get("name") or vault_id.rsplit("/", 1)[-1]
 
@@ -337,6 +353,10 @@ class AzureBackupCollector(AzureCollector):
                     storage_redundancy=redundancy,
                     offsite=_offsite(redundancy),
                     immutable=_immutable(immutability),
+                    multi_user_authorization=_enabled(security.get("multiUserAuthorization")),
+                    encryption=_encryption(props),
+                    cross_region_restore=None if cross_region is None else cross_region == "enabled",
+                    public_network_access=_enabled(props.get("publicNetworkAccess")),
                     storage_used_bytes=_storage_used(entry.get("usages")),
                 )
             )

@@ -11,7 +11,8 @@ Called by `BundleSaver.save()` for bundles that carry backup tables
   - upserts `backup_jobs` by the provider's job id, then purges jobs older
     than `backup_job_retention_days`;
   - syncs `backup_policies` (schedule and retention) and the vault's storage
-    used, each only when that table was read this poll;
+    used, each only when that table was read this poll, and records the day's
+    storage in `backup_storage_snapshots` (history for storage growth);
   - turns item and vault state into sensor readings, so backup alerts open and
     auto-resolve through the existing sensor path (AlertService.evaluate_sensor),
     exactly like firewall state - no second alerting mechanism.
@@ -37,7 +38,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,7 +60,7 @@ from app.collectors.base import (
     NormalizedSensorReading,
 )
 from app.core.config import get_settings
-from app.models.backup import BackupItem, BackupJob, BackupPolicy, BackupVault
+from app.models.backup import BackupItem, BackupJob, BackupPolicy, BackupStorageSnapshot, BackupVault
 from app.services.backup_settings import effective_rpo_hours
 
 _READ_OK = ("collected", "empty")
@@ -221,6 +222,10 @@ async def save_backup(
         vault.soft_delete_state = nv.soft_delete_state
         vault.immutability_state = nv.immutability_state
         vault.storage_redundancy = nv.storage_redundancy
+        vault.multi_user_authorization = nv.multi_user_authorization
+        vault.encryption = nv.encryption
+        vault.cross_region_restore = nv.cross_region_restore
+        vault.public_network_access = nv.public_network_access
         if tables.get("usage") in _READ_OK:
             vault.storage_used_bytes = nv.storage_used_bytes
             vault.capacity_bytes = nv.capacity_bytes
@@ -239,6 +244,8 @@ async def save_backup(
             await _upsert_jobs(db, tenant_id, vault, jobs_by_vault.get(nv.external_id, []), result)
         if tables.get("policies") in _READ_OK:
             await _sync_policies(db, tenant_id, vault, policies_by_vault.get(nv.external_id, []), now, result)
+        if tables.get("usage") in _READ_OK:
+            await _snapshot(db, tenant_id, vault, now)
 
     cutoff = now - timedelta(days=settings.backup_job_retention_days)
     purged = await db.execute(
@@ -249,8 +256,31 @@ async def save_backup(
         )
     )
     result.jobs_purged = purged.rowcount or 0
+    await db.execute(
+        delete(BackupStorageSnapshot).where(
+            BackupStorageSnapshot.tenant_id == tenant_id,
+            BackupStorageSnapshot.day < (now - timedelta(days=settings.backup_snapshot_retention_days)).date(),
+        )
+    )
     await db.flush()
     return result
+
+
+async def _snapshot(db, tenant_id, vault: BackupVault, now: datetime) -> None:
+    """Upsert today's storage snapshot for one vault (the last poll of the day wins)."""
+    items = (
+        await db.execute(select(func.count()).select_from(BackupItem).where(BackupItem.vault_id == vault.id))
+    ).scalar_one()
+    values = {
+        "storage_used_bytes": vault.storage_used_bytes,
+        "capacity_bytes": vault.capacity_bytes,
+        "free_bytes": vault.free_bytes,
+        "items_total": items,
+    }
+    stmt = pg_insert(BackupStorageSnapshot).values(
+        id=uuid.uuid4(), tenant_id=tenant_id, vault_id=vault.id, day=now.date(), **values,
+    )
+    await db.execute(stmt.on_conflict_do_update(constraint="uq_backup_storage_snapshots_vault_day", set_=values))
 
 
 async def _sync_policies(db, tenant_id, vault: BackupVault, policies, now, result) -> None:

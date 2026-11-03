@@ -330,11 +330,14 @@ export function DayColumns({
   series,
   height = 140,
   label,
+  format = (v: number) => v.toLocaleString("en-US"),
 }: {
   buckets: { key: string; label: string; values: Record<string, number> }[];
   series: { key: string; label: string; color: string }[];
   height?: number;
   label: string;
+  /** Tooltip value format (default: a plain number). */
+  format?: (v: number) => string;
 }) {
   const totals = buckets.map((b) => series.reduce((sum, s) => sum + (b.values[s.key] ?? 0), 0));
   const max = Math.max(...totals, 1);
@@ -346,7 +349,7 @@ export function DayColumns({
           <div
             key={b.key}
             className="pk-daycols__col"
-            title={`${b.label}\n${series.map((s) => `${s.label}: ${(b.values[s.key] ?? 0).toLocaleString("en-US")}`).join("\n")}`}
+            title={`${b.label}\n${series.map((s) => `${s.label}: ${format(b.values[s.key] ?? 0)}`).join("\n")}`}
           >
             {series.map((s) => {
               const v = b.values[s.key] ?? 0;

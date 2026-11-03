@@ -5,18 +5,28 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DatabaseBackup } from "lucide-react";
 import {
   getBackupCoverage,
+  getBackupFailures,
   getBackupOverview,
+  getBackupSecurity,
+  getBackupStorageHistory,
   listBackupItems,
   listBackupJobs,
   listBackupVaults,
   updateBackupSettings,
+  type BackupCheckStatus,
   type BackupCoverage,
   type BackupCoverageState,
+  type BackupFailureGroup,
+  type BackupFilterOptions,
+  type BackupFilters,
   type BackupItem,
   type BackupJob,
   type BackupOverview,
   type BackupRpoState,
+  type BackupSecurityPosture,
+  type BackupStorageHistory,
   type BackupVault,
+  type BackupWorkloadSummary,
 } from "@/lib/api";
 import { downloadCsv, formatBytes, type CsvColumn } from "@/lib/csv";
 import { useSiteHealth } from "@/hooks/useSiteHealth";
@@ -58,6 +68,78 @@ const JOB_SERIES = [
   { key: "failed", label: "Failed", color: "var(--ecc-bad)" },
   { key: "other", label: "Other", color: "var(--ecc-unknown)" },
 ];
+
+/** Provider workload names in words; anything else is title-cased. */
+const WORKLOAD_LABELS: Record<string, string> = {
+  VM: "Virtual machines",
+  SQLDataBase: "SQL databases",
+  SAPHanaDatabase: "SAP HANA databases",
+  SAPHanaDBInstance: "SAP HANA instances",
+  SAPAseDatabase: "SAP ASE databases",
+  AzureFileShare: "Azure file shares",
+  FileFolder: "Files and folders",
+  AzureSqlDb: "Azure SQL databases",
+  Exchange: "Exchange",
+  Sharepoint: "SharePoint",
+};
+
+function workloadLabel(w: string | null): string {
+  return w === null ? "Not reported" : WORKLOAD_LABELS[w] ?? titleCaseWords(w);
+}
+
+const CHECK_TONE: Record<BackupCheckStatus, Tone> = {
+  pass: "good",
+  warn: "warn",
+  fail: "bad",
+  not_reported: "neutral",
+  not_applicable: "neutral",
+};
+const CHECK_TEXT: Record<BackupCheckStatus, string> = {
+  pass: "Pass",
+  warn: "Review",
+  fail: "Fail",
+  not_reported: "Not reported",
+  not_applicable: "Not applicable",
+};
+
+type FilterKey = keyof BackupFilters;
+
+/** Command Center filters: each select appears only when it has a choice to make. */
+function FilterBar({ options, value, onChange }: { options: BackupFilterOptions; value: BackupFilters; onChange: (f: BackupFilters) => void }) {
+  const selects: { key: FilterKey; label: string; all: string; values: { value: string; label: string }[] }[] = [
+    { key: "provider", label: "Provider", all: "All providers", values: options.providers.map((p) => ({ value: p, label: titleCaseWords(p) })) },
+    { key: "subscription_id", label: "Subscription", all: "All subscriptions", values: options.subscriptions.map((s) => ({ value: s, label: s })) },
+    { key: "resource_group", label: "Resource group", all: "All resource groups", values: options.resource_groups.map((r) => ({ value: r, label: r })) },
+    { key: "location", label: "Region", all: "All regions", values: options.locations.map((l) => ({ value: l, label: l })) },
+    { key: "storage_id", label: "Storage", all: "All storage", values: options.vaults },
+    { key: "workload_type", label: "Workload", all: "All workloads", values: options.workload_types.map((w) => ({ value: w, label: workloadLabel(w) })) },
+  ];
+  const shown = selects.filter((s) => s.values.length > 1 || value[s.key]);
+  if (shown.length === 0) return null;
+  const active = Object.values(value).some(Boolean);
+  return (
+    <div className="pk-toolbar" role="group" aria-label="Backup filters">
+      {shown.map((s) => (
+        <select
+          key={s.key}
+          className="pk-input"
+          aria-label={`Filter by ${s.label.toLowerCase()}`}
+          value={value[s.key] ?? ""}
+          onChange={(e) => onChange({ ...value, [s.key]: e.target.value || undefined })}
+          style={{ width: "auto", maxWidth: 260 }}
+        >
+          <option value="">{s.all}</option>
+          {s.values.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      ))}
+      {active && (
+        <button type="button" className="pk-button" onClick={() => onChange({})}>Clear filters</button>
+      )}
+    </div>
+  );
+}
 
 function jobTone(status: string): Tone {
   if (status === "completed") return "good";
@@ -301,20 +383,131 @@ function ConnectAzureBackup({ onDone }: { onDone: () => void }) {
   );
 }
 
+type BackupTab = "items" | "coverage" | "jobs" | "failures" | "vaults" | "security";
+const TAB_TITLES: Record<BackupTab, string> = {
+  items: "Protected items",
+  coverage: "Backup coverage",
+  jobs: "Backup jobs (7 days)",
+  failures: "Failure analysis (7 days)",
+  vaults: "Backup storage",
+  security: "Security & compliance",
+};
+
+const workloadColumns: Column<BackupWorkloadSummary>[] = [
+  { key: "workload", header: "Workload", sortValue: (w) => workloadLabel(w.workload_type), render: (w) => <span title={w.workload_type ?? undefined}>{workloadLabel(w.workload_type)}</span> },
+  { key: "items", header: "Items", numeric: true, sortValue: (w) => w.items_total, render: (w) => w.items_total.toLocaleString("en-US") },
+  { key: "protected", header: "Protected", numeric: true, sortValue: (w) => w.items_protected, render: (w) => w.items_protected.toLocaleString("en-US") },
+  {
+    key: "within", header: "Within RPO", numeric: true,
+    sortValue: (w) => (w.items_protected ? w.items_within_rpo / w.items_protected : null),
+    render: (w) => (w.items_protected ? `${w.items_within_rpo} (${Math.round((w.items_within_rpo / w.items_protected) * 100)}%)` : <span className="pk-muted">—</span>),
+  },
+  { key: "breached", header: "RPO breached", numeric: true, sortValue: (w) => w.items_breaching_rpo, render: (w) => (w.items_breaching_rpo ? <span style={{ color: "var(--ecc-bad)" }}>{w.items_breaching_rpo}</span> : "0") },
+  { key: "never", header: "Never backed up", numeric: true, sortValue: (w) => w.items_never_backed_up, render: (w) => (w.items_never_backed_up ? <span style={{ color: "var(--ecc-warn)" }}>{w.items_never_backed_up}</span> : "0") },
+  { key: "failed", header: "Last backup failed", numeric: true, sortValue: (w) => w.items_last_failed, render: (w) => (w.items_last_failed ? <span style={{ color: "var(--ecc-bad)" }}>{w.items_last_failed}</span> : "0") },
+  { key: "stopped", header: "Not protected", numeric: true, sortValue: (w) => w.items_not_protected, render: (w) => w.items_not_protected },
+  { key: "points", header: "Restore points", numeric: true, sortValue: (w) => w.recovery_points_total, render: (w) => (w.recovery_points_total === null ? <span className="pk-muted">—</span> : w.recovery_points_total.toLocaleString("en-US")) },
+  { key: "size", header: "Backup size", numeric: true, sortValue: (w) => w.size_bytes, render: (w) => (w.size_bytes === null ? <span className="pk-muted">Not reported</span> : formatBytes(w.size_bytes)) },
+];
+
+const failureColumns: Column<BackupFailureGroup>[] = [
+  { key: "code", header: "Error code", sortValue: (g) => g.error_code, render: (g) => (g.error_code ? <code>{g.error_code}</code> : <span className="pk-muted">Not reported</span>) },
+  { key: "jobs", header: "Failed jobs", numeric: true, sortValue: (g) => g.failed_jobs, render: (g) => g.failed_jobs },
+  {
+    key: "items", header: "Items", numeric: true, sortValue: (g) => g.items_affected,
+    render: (g) => <span title={g.items.join(", ") + (g.items_affected > g.items.length ? ` and ${g.items_affected - g.items.length} more` : "")}>{g.items_affected}</span>,
+  },
+  { key: "message", header: "Latest message", render: (g) => (g.sample_message ? <span className="pk-truncate" style={{ display: "inline-block", maxWidth: 460 }} title={g.sample_message}>{g.sample_message}</span> : <span className="pk-muted">—</span>) },
+  { key: "storage", header: "Storage", render: (g) => g.vaults.join(", ") },
+  { key: "last", header: "Last seen", sortValue: (g) => g.last_seen, render: (g) => <span className="pk-muted" title={g.last_seen ?? undefined}>{ago(g.last_seen)}</span> },
+];
+
+/** `asOf`: the overview's generated_at, so the last column is today on the server. */
+function StorageTrend({ history, asOf }: { history: BackupStorageHistory; asOf: string }) {
+  const gb = (b: number | null) => (b === null ? 0 : Math.round((b / 1024 ** 3) * 10) / 10);
+  const byDay = new Map(history.points.map((p) => [p.day, p]));
+  const last = history.points[history.points.length - 1];
+  const start = new Date(Date.parse(asOf) - (history.days - 1) * 86_400_000);
+  const buckets = Array.from({ length: history.days }, (_, i) => {
+    const d = new Date(start.getTime() + i * 86_400_000).toISOString().slice(0, 10);
+    const p = byDay.get(d);
+    return {
+      key: d,
+      label: new Date(`${d}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      values: { used: gb(p?.storage_used_bytes ?? null) },
+    };
+  });
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <DayColumns label="Backup storage used per day" buckets={buckets} series={[{ key: "used", label: "Storage used (GB)", color: "var(--ecc-accent)" }]} height={120} format={(v) => `${v.toLocaleString("en-US")} GB`} />
+      <p className="pk-help">
+        {history.history_days === 0
+          ? "Storage history starts with the next collection."
+          : `${history.history_days} day${history.history_days === 1 ? "" : "s"} recorded${last?.storage_used_bytes != null ? `; latest ${formatBytes(last.storage_used_bytes)}` : ""}.`}{" "}
+        {history.growth_bytes_per_day === null
+          ? `A growth estimate needs ${history.min_history_days} days of history.`
+          : `Estimated growth ${formatBytes(Math.abs(history.growth_bytes_per_day))}/day${history.growth_bytes_per_day < 0 ? " (shrinking)" : ""}; at that rate about ${formatBytes(history.projected_used_bytes_30d ?? 0)} in 30 days. This is an estimate from the recorded trend, not a forecast from the provider.`}
+      </p>
+    </div>
+  );
+}
+
+function SecurityView({ posture }: { posture: BackupSecurityPosture }) {
+  if (posture.locations.length === 0) return <p className="pk-muted pk-empty-note">No backup storage reported.</p>;
+  type Location = BackupSecurityPosture["locations"][number];
+  const columns: Column<Location>[] = [
+    {
+      key: "name", header: "Storage", sortValue: (l) => l.name,
+      render: (l) => (
+        <>
+          {l.name}
+          <div className="pk-muted">{[titleCaseWords(l.provider), titleCaseWords(l.kind), l.location].filter(Boolean).join(" · ")}</div>
+        </>
+      ),
+    },
+    ...posture.locations[0].checks.map((check, i): Column<Location> => ({
+      key: check.key,
+      header: check.label,
+      sortValue: (l) => l.checks[i]?.status ?? null,
+      render: (l) => {
+        const c = l.checks[i];
+        if (!c) return <span className="pk-muted">—</span>;
+        const verdict = c.status === "pass" || c.status === "warn" || c.status === "fail";
+        return <span title={c.value ?? CHECK_TEXT[c.status]}><Pill tone={CHECK_TONE[c.status]}>{verdict ? c.value ?? CHECK_TEXT[c.status] : CHECK_TEXT[c.status]}</Pill></span>;
+      },
+    })),
+    { key: "passed", header: "Passed", numeric: true, sortValue: (l) => (l.evaluated ? l.passed / l.evaluated : null), render: (l) => (l.evaluated ? `${l.passed} of ${l.evaluated}` : "—") },
+  ];
+  return (
+    <>
+      <p className="pk-help">
+        Each storage location&apos;s settings as the provider reports them. A setting the provider does not report is shown as
+        &nbsp;<em>Not reported</em>; it never counts as a pass.
+        {posture.score !== null && <> {posture.score}% of the checks with a verdict pass.</>}
+      </p>
+      <DataTable caption="Security checks per storage location" columns={columns} rows={posture.locations} rowKey={(l) => l.vault_id} defaultSort={{ key: "passed", dir: "asc" }} maxHeight={480} emptyText="No backup storage reported." />
+    </>
+  );
+}
+
 export default function BackupPage() {
   const qc = useQueryClient();
-  const [tab, setTab] = useState<"items" | "coverage" | "jobs" | "vaults">("items");
+  const [tab, setTab] = useState<BackupTab>("items");
   const [rpoFilter, setRpoFilter] = useState<BackupRpoState | "all">("all");
   const [coverageFilter, setCoverageFilter] = useState<BackupCoverageState | "all">("all");
   const [siteFilter, setSiteFilter] = useState<string>("all");
   const [showConnect, setShowConnect] = useState(false);
+  const [filters, setFilters] = useState<BackupFilters>({});
 
-  const overview = useQuery({ queryKey: ["backup", "overview"], queryFn: getBackupOverview, refetchInterval: 60_000 });
+  const overview = useQuery({ queryKey: ["backup", "overview", filters], queryFn: () => getBackupOverview(filters), refetchInterval: 60_000, placeholderData: (prev) => prev });
   const o: BackupOverview | undefined = overview.data;
   const configured = !!o?.configured;
-  const items = useQuery({ queryKey: ["backup", "items"], queryFn: () => listBackupItems(), enabled: configured, refetchInterval: 60_000 });
-  const jobs = useQuery({ queryKey: ["backup", "jobs"], queryFn: () => listBackupJobs({ days: 7, limit: 500 }), enabled: configured, refetchInterval: 60_000 });
-  const vaults = useQuery({ queryKey: ["backup", "vaults"], queryFn: listBackupVaults, enabled: configured, refetchInterval: 120_000 });
+  const items = useQuery({ queryKey: ["backup", "items", filters], queryFn: () => listBackupItems({}, filters), enabled: configured, refetchInterval: 60_000 });
+  const jobs = useQuery({ queryKey: ["backup", "jobs", filters], queryFn: () => listBackupJobs({ days: 7, limit: 500 }, filters), enabled: configured, refetchInterval: 60_000 });
+  const vaults = useQuery({ queryKey: ["backup", "vaults", filters], queryFn: () => listBackupVaults(filters), enabled: configured, refetchInterval: 120_000 });
+  const failures = useQuery({ queryKey: ["backup", "failures", filters], queryFn: () => getBackupFailures(7, filters), enabled: configured, refetchInterval: 120_000 });
+  const security = useQuery({ queryKey: ["backup", "security", filters], queryFn: () => getBackupSecurity(filters), enabled: configured, refetchInterval: 300_000 });
+  const history = useQuery({ queryKey: ["backup", "storage-history", filters], queryFn: () => getBackupStorageHistory(30, filters), enabled: configured, refetchInterval: 300_000 });
   const coverage = useQuery({ queryKey: ["backup", "coverage"], queryFn: getBackupCoverage, enabled: configured, refetchInterval: 120_000 });
   const siteHealth = useSiteHealth();
   const refresh = () => qc.invalidateQueries({ queryKey: ["backup"] });
@@ -536,6 +729,9 @@ export default function BackupPage() {
         </Panel>
       )}
 
+      {configured && o?.filter_options && <FilterBar options={o.filter_options} value={filters} onChange={setFilters} />}
+      {configured && o?.filtered && <Banner tone="info">Filtered view: every figure below covers only the selected storage and workloads. Coverage of VMs is not filtered and is left out of the tiles.</Banner>}
+
       <StatStrip>
         <StatTile label="Protected items" value={n(o?.items_protected)} info="Items under active backup protection." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
         <StatTile label="Within RPO" value={n(o?.items_within_rpo)} tone="good" sub={o && configured && o.items_protected ? `${Math.round((o.items_within_rpo / o.items_protected) * 100)}% of protected` : undefined} info={`Protected items with a backup in the last ${o?.rpo_hours ?? 24} hours.`} loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
@@ -568,11 +764,15 @@ export default function BackupPage() {
             <RpoTarget overview={o!} onSaved={refresh} />
           </Panel>
 
+          <Panel title="Workloads" info="Protected items by workload type, as each provider reports it, against the RPO." state={o!.workloads.length === 0 ? "empty" : "ready"} emptyText="No protected items reported yet." className="pk-col-12">
+            <DataTable caption="Workloads" columns={workloadColumns} rows={o!.workloads} rowKey={(w) => w.workload_type ?? "_none"} defaultSort={{ key: "items", dir: "desc" }} maxHeight={320} emptyText="No protected items reported yet." />
+          </Panel>
+
           <Panel
-            title={tab === "items" ? "Protected items" : tab === "coverage" ? "Backup coverage" : tab === "jobs" ? "Backup jobs (7 days)" : "Backup storage"}
-            info="Select a tab for protected items, coverage of your VMs, jobs or vault security posture. Select an item to see its policy, restore points and job history."
+            title={TAB_TITLES[tab]}
+            info="Select a tab for protected items, coverage of your VMs, jobs, failures grouped by cause, storage or its security settings. Select an item to see its policy, restore points and job history."
             aside={
-              <Tabs<"items" | "coverage" | "jobs" | "vaults">
+              <Tabs<BackupTab>
                 value={tab}
                 onChange={setTab}
                 label="Backup view"
@@ -580,11 +780,13 @@ export default function BackupPage() {
                   { key: "items", label: "Items", count: items.data?.length },
                   { key: "coverage", label: "Coverage", count: coverage.data?.total },
                   { key: "jobs", label: "Jobs", count: jobs.data?.length },
+                  { key: "failures", label: "Failures", count: failures.data?.failed_jobs },
                   { key: "vaults", label: "Storage", count: vaults.data?.length },
+                  { key: "security", label: "Security" },
                 ]}
               />
             }
-            state={(tab === "items" ? items : tab === "coverage" ? coverage : tab === "jobs" ? jobs : vaults).isLoading ? "loading" : "ready"}
+            state={({ items, coverage, jobs, failures, vaults, security } as const)[tab].isLoading ? "loading" : "ready"}
             className="pk-col-12"
           >
             {tab === "items" && (
@@ -633,9 +835,26 @@ export default function BackupPage() {
                 <DataTable caption="Backup jobs" columns={jobColumns} rows={jobs.data ?? []} rowKey={(j) => j.id} defaultSort={{ key: "started", dir: "desc" }} maxHeight="max(420px, calc(100vh - 480px))" emptyText="No backup job in the last 7 days." />
               </>
             )}
-            {tab === "vaults" && (
-              <DataTable caption="Backup storage" columns={vaultColumns} rows={vaults.data ?? []} rowKey={(v) => v.id} rowHref={(v) => (v.device_id ? `/infrastructure/hosts/${v.device_id}` : null)} maxHeight={480} emptyText="No backup storage reported." />
+            {tab === "failures" && failures.data && (
+              failures.data.failed_jobs === 0 ? (
+                <p className="pk-muted pk-empty-note">No backup job failed in the last 7 days.</p>
+              ) : (
+                <>
+                  <p className="pk-help">
+                    {failures.data.failed_jobs} failed job{failures.data.failed_jobs === 1 ? "" : "s"} across {failures.data.items_affected} item{failures.data.items_affected === 1 ? "" : "s"},
+                    grouped by the error code the provider reported. Hover the item count to see which items.
+                  </p>
+                  <DataTable caption="Failures by error code" columns={failureColumns} rows={failures.data.groups} rowKey={(g) => g.error_code ?? "_none"} defaultSort={{ key: "jobs", dir: "desc" }} maxHeight="max(420px, calc(100vh - 520px))" emptyText="No failed job." />
+                </>
+              )
             )}
+            {tab === "vaults" && (
+              <>
+                {history.data && <StorageTrend history={history.data} asOf={o!.generated_at} />}
+                <DataTable caption="Backup storage" columns={vaultColumns} rows={vaults.data ?? []} rowKey={(v) => v.id} rowHref={(v) => (v.device_id ? `/infrastructure/hosts/${v.device_id}` : null)} maxHeight={480} emptyText="No backup storage reported." />
+              </>
+            )}
+            {tab === "security" && security.data && <SecurityView posture={security.data} />}
           </Panel>
         </div>
       )}

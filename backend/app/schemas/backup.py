@@ -80,6 +80,20 @@ class BackupOverview(BaseModel):
     #: Azure VMs in a connected subscription with no backup item. None when
     #: no backup source is configured (coverage cannot be judged).
     unprotected_resources: int | None = None
+    #: Days covered by ``daily`` and ``jobs_range`` (the time-range filter).
+    range_days: int = 14
+    #: Job outcomes over ``range_days``.
+    jobs_range: BackupJobCounts | None = None
+    #: Items by workload type (filters applied).
+    workloads: list[BackupWorkloadSummary] = []
+    #: Items by subscription / region of their storage (filters applied).
+    by_subscription: list[BackupStatusGroup] = []
+    by_region: list[BackupStatusGroup] = []
+    #: Protected items by how old their newest backup is.
+    recovery_point_age: list[BackupAgeBucket] = []
+    #: True when any filter narrowed the figures above.
+    filtered: bool = False
+    filter_options: BackupFilterOptions | None = None
 
 
 class BackupVaultOut(BaseModel):
@@ -105,6 +119,10 @@ class BackupVaultOut(BaseModel):
     #: Size and free space of a fixed-size location (Veeam repository); None otherwise.
     capacity_bytes: int | None = None
     free_bytes: int | None = None
+    multi_user_authorization: str | None = None
+    encryption: str | None = None
+    cross_region_restore: bool | None = None
+    public_network_access: str | None = None
     policies: int = 0
 
 
@@ -209,3 +227,157 @@ class BackupSettingsUpdate(BaseModel):
     """Set the tenant's RPO; null returns it to the platform default."""
 
     rpo_hours: int | None = Field(..., ge=RPO_MIN_HOURS, le=RPO_MAX_HOURS)
+
+
+class BackupFilterOption(BaseModel):
+    value: str
+    label: str
+
+
+class BackupFilterOptions(BaseModel):
+    """Values the overview filters can take, from what is stored (unfiltered)."""
+
+    providers: list[str] = []
+    subscriptions: list[str] = []
+    resource_groups: list[str] = []
+    locations: list[str] = []
+    workload_types: list[str] = []
+    #: Storage locations: value = id, label = name.
+    vaults: list[BackupFilterOption] = []
+
+
+class BackupStatusGroup(BaseModel):
+    """Items of one subscription or region by RPO verdict."""
+
+    #: The subscription id / region; None when the storage does not report it.
+    key: str | None
+    items_total: int
+    items_protected: int
+    items_within_rpo: int
+    items_breaching_rpo: int
+    items_never_backed_up: int
+    items_not_protected: int
+    items_last_failed: int
+
+
+#: lt_24h | 1_3d | 3_7d | 7_30d | gt_30d | never
+AgeBucketKey = Literal["lt_24h", "1_3d", "3_7d", "7_30d", "gt_30d", "never"]
+
+
+class BackupAgeBucket(BaseModel):
+    key: AgeBucketKey
+    label: str
+    items: int
+
+
+class BackupWorkloadSummary(BaseModel):
+    """Protected items of one workload type (VM, SQL database, file share ...)."""
+
+    #: As the provider reports it; None when it does not.
+    workload_type: str | None
+    items_total: int
+    items_protected: int
+    items_within_rpo: int
+    items_breaching_rpo: int
+    items_never_backed_up: int
+    items_not_protected: int
+    items_last_failed: int
+    #: Sum of the item sizes that are reported; None if none are.
+    size_bytes: int | None = None
+    recovery_points_total: int | None = None
+
+
+class BackupFailureGroup(BaseModel):
+    """Failed jobs sharing one error code."""
+
+    #: None when the provider did not report a code.
+    error_code: str | None
+    failed_jobs: int
+    items_affected: int
+    #: Up to 10 item names, most recent failure first.
+    items: list[str]
+    vaults: list[str]
+    operations: list[str]
+    first_seen: datetime | None
+    last_seen: datetime | None
+    #: The latest failure's message.
+    sample_message: str | None
+
+
+class BackupFailureAnalysis(BaseModel):
+    days: int
+    failed_jobs: int
+    items_affected: int
+    groups: list[BackupFailureGroup]
+
+
+#: pass | warn | fail | not_reported (provider did not say) |
+#: not_applicable (e.g. cross-region restore on a single-region vault)
+CheckStatus = Literal["pass", "warn", "fail", "not_reported", "not_applicable"]
+
+
+class BackupSecurityCheck(BaseModel):
+    key: str
+    label: str
+    status: CheckStatus
+    #: What the provider reported, in words; None when not reported.
+    value: str | None
+
+
+class BackupSecurityLocation(BaseModel):
+    vault_id: uuid.UUID
+    name: str
+    provider: str
+    kind: str
+    location: str | None
+    checks: list[BackupSecurityCheck]
+    passed: int
+    #: Checks with a verdict (pass, warn or fail).
+    evaluated: int
+
+
+class BackupSecurityCheckSummary(BaseModel):
+    key: str
+    label: str
+    passed: int = 0
+    warned: int = 0
+    failed: int = 0
+    not_reported: int = 0
+    not_applicable: int = 0
+
+
+class BackupSecurityPosture(BaseModel):
+    """Security settings of every storage location, checked one by one."""
+
+    locations: list[BackupSecurityLocation]
+    summary: list[BackupSecurityCheckSummary]
+    #: Passed / evaluated checks across all locations, %; None when none evaluated.
+    score: float | None
+
+
+class BackupStoragePoint(BaseModel):
+    day: date
+    storage_used_bytes: int | None
+    capacity_bytes: int | None
+    free_bytes: int | None
+    #: Storage locations with a snapshot that day.
+    locations_reporting: int
+
+
+class BackupStorageHistory(BaseModel):
+    """Daily storage across the selected locations, from the poll snapshots."""
+
+    days: int
+    points: list[BackupStoragePoint]
+    #: Days with a storage value in the window.
+    history_days: int
+    #: Days of history a growth estimate needs.
+    min_history_days: int
+    #: Least-squares growth of storage used, bytes/day: an estimate, None
+    #: until ``min_history_days`` days are recorded.
+    growth_bytes_per_day: float | None = None
+    #: Storage used in 30 days at that rate (estimate); None as above.
+    projected_used_bytes_30d: int | None = None
+
+
+BackupOverview.model_rebuild()

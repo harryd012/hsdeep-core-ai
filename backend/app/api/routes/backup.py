@@ -21,16 +21,19 @@ from app.core.db import get_db
 from app.core.entitlements import require_active_subscription
 from app.schemas.backup import (
     BackupCoverage,
+    BackupFailureAnalysis,
     BackupItemDetail,
     BackupItemOut,
     BackupJobOut,
     BackupOverview,
+    BackupSecurityPosture,
     BackupSettingsOut,
     BackupSettingsUpdate,
+    BackupStorageHistory,
     BackupVaultOut,
 )
 from app.services.audit_service import AuditService
-from app.services.backup_service import BackupService
+from app.services.backup_service import BackupFilters, BackupService
 from app.services.backup_settings import set_tenant_rpo
 
 router = APIRouter(
@@ -42,21 +45,40 @@ router = APIRouter(
 _READ = [Depends(require_permission("backup.read"))]
 
 
+def backup_filters(
+    provider: str | None = Query(None, max_length=30),
+    subscription_id: str | None = Query(None, max_length=100),
+    resource_group: str | None = Query(None, max_length=255),
+    location: str | None = Query(None, max_length=100),
+    storage_id: uuid.UUID | None = Query(None, description="One storage location (vault / repository)"),
+    workload_type: str | None = Query(None, max_length=50),
+) -> BackupFilters:
+    """The Command Center filters, shared by every read that takes them."""
+    return BackupFilters(
+        provider=provider or None, subscription_id=subscription_id or None, resource_group=resource_group or None,
+        location=location or None, vault_id=storage_id, workload_type=workload_type or None,
+    )
+
+
 @router.get("/overview", response_model=BackupOverview, dependencies=_READ)
 async def backup_overview(
+    days: int = Query(14, ge=1, le=90, description="Time range for job trend and counts"),
+    filters: BackupFilters = Depends(backup_filters),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> BackupOverview:
-    """KPIs for the Backup page, the dashboard panel and Backup Readiness."""
-    return await BackupService(db).overview(tenant_id)
+    """KPIs for the Backup page, the dashboard panel and Backup Readiness;
+    the optional filters narrow every figure (``filtered`` is then true)."""
+    return await BackupService(db).overview(tenant_id, filters=filters, range_days=days)
 
 
 @router.get("/vaults", response_model=list[BackupVaultOut], dependencies=_READ)
 async def backup_vaults(
+    filters: BackupFilters = Depends(backup_filters),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> list[BackupVaultOut]:
-    return await BackupService(db).vaults(tenant_id)
+    return await BackupService(db).vaults(tenant_id, filters=filters)
 
 
 @router.get("/items", response_model=list[BackupItemOut], dependencies=_READ)
@@ -64,10 +86,18 @@ async def backup_items(
     vault_id: uuid.UUID | None = None,
     rpo_state: Literal["within", "breached", "never", "not_protected"] | None = None,
     site_id: uuid.UUID | None = None,
+    q: str | None = Query(None, max_length=200, description="Name or resource id contains (case-insensitive)"),
+    protection_state: str | None = Query(None, max_length=30),
+    last_backup_status: str | None = Query(None, max_length=30),
+    policy_name: str | None = Query(None, max_length=255),
+    filters: BackupFilters = Depends(backup_filters),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> list[BackupItemOut]:
-    return await BackupService(db).items(tenant_id, vault_id=vault_id, state=rpo_state, site_id=site_id)
+    return await BackupService(db).items(
+        tenant_id, vault_id=vault_id, state=rpo_state, site_id=site_id, filters=filters, q=q,
+        protection_state=protection_state, last_backup_status=last_backup_status, policy_name=policy_name,
+    )
 
 
 @router.get("/items/{item_id}", response_model=BackupItemDetail, dependencies=_READ)
@@ -97,10 +127,43 @@ async def backup_jobs(
     days: int = Query(7, ge=1, le=90),
     status: str | None = Query(None, max_length=30),
     limit: int = Query(200, ge=1, le=1000),
+    filters: BackupFilters = Depends(backup_filters),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> list[BackupJobOut]:
-    return await BackupService(db).jobs(tenant_id, days=days, status=status, limit=limit)
+    return await BackupService(db).jobs(tenant_id, days=days, status=status, limit=limit, filters=filters)
+
+
+@router.get("/failures", response_model=BackupFailureAnalysis, dependencies=_READ)
+async def backup_failures(
+    days: int = Query(7, ge=1, le=90),
+    filters: BackupFilters = Depends(backup_filters),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> BackupFailureAnalysis:
+    """Failed jobs grouped by error code: how many, which items, when."""
+    return await BackupService(db).failures(tenant_id, days=days, filters=filters)
+
+
+@router.get("/security", response_model=BackupSecurityPosture, dependencies=_READ)
+async def backup_security(
+    filters: BackupFilters = Depends(backup_filters),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> BackupSecurityPosture:
+    """Security settings of each storage location, checked one by one."""
+    return await BackupService(db).security(tenant_id, filters=filters)
+
+
+@router.get("/storage/history", response_model=BackupStorageHistory, dependencies=_READ)
+async def backup_storage_history(
+    days: int = Query(30, ge=7, le=365),
+    filters: BackupFilters = Depends(backup_filters),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> BackupStorageHistory:
+    """Daily storage used / capacity / free, and a growth estimate after 14 days of history."""
+    return await BackupService(db).storage_history(tenant_id, days=days, filters=filters)
 
 
 @router.get("/settings", response_model=BackupSettingsOut, dependencies=_READ)

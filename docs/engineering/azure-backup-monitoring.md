@@ -9,6 +9,12 @@ registry) and an RPO per customer (tenant), editable on the Backup page.
 **Phase 3.1 shipped** (2026-11-03): Veeam Backup & Replication connector
 ([veeam-backup-monitoring.md](veeam-backup-monitoring.md)), plus capacity and free space of
 fixed-size storage and a free-space alert.
+**BR-1 slice 1 shipped** (2026-11-03), Backup Command Center
+([plan](../design/BACKUP_RECOVERY_AND_LOG_ANALYTICS_PLAN.md)): filters on every read (provider,
+subscription, resource group, region, storage, workload), items by workload type, failure analysis
+by error code, a security & compliance check per storage location (adds multi-user authorization,
+encryption key, cross-region restore and public network access), and daily storage history with a
+growth estimate.
 Next (approved plan): Veeam Service Provider Console, AWS Backup and S3-compatible storage
 connectors, then a backup storage cost/SLA advisor.
 
@@ -103,10 +109,13 @@ alert rule (`backup_saver`) and every verdict (`backup_service`) resolve it thro
 
 ## Data and API
 
-Tables (migrations `7826ac6377f8`, `a4c8e2f6b1d3`, `b7d2f4a9c1e6`): `backup_vaults` (incl.
-`storage_used_bytes`, `kind`, `offsite`, `immutable`), `backup_items` (incl. `recovery_point_count`,
-`oldest_recovery_point_at`, `size_bytes`), `backup_jobs`, `backup_policies`, `backup_settings`, all
-tenant-scoped with cascade on tenant delete. `b7d2f4a9c1e6` backfills `offsite` and `immutable`
+Tables (migrations `7826ac6377f8`, `a4c8e2f6b1d3`, `b7d2f4a9c1e6`, `c3e8a1f5d7b9`, `d4f9b2c6e8a1`):
+`backup_vaults` (incl. `storage_used_bytes`, `kind`, `offsite`, `immutable`, capacity and free space,
+`multi_user_authorization`, `encryption`, `cross_region_restore`, `public_network_access`),
+`backup_items` (incl. `recovery_point_count`, `oldest_recovery_point_at`, `size_bytes`),
+`backup_jobs`, `backup_policies`, `backup_storage_snapshots` (one row per storage location per UTC
+day, the last poll of the day wins, kept `backup_snapshot_retention_days` = 400), `backup_settings`,
+all tenant-scoped with cascade on tenant delete. `b7d2f4a9c1e6` backfills `offsite` and `immutable`
 for existing Azure vaults from their stored redundancy and immutability. Jobs are upserted by the
 provider's job id; jobs that started more than `backup_job_retention_days` (90) ago are purged
 after each save.
@@ -117,14 +126,29 @@ route takes the tenant from the signed-in principal:
 
 | Route | Returns |
 |---|---|
-| `GET /api/backup/overview` | KPIs, RPO verdict counts, job counts (24 h / 7 d), 14-day daily outcomes |
+| `GET /api/backup/overview` | KPIs, RPO verdict counts, job counts (24 h / 7 d), 14-day daily outcomes, items by workload type (`workloads`), and the values each filter can take (`filter_options`) |
 | `GET /api/backup/vaults` | vaults with posture and item counts |
+| `GET /api/backup/failures?days=` | failed jobs in the window grouped by error code: jobs, items, storage, first / last seen, latest message |
+| `GET /api/backup/security` | per storage location: soft delete, immutability, off-site copy, multi-user authorization, cross-region restore, encryption, public network access as pass / warn / fail / not_reported / not_applicable, and the share of passing checks |
+| `GET /api/backup/storage/history?days=7-365` | storage used / capacity / free per day; growth (least squares, bytes/day) and a 30-day projection once 14 days are recorded, labelled as estimates |
 | `GET /api/backup/items?vault_id=&rpo_state=&site_id=` | items with `rpo_state` (within / breached / never / not_protected), age, restore points, daily retention, and the inventory device and site they protect |
 | `GET /api/backup/items/{id}` | one item with its policy (schedule, retention per tier) and its latest 50 jobs; 404 for another tenant's item |
 | `GET /api/backup/coverage` | every Azure VM in inventory as protected / protection_stopped / unprotected / not_monitored |
 | `GET /api/backup/jobs?days=&status=&limit=` | job history with error codes |
 | `GET /api/backup/settings` | the tenant's RPO, whether it is the default, and the default |
 | `PUT /api/backup/settings` `{"rpo_hours": 1-720 \| null}` | sets the tenant's RPO; null returns it to the default (`backup.write`) |
+
+**Filters.** `overview`, `vaults`, `items`, `jobs`, `failures`, `security` and `storage/history`
+take the same optional query parameters: `provider`, `subscription_id`, `resource_group`,
+`location`, `storage_id` (narrow the storage locations; names compare case-insensitively) and
+`workload_type` (narrows items, and jobs through the item of the same name in the same storage).
+A filtered overview has `filtered: true` and leaves `unprotected_resources` out (coverage is about
+inventory VMs and cannot be narrowed by storage or workload).
+
+**Security checks** never pass a setting the provider did not report. Locked immutability passes;
+unlocked (can be switched off) is "review". Cross-region restore is "not applicable" for a
+single-region Azure vault. Encryption always passes for Azure (backup data is always encrypted at
+rest); the key type (customer- or platform-managed) is reported, not judged.
 
 The RPO verdict is computed in one place (`app/services/backup_service.py::rpo_state`) and
 matches the alert rule.
@@ -138,10 +162,11 @@ is never reported as unprotected. An item whose protection is stopped or paused 
 
 ## Product surfaces
 
-- **Infrastructure → Backup**: KPIs (incl. unprotected VMs, storage used, off-site and immutable
+- **Infrastructure → Backup**: filter bar (shown when a filter has a choice), KPIs (incl. unprotected VMs, storage used, off-site and immutable
   vaults), job outcomes per day, RPO compliance with the customer's RPO target (editable with
   `backup.write`), items / coverage / jobs / vaults tables (vaults show provider and off-site copy)
-  with a site filter and CSV export, connect form.
+  with a site filter and CSV export, a Workloads table, a Failures tab (by error code), a Security
+  tab (check matrix per storage location), a storage-used trend on the Storage tab, connect form.
 - **Infrastructure → Backup → item** (`/infrastructure/backup/items/{id}`): protection, restore
   points, policy schedule and retention, and the item's job history.
 - **Dashboard → Backup Health** row: RPO compliance, failures, job outcomes; a connect link

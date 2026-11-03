@@ -288,6 +288,14 @@ class NormalizedBackupVault:
     free_bytes: int | None = None
     #: Whether the location is reachable; None when the provider does not say.
     online: bool | None = None
+    #: Multi-user authorization guards destructive operations: enabled | disabled.
+    multi_user_authorization: str | None = None
+    #: Key that encrypts the backup data: customer_managed | platform_managed.
+    encryption: str | None = None
+    #: Restores can run from the secondary (paired) region.
+    cross_region_restore: bool | None = None
+    #: Inbound access from public networks: enabled | disabled.
+    public_network_access: str | None = None
 
 
 @dataclass

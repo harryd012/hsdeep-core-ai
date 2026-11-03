@@ -15,6 +15,11 @@ than `backup_job_retention_days` are purged after each save.
 `backup_policies`: one row per policy in a vault - its schedule and how long
 each tier of restore points is kept. Items reference a policy by name.
 
+`backup_storage_snapshots`: one row per storage location per day (UTC) with
+the storage it reported, so storage growth can be shown over time. Written on
+every poll that read usage (the last poll of the day wins); purged after
+`backup_snapshot_retention_days`.
+
 `backup_settings`: per-tenant (per-customer) backup targets; at most one row
 per tenant. A tenant without a row uses the platform default RPO.
 
@@ -25,9 +30,9 @@ The tables are provider-neutral: a "vault" is any backup storage location
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -67,6 +72,13 @@ class BackupVault(Base, UUIDPKMixin, TimestampMixin):
     #: Size and free space of a fixed-size location (Veeam repository); NULL otherwise.
     capacity_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     free_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: Multi-user authorization: enabled | disabled; NULL when not reported.
+    multi_user_authorization: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    #: customer_managed | platform_managed; NULL when not reported.
+    encryption: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    cross_region_restore: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    #: enabled | disabled; NULL when not reported.
+    public_network_access: Mapped[str | None] = mapped_column(String(20), nullable=True)
     #: Outcome per table from the last poll: {"vaults": "collected", ...}
     table_status: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -141,6 +153,23 @@ class BackupPolicy(Base, UUIDPKMixin, TimestampMixin):
     yearly_retention_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
     protected_items_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BackupStorageSnapshot(Base, UUIDPKMixin, TimestampMixin):
+    __tablename__ = "backup_storage_snapshots"
+    __table_args__ = (UniqueConstraint("vault_id", "day", name="uq_backup_storage_snapshots_vault_day"),)
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    vault_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("backup_vaults.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    storage_used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    capacity_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    free_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    items_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class BackupSettings(Base, UUIDPKMixin, TimestampMixin):
