@@ -17,8 +17,9 @@
  */
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Building2, Eye, EyeOff, Lock, Mail, User } from "lucide-react";
+import { ArrowRight, Building2, Mail, User } from "lucide-react";
 import AuthScene, { useHydrated } from "@/components/auth/AuthScene";
+import PasswordField, { MIN_PASSWORD_LENGTH } from "@/components/auth/PasswordField";
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
@@ -31,9 +32,10 @@ export default function SignupPage() {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** After a rejected submit, required fields that are still empty are marked invalid. */
+  const [tried, setTried] = useState(false);
 
   // Credentials must never live in the URL.
   useEffect(() => {
@@ -50,12 +52,14 @@ export default function SignupPage() {
 
     const trimmedOrg = orgName.trim();
     const trimmedEmail = email.trim();
-    if (!trimmedOrg || !trimmedEmail || password.length < 8) {
+    if (!trimmedOrg || !trimmedEmail || password.length < MIN_PASSWORD_LENGTH) {
       setError(
-        password.length > 0 && password.length < 8
-          ? "Password must be at least 8 characters."
+        password.length > 0 && password.length < MIN_PASSWORD_LENGTH
+          ? `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`
           : "Enter your organization name, email, and a password."
       );
+      setTried(true);
+      document.getElementById(!trimmedOrg ? "orgName" : !trimmedEmail ? "email" : "password")?.focus();
       return;
     }
 
@@ -120,6 +124,7 @@ export default function SignupPage() {
               onChange={(e) => setOrgName(e.target.value)}
               disabled={submitting}
               required
+              aria-invalid={(tried && !orgName.trim()) || undefined}
               className="lx-input"
               placeholder="Organization name"
             />
@@ -154,38 +159,24 @@ export default function SignupPage() {
               onChange={(e) => setEmail(e.target.value)}
               disabled={submitting}
               required
+              aria-invalid={(tried && !email.trim()) || undefined}
               className="lx-input"
               placeholder="Work email"
             />
           </div>
 
-          <div className="lx-field">
-            <label htmlFor="password" className="lx-sr-only">Password</label>
-            <Lock className="lx-field__icon" size={18} aria-hidden="true" />
-            <input
-              id="password"
-              name="password"
-              type={showPassword ? "text" : "password"}
-              autoComplete="new-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              disabled={submitting}
-              required
-              minLength={8}
-              aria-describedby="signup-password-hint"
-              className="lx-input"
-              placeholder="Password (8+ characters)"
-            />
-            <button
-              type="button"
-              onClick={() => setShowPassword((v) => !v)}
-              className="lx-field__toggle"
-              aria-label={showPassword ? "Hide password" : "Show password"}
-              aria-pressed={showPassword}
-            >
-              {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-            </button>
-          </div>
+          <PasswordField
+            id="password"
+            name="password"
+            value={password}
+            onChange={setPassword}
+            placeholder="Password (8+ characters)"
+            autoComplete="new-password"
+            disabled={submitting}
+            invalid={tried && password.length < MIN_PASSWORD_LENGTH}
+            describedBy="signup-password-hint"
+            meter
+          />
           <p id="signup-password-hint" className="lx-card__hint lx-card__hint--left">
             You&apos;ll start on the Starter plan as the workspace owner.
           </p>

@@ -15,8 +15,9 @@
 
 import { useState, Suspense, type FormEvent, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowRight, Building2, Eye, EyeOff, Lock, User } from "lucide-react";
+import { ArrowRight, Building2, User } from "lucide-react";
 import AuthScene, { useHydrated } from "@/components/auth/AuthScene";
+import PasswordField from "@/components/auth/PasswordField";
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
@@ -34,9 +35,10 @@ function LoginForm() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Fields to mark invalid after a failed attempt. */
+  const [invalid, setInvalid] = useState<{ email?: boolean; password?: boolean }>({});
 
   // Already signed in (e.g. dev bootstrap, or navigated here by mistake)?
   // Bounce straight to the destination rather than showing the form.
@@ -64,11 +66,14 @@ function LoginForm() {
     const trimmedEmail = email.trim();
     if (!trimmedEmail || !password) {
       setError("Enter both your email and password.");
+      setInvalid({ email: !trimmedEmail, password: !password });
+      document.getElementById(trimmedEmail ? "password" : "email")?.focus();
       return;
     }
 
     setSubmitting(true);
     setError(null);
+    setInvalid({});
     try {
       await login({ email: trimmedEmail, password });
       router.replace(next);
@@ -79,6 +84,7 @@ function LoginForm() {
           setError("Can't reach the server. Check your connection and try again.");
         } else if (err.status === 401 || err.status === 400) {
           setError("Invalid email or password.");
+          setInvalid({ email: true, password: true });
         } else if (err.status === 403) {
           // e.g. "Confirm your email address before signing in."
           setError(err.message || "Your account is not permitted to sign in. Contact your administrator.");
@@ -126,41 +132,31 @@ function LoginForm() {
             inputMode="email"
             autoComplete="username"
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(e) => {
+              setEmail(e.target.value);
+              setInvalid((v) => ({ ...v, email: false }));
+            }}
             disabled={submitting}
             required
+            aria-invalid={invalid.email || undefined}
             className="lx-input"
             placeholder="Email address"
           />
         </div>
 
-        <div className="lx-field">
-          <label htmlFor="password" className="lx-sr-only">
-            Password
-          </label>
-          <Lock className="lx-field__icon" size={18} aria-hidden="true" />
-          <input
-            id="password"
-            name="password"
-            type={showPassword ? "text" : "password"}
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            disabled={submitting}
-            required
-            className="lx-input"
-            placeholder="Password"
-          />
-          <button
-            type="button"
-            onClick={() => setShowPassword((v) => !v)}
-            className="lx-field__toggle"
-            aria-label={showPassword ? "Hide password" : "Show password"}
-            aria-pressed={showPassword}
-          >
-            {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-          </button>
-        </div>
+        <PasswordField
+          id="password"
+          name="password"
+          value={password}
+          onChange={(v) => {
+            setPassword(v);
+            setInvalid((i) => ({ ...i, password: false }));
+          }}
+          placeholder="Password"
+          autoComplete="current-password"
+          disabled={submitting}
+          invalid={invalid.password}
+        />
 
         <div className="lx-form__row">
           <a className="lx-link" href="/forgot-password">

@@ -24,15 +24,34 @@
   clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
 
-/* -- backdrop stage: sized exactly like object-fit: cover ------------------ */
+/* -- backdrop stage --------------------------------------------------------
+   16:9, like the video, so the orbit nodes (in % of the stage) stay on the
+   globe. It covers the window on tall screens but is capped at 86% of the
+   window height, so on wide screens the globe stays compact instead of
+   growing past the top and bottom; the edges fade into the page background. */
 .lx-stage {
-  position: fixed; left: 50%; top: 50%; z-index: 0;
-  width: max(100vw, 177.78vh); height: max(100vh, 56.25vw);
+  position: fixed; left: 50%; top: 48%; z-index: 0;
+  height: min(max(100vh, 56.25vw), 86vh); width: auto; aspect-ratio: 16 / 9;
   transform: translate(-50%, -50%);
   pointer-events: none;
 }
 .lx-stage .login-page__video,
-.lx-stage .login-page__poster { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.lx-stage .login-page__poster {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  /* Fade the footage only (not the orbit rings). The right side fades sooner:
+     the footage has a lighter panel there, right of the globe. */
+  -webkit-mask-image: linear-gradient(90deg, transparent 6%, #000 28%, #000 57%, transparent 71%),
+    linear-gradient(180deg, transparent 2%, #000 18%, #000 80%, transparent 98%);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(90deg, transparent 6%, #000 28%, #000 57%, transparent 71%),
+    linear-gradient(180deg, transparent 2%, #000 18%, #000 80%, transparent 98%);
+  mask-composite: intersect;
+}
+/* Phones and narrow windows: fill the screen behind the card as before. */
+@media (max-width: 899px) {
+  .lx-stage { height: max(100vh, 56.25vw); }
+  .lx-stage .login-page__video, .lx-stage .login-page__poster { -webkit-mask-image: none; mask-image: none; }
+}
 .lx-stage .login-page__video { z-index: 1; }
 .lx-stage .login-page__scrim { display: none; }
 @media (prefers-reduced-motion: reduce) { .lx-stage .login-page__video { display: none; } }
@@ -74,8 +93,10 @@
   50% { box-shadow: 0 0 26px rgba(34, 211, 238, 0.8), inset 0 0 16px rgba(34, 211, 238, 0.45); }
 }
 @media (prefers-reduced-motion: reduce) { .lx-node__ring { animation: none; } }
-/* Only where the backdrop is wide enough for the nodes to clear the text and the card. */
+/* Rings where the backdrop is wide enough to clear the text and the card;
+   their labels only on windows wide enough that the labels clear them too. */
 @media (min-width: 1200px) and (min-aspect-ratio: 3/2) { .lx-orbit { display: block; } }
+@media (max-width: 1679px) { .lx-node__label { display: none; } .lx-node__ring::after { width: 28px; } }
 
 /* -- foreground layout -------------------------------------------------------- */
 .lx-layout {
@@ -197,6 +218,48 @@
 .lx-sso:disabled { opacity: 0.7; }
 .lx-card__hint { margin: -4px 0 0; text-align: center; font-size: 12.5px; color: var(--lx-muted); }
 .lx-card__hint--left { margin: -6px 0 2px; text-align: left; }
+
+/* Invalid fields (after a rejected submit). */
+.lx-input[aria-invalid="true"] { border-color: rgba(248, 113, 113, 0.85); box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.18); }
+
+/* Caps Lock / mismatch note under a password field. */
+.lx-caps {
+  display: flex; align-items: center; gap: 6px; margin: 6px 0 0; font-size: 12.5px; font-weight: 600; color: #fbbf24;
+}
+.lx-caps::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+/* Strength meter (guidance only; the server rule is the minimum length). */
+.lx-strength { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 12.5px; color: var(--lx-soft); }
+.lx-strength__bars { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; flex: 1; max-width: 180px; }
+.lx-strength__bars i { height: 4px; border-radius: 2px; background: rgba(148, 163, 184, 0.25); transition: background 0.2s; }
+.lx-strength--0 .lx-strength__label { color: #fca5a5; }
+.lx-strength--1 .on { background: #f87171; }
+.lx-strength--2 .on { background: #fbbf24; }
+.lx-strength--3 .on { background: #38bdf8; }
+.lx-strength--4 .on { background: #34d399; }
+
+/* Account pages (forgot / reset password, invite, verify). */
+.lx-card__title--sm { font-size: 26px; }
+.lx-card__notice {
+  margin: -8px 0 16px; padding: 10px 12px; border-radius: 10px; font-size: 13.5px; line-height: 1.5;
+  color: #bbf7d0; background: rgba(6, 78, 59, 0.45); border: 1px solid rgba(52, 211, 153, 0.45);
+}
+.lx-fieldset { display: flex; flex-direction: column; gap: 14px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.lx-label { font-size: 13px; font-weight: 600; color: var(--lx-soft); }
+.lx-input--plain { padding: 0 14px; }
+.lx-submit--block { width: 100%; }
+a.lx-submit { text-decoration: none; }
+.lx-back { display: inline-flex; align-items: center; gap: 6px; color: #38bdf8; font-weight: 600; text-decoration: none; }
+.lx-back:hover { color: #7dd3fc; }
+
+/* Entrance: the card rises in, the story fades in after it. */
+@media (prefers-reduced-motion: no-preference) {
+  .lx-card { animation: lx-rise 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+  .lx-hero, .lx-top, .lx-foot { animation: lx-fade 0.9s ease-out 0.15s both; }
+  .lx-orbit { animation: lx-fade 1.4s ease-out 0.4s both; }
+}
+@keyframes lx-rise { from { opacity: 0; transform: translateY(14px) scale(0.985); } to { opacity: 1; transform: none; } }
+@keyframes lx-fade { from { opacity: 0; } to { opacity: 1; } }
 .lx-card__foot { margin: 20px 0 0; padding-top: 16px; border-top: 1px solid rgba(148, 163, 184, 0.16); text-align: center; font-size: 14px; color: var(--lx-soft); }
 
 /* -- smaller screens -------------------------------------------------------------- */
