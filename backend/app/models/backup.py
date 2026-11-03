@@ -20,6 +20,11 @@ the storage it reported, so storage growth can be shown over time. Written on
 every poll that read usage (the last poll of the day wins); purged after
 `backup_snapshot_retention_days`.
 
+`backup_replicated_items` / `backup_recovery_plans`: disaster-recovery
+replication (Azure Site Recovery) in a vault - replicated machines with their
+replication and failover health, and the recovery plans that fail them over
+together. Synced per vault when the "replication" table was read.
+
 `backup_settings`: per-tenant (per-customer) backup targets; at most one row
 per tenant. A tenant without a row uses the platform default RPO.
 
@@ -170,6 +175,73 @@ class BackupStorageSnapshot(Base, UUIDPKMixin, TimestampMixin):
     capacity_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     free_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     items_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class BackupReplicatedItem(Base, UUIDPKMixin, TimestampMixin):
+    __tablename__ = "backup_replicated_items"
+    __table_args__ = (UniqueConstraint("vault_id", "external_id", name="uq_backup_replicated_items_vault_external"),)
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    vault_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("backup_vaults.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    external_id: Mapped[str] = mapped_column(String(700), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_resource_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    #: A2A | HyperVReplicaAzure | InMageRcm ...
+    replication_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    protected_item_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    source_location: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    target_location: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    protection_state: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    protection_state_description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: normal | warning | critical; NULL when not reported.
+    replication_health: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    failover_health: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    #: primary | recovery
+    active_location: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    test_failover_state: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    last_failover_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_test_failover_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Replication lag the provider last calculated, seconds.
+    rpo_seconds: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    rpo_calculated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    policy_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    recovery_vm_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    current_scenario: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    allowed_operations: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    health_errors: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BackupRecoveryPlan(Base, UUIDPKMixin, TimestampMixin):
+    __tablename__ = "backup_recovery_plans"
+    __table_args__ = (UniqueConstraint("vault_id", "external_id", name="uq_backup_recovery_plans_vault_external"),)
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    vault_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("backup_vaults.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    external_id: Mapped[str] = mapped_column(String(700), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    primary_location: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    recovery_location: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    failover_deployment_model: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    replication_providers: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    allowed_operations: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    current_scenario: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    current_scenario_status: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    last_planned_failover_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_unplanned_failover_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_test_failover_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    groups: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    #: Replicated item external ids in the plan (lower case).
+    item_external_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class BackupSettings(Base, UUIDPKMixin, TimestampMixin):

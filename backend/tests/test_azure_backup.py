@@ -169,6 +169,8 @@ def _arm_transport(*, items_fail=False, vaults_fail=False, seen: list | None = N
             return httpx.Response(200, json={"value": POLICIES})
         if path.endswith("/usages"):
             return httpx.Response(200, json={"value": USAGES})
+        if path.endswith(("/replicationProtectedItems", "/replicationRecoveryPlans")):
+            return httpx.Response(200, json={"value": []})  # vault without Site Recovery
         return httpx.Response(404)
 
     return httpx.MockTransport(handler)
@@ -214,6 +216,7 @@ async def test_collect_reads_every_page_and_only_issues_gets():
     assert sum(1 for r in seen if r.url.path.endswith("/backupProtectedItems")) == 2  # followed nextLink
     assert bundle.backup_status == {
         "vaults": "collected", "items": "collected", "jobs": "collected", "policies": "collected", "usage": "collected",
+        "replication": "empty",
     }
 
     vault = bundle.backup_vaults[0]
@@ -1000,4 +1003,202 @@ async def test_job_controller_vault_and_policy_reads_with_isolation(db, monitori
 
     async with _client(source.tenant_id, permissions=frozenset({"devices.read"})) as client:
         for path in (f"/api/backup/jobs/{failed['id']}", f"/api/backup/vaults/{vault_id}", "/api/backup/policies"):
+            assert (await client.get(path)).status_code == 403, path
+
+
+# ---------------------------------------------------------------------------
+# Master brief P3: Site Recovery replicated items and recovery plans
+# ---------------------------------------------------------------------------
+
+CONTAINER = f"{VAULT_ID}/replicationFabrics/asr-a2a-default-westeurope/replicationProtectionContainers/asr-a2a-default-westeurope-container"
+
+
+def _replicated(name, *, health="Normal", failover="Normal", active="Primary", tested_days_ago=30, errors=None):
+    return {
+        "id": f"{CONTAINER}/replicationProtectedItems/{name}-guid",
+        "name": f"{name}-guid",
+        "type": "Microsoft.RecoveryServices/vaults/replicationFabrics/replicationProtectionContainers/replicationProtectedItems",
+        "properties": {
+            "friendlyName": name,
+            "protectedItemType": "AzureVmDiskDetails",
+            "primaryFabricFriendlyName": "West Europe",
+            "recoveryFabricFriendlyName": "North Europe",
+            "protectionState": "Protected" if active == "Primary" else "FailedOver",
+            "protectionStateDescription": "Protected" if active == "Primary" else "Failover completed",
+            "activeLocation": active,
+            "testFailoverState": "None",
+            "allowedOperations": ["PlannedFailover", "UnplannedFailover", "TestFailover", "DisableProtection"],
+            "replicationHealth": health,
+            "failoverHealth": failover,
+            "healthErrors": errors or [],
+            "lastSuccessfulTestFailoverTime": _iso(NOW - timedelta(days=tested_days_ago)) if tested_days_ago is not None else None,
+            "policyFriendlyName": "24-hour-retention-policy",
+            "currentScenario": {"scenarioName": "None", "jobId": "None", "startTime": "1753-01-01T01:01:01Z"},
+            "providerSpecificDetails": {
+                "instanceType": "A2A",
+                "fabricObjectId": f"/subscriptions/{SUB}/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/{name}",
+                "primaryFabricLocation": "westeurope",
+                "recoveryFabricLocation": "northeurope",
+                "rpoInSeconds": 45 if health == "Normal" else 5400,
+                "lastRpoCalculatedTime": _iso(NOW - timedelta(minutes=5)),
+                "recoveryAzureVMName": f"{name}-asr",
+            },
+        },
+    }
+
+
+REPLICATED = [
+    _replicated("app-01"),
+    _replicated("app-02", health="Warning", tested_days_ago=None, errors=[{
+        "errorCode": "153007", "summaryMessage": "Replication is lagging", "errorLevel": "Warning",
+        "recommendedAction": "Check the source VM's network", "creationTimeUtc": _iso(NOW - timedelta(hours=2)),
+    }]),
+    _replicated("app-03", active="Recovery"),
+]
+PLANS = [{
+    "id": f"{VAULT_ID}/replicationRecoveryPlans/rp-web",
+    "name": "rp-web",
+    "type": "Microsoft.RecoveryServices/vaults/replicationRecoveryPlans",
+    "properties": {
+        "friendlyName": "rp-web",
+        "primaryFabricFriendlyName": "West Europe",
+        "recoveryFabricFriendlyName": "North Europe",
+        "failoverDeploymentModel": "ResourceManager",
+        "replicationProviders": ["A2A"],
+        "allowedOperations": ["PlannedFailover", "UnplannedFailover", "TestFailover"],
+        "lastTestFailoverTime": _iso(NOW - timedelta(days=20)),
+        "groups": [
+            {"groupType": "Shutdown", "replicationProtectedItems": []},
+            {"groupType": "Boot", "replicationProtectedItems": [
+                {"id": REPLICATED[0]["id"], "virtualMachineId": "vm1"},
+                {"id": REPLICATED[1]["id"], "virtualMachineId": "vm2"},
+            ]},
+        ],
+    },
+}]
+
+
+def _asr_transport(*, asr_status=200):
+    base = _arm_transport()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/replicationProtectedItems"):
+            if asr_status != 200:
+                return httpx.Response(asr_status, json={"error": {"code": "AuthorizationFailed"}})
+            assert request.url.params.get("api-version") == "2025-01-01"
+            return httpx.Response(200, json={"value": REPLICATED})
+        if path.endswith("/replicationRecoveryPlans"):
+            return httpx.Response(200, json={"value": PLANS})
+        return base.handle_request(request)
+
+    return httpx.MockTransport(handler)
+
+
+async def _asr_bundle(**kw) -> NormalizedBundle:
+    collector = _collector(_asr_transport(**kw))
+    return collector.normalize(await collector.collect())
+
+
+async def test_site_recovery_items_and_plans_are_normalized():
+    bundle = await _asr_bundle()
+    assert bundle.backup_status["replication"] == "collected"
+    items = {i.name: i for i in bundle.replicated_items}
+    app1 = items["app-01"]
+    assert (app1.replication_type, app1.source_location, app1.target_location) == ("A2A", "westeurope", "northeurope")
+    assert (app1.replication_health, app1.active_location, app1.rpo_seconds) == ("normal", "primary", 45)
+    assert app1.source_resource_id.endswith("/virtualMachines/app-01") and app1.current_scenario is None
+    assert "TestFailover" in app1.allowed_operations and app1.recovery_vm_name == "app-01-asr"
+    app2 = items["app-02"]
+    assert app2.replication_health == "warning" and app2.last_test_failover_at is None
+    assert app2.health_errors[0]["code"] == "153007" and app2.health_errors[0]["recommended_action"]
+    assert items["app-03"].active_location == "recovery"
+    (plan,) = bundle.recovery_plans
+    assert (plan.name, plan.groups, plan.replication_providers) == ("rp-web", 2, ["A2A"])
+    assert plan.item_external_ids == [REPLICATED[0]["id"].lower(), REPLICATED[1]["id"].lower()]
+
+
+async def test_missing_site_recovery_role_fails_only_replication():
+    bundle = await _asr_bundle(asr_status=403)
+    assert bundle.backup_status["replication"] == "failed"
+    assert bundle.backup_status["items"] == "collected" and len(bundle.backup_items) == 4
+    assert bundle.replicated_items == [] and bundle.recovery_plans == []
+
+
+def test_dr_readiness_rule():
+    from app.services.dr_service import readiness
+
+    def item(**kw):
+        base = dict(active_location="primary", replication_health="normal", failover_health="normal",
+                    last_test_failover_at=NOW - timedelta(days=10))
+        return SimpleNamespace(**{**base, **kw})
+
+    assert readiness(item(), NOW, 180) == ("ready", [])
+    assert readiness(item(active_location="recovery"), NOW, 180)[0] == "failed_over"
+    verdict, reasons = readiness(item(replication_health=None, last_test_failover_at=None), NOW, 180)
+    assert verdict == "not_ready" and len(reasons) == 2
+    assert readiness(item(last_test_failover_at=NOW - timedelta(days=200)), NOW, 180)[1] == [
+        "Last successful test failover 200 days ago (target 180)"
+    ]
+    assert readiness(item(failover_health="critical"), NOW, 180)[0] == "not_ready"
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_replication_saved_alerts_api_and_isolation(db, monitoring_source_factory, other_tenant):
+    from app.models.backup import BackupRecoveryPlan, BackupReplicatedItem
+
+    source = await monitoring_source_factory(source_type="azure_backup")
+    saver = _saver(db)
+    result = await saver.save(source, await _asr_bundle())
+    alerts = await _evaluate(db, result)
+    await db.commit()
+    assert len((await db.execute(select(BackupReplicatedItem).where(BackupReplicatedItem.tenant_id == source.tenant_id))).scalars().all()) == 3
+    open_titles = [a.title for a in alerts if a.status == "open"]
+    assert any("app-02" in t and "replication" in t for t in open_titles)
+    assert not any("app-01" in t and "replication" in t for t in open_titles)
+
+    # A failed replication read keeps what was stored; a later read without app-03 retires it.
+    await saver.save(source, await _asr_bundle(asr_status=403))
+    await db.commit()
+    assert len((await db.execute(select(BackupReplicatedItem).where(BackupReplicatedItem.tenant_id == source.tenant_id))).scalars().all()) == 3
+    bundle = await _asr_bundle()
+    bundle.replicated_items = [i for i in bundle.replicated_items if i.name != "app-03"]
+    await saver.save(source, bundle)
+    await db.commit()
+    names = {r.name for r in (await db.execute(select(BackupReplicatedItem).where(BackupReplicatedItem.tenant_id == source.tenant_id))).scalars()}
+    assert names == {"app-01", "app-02"}
+    assert len((await db.execute(select(BackupRecoveryPlan).where(BackupRecoveryPlan.tenant_id == source.tenant_id))).scalars().all()) == 1
+    await saver.save(source, await _asr_bundle())  # app-03 back
+    await db.commit()
+
+    async with _client(source.tenant_id) as client:
+        o = (await client.get("/api/backup/replication/overview")).json()
+        assert (o["configured"], o["replication_status"], o["items_total"]) == (True, "collected", 3)
+        assert (o["health_normal"], o["health_warning"], o["failed_over"]) == (2, 1, 1)
+        assert (o["ready"], o["never_tested"], o["readiness_pct"]) == (1, 1, 33.3)
+        assert (o["max_rpo_seconds"], o["plans_total"], o["plans_ready"]) == (5400, 1, 0)
+        assert o["by_region"] == [{"source_location": "westeurope", "target_location": "northeurope", "items": 3, "ready": 1, "unhealthy": 1}]
+
+        items = {i["name"]: i for i in (await client.get("/api/backup/replication/items")).json()}
+        assert items["app-01"]["readiness"] == "ready" and items["app-01"]["recovery_plans"] == ["rp-web"]
+        assert items["app-02"]["readiness"] == "not_ready" and len(items["app-02"]["readiness_reasons"]) == 2
+        assert items["app-03"]["readiness"] == "failed_over" and items["app-03"]["recovery_plans"] == []
+        one = (await client.get(f"/api/backup/replication/items/{items['app-02']['id']}")).json()
+        assert one["health_errors"][0]["message"] == "Replication is lagging"
+        assert (await client.get(f"/api/backup/replication/items/{uuid.uuid4()}")).status_code == 404
+
+        (plan,) = (await client.get("/api/backup/replication/plans")).json()
+        assert (plan["items_total"], plan["items_found"], plan["items_ready"], plan["readiness"]) == (2, 2, 1, "not_ready")
+        assert plan["readiness_reasons"] == ["1 of 2 member item(s) not DR-ready"]
+
+        assert (await client.get("/api/backup/replication/items", params={"location": "eastus"})).json() == []
+
+    async with _client(other_tenant) as client:
+        o = (await client.get("/api/backup/replication/overview")).json()
+        assert (o["configured"], o["items_total"], o["replication_status"]) == (False, 0, None)
+        assert (await client.get(f"/api/backup/replication/items/{items['app-01']['id']}")).status_code == 404
+        assert (await client.get("/api/backup/replication/plans")).json() == []
+
+    async with _client(source.tenant_id, permissions=frozenset({"devices.read"})) as client:
+        for path in ("/api/backup/replication/overview", "/api/backup/replication/items", "/api/backup/replication/plans"):
             assert (await client.get(path)).status_code == 403, path

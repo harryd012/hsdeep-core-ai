@@ -114,7 +114,7 @@ documented API shapes; see each engineering doc).
 | 4 Job Controller | P2 | **Partial**: jobs page (24 h–90 d, filters, search, CSV, detail drawer with timeline, error, related jobs) | Missing: progress %, initiated-by, replication / DR jobs (BR-2), retry / cancel (BR-3) |
 | 6 Vault Management | P2 | **Partial**: storage list + detail (overview, instances, policies, jobs, storage, security) | Missing: Data Protection backup vaults, private endpoints, diagnostic settings, activity log, access control |
 | 7 Policies & retention | P2 | **Partial**: policy inventory, items per policy, retention simulation (tested) | Missing: create / edit / delete (BR-3), drift and comparison, governance rules (P4) |
-| 3 Replicated items & DR | P3 | none (`failover_*` is network HA, unrelated) | BR-2 (Site Recovery reader); failover workflows in BR-3 behind approval |
+| 3 Replicated items & DR | P3 | **Partial**: Site Recovery read (replicated items, recovery plans), replication-health alert, DR-readiness rule, DR Overview / Replicated Items / Recovery Plans pages (`e6a1c3d8f2b4`) | Missing: test / planned / unplanned failover, failback and drill workflows (BR-3, behind approval), DR job history (replicationJobs), tags |
 | 5 Alerts & metrics | P4 | Platform alert engine; backup sensors raise alerts (RPO, result, protection, soft delete, free space) | Backup alert view filtered from the existing engine (no second alert system); metric rules reuse sensor thresholds |
 | 8 Compliance & security | P4 | Security checks per storage location (BR-1 slice 1) | compliance rules + exceptions on top of the same checks |
 | 9 Log Analytics workspaces | P5 | none | LA-1 |

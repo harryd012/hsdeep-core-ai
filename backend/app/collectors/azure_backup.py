@@ -19,6 +19,11 @@ Calls (one subscription, then per vault), following ``nextLink`` paging:
     GET {vault}/backupJobs?$filter=startTime eq '...' and endTime eq '...'
     GET {vault}/backupPolicies           (schedule and retention)
     GET {vault}/usages                   (backup storage used, bytes)
+    GET {vault}/replicationProtectedItems (Site Recovery: replicated machines)
+    GET {vault}/replicationRecoveryPlans  (Site Recovery: recovery plans)
+
+Site Recovery needs the "Site Recovery Reader" role as well; without it the
+"replication" table reports failed and backup data is unaffected.
 
 Each table reports collected | empty | failed in ``bundle.backup_status``, so
 a failed read never wipes what an earlier poll stored. Nothing is inferred: a
@@ -44,6 +49,8 @@ from app.collectors.base import (
     NormalizedBackupVault,
     NormalizedBundle,
     NormalizedDevice,
+    NormalizedRecoveryPlan,
+    NormalizedReplicatedItem,
 )
 from app.core.config import get_settings
 
@@ -54,6 +61,8 @@ ARM_SCOPE = "https://management.azure.com/.default"
 #: Recovery Services vault, protected item and job APIs.
 VAULTS_API = "2023-04-01"
 BACKUP_API = "2023-04-01"
+#: Site Recovery (replication protected items, recovery plans).
+SITE_RECOVERY_API = "2025-01-01"
 #: Safety cap on pages followed per listing (a runaway nextLink loop must end).
 MAX_PAGES = 50
 
@@ -198,6 +207,91 @@ def _encryption(props: dict) -> str:
     return "customer_managed" if key else "platform_managed"
 
 
+def _health(value: str | None) -> str | None:
+    """Site Recovery ProtectionHealth: Normal / Warning / Critical; 'None' is not reported."""
+    value = (value or "").lower()
+    return value if value in ("normal", "warning", "critical") else None
+
+
+def _scenario(value: dict | None) -> str | None:
+    name = (value or {}).get("scenarioName")
+    return None if not name or name == "None" else name
+
+
+def _replicated_item(vault_id: str, row: dict) -> NormalizedReplicatedItem | None:
+    item_id = (row.get("id") or "").lower()
+    if not item_id:
+        return None
+    p = row.get("properties") or {}
+    d = p.get("providerSpecificDetails") or {}
+    errors = [
+        {
+            "code": e.get("errorCode"),
+            "message": e.get("summaryMessage") or e.get("errorMessage"),
+            "level": e.get("errorLevel"),
+            "recommended_action": e.get("recommendedAction"),
+            "created_at": e.get("creationTimeUtc"),
+        }
+        for e in (p.get("healthErrors") or [])
+        if isinstance(e, dict)
+    ]
+    rpo = d.get("rpoInSeconds")
+    return NormalizedReplicatedItem(
+        external_id=item_id,
+        vault_external_id=vault_id,
+        name=p.get("friendlyName") or row.get("name") or item_id.rsplit("/", 1)[-1],
+        source_resource_id=d.get("fabricObjectId"),
+        replication_type=d.get("instanceType"),
+        protected_item_type=p.get("protectedItemType"),
+        source_location=d.get("primaryFabricLocation") or p.get("primaryFabricFriendlyName"),
+        target_location=d.get("recoveryFabricLocation") or p.get("recoveryFabricFriendlyName"),
+        protection_state=p.get("protectionState"),
+        protection_state_description=p.get("protectionStateDescription"),
+        replication_health=_health(p.get("replicationHealth")),
+        failover_health=_health(p.get("failoverHealth")),
+        active_location=(p.get("activeLocation") or "").lower() or None,
+        test_failover_state=p.get("testFailoverState"),
+        last_failover_at=_ts(p.get("lastSuccessfulFailoverTime")),
+        last_test_failover_at=_ts(p.get("lastSuccessfulTestFailoverTime")),
+        rpo_seconds=int(rpo) if isinstance(rpo, (int, float)) else None,
+        rpo_calculated_at=_ts(d.get("lastRpoCalculatedTime")),
+        policy_name=p.get("policyFriendlyName"),
+        recovery_vm_name=d.get("recoveryAzureVMName"),
+        current_scenario=_scenario(p.get("currentScenario")),
+        allowed_operations=[o for o in (p.get("allowedOperations") or []) if isinstance(o, str)],
+        health_errors=errors,
+    )
+
+
+def _recovery_plan(vault_id: str, row: dict) -> NormalizedRecoveryPlan | None:
+    plan_id = (row.get("id") or "").lower()
+    if not plan_id:
+        return None
+    p = row.get("properties") or {}
+    groups = [g for g in (p.get("groups") or []) if isinstance(g, dict)]
+    return NormalizedRecoveryPlan(
+        external_id=plan_id,
+        vault_external_id=vault_id,
+        name=p.get("friendlyName") or row.get("name") or plan_id.rsplit("/", 1)[-1],
+        primary_location=p.get("primaryFabricFriendlyName"),
+        recovery_location=p.get("recoveryFabricFriendlyName"),
+        failover_deployment_model=p.get("failoverDeploymentModel"),
+        replication_providers=[x for x in (p.get("replicationProviders") or []) if isinstance(x, str)],
+        allowed_operations=[o for o in (p.get("allowedOperations") or []) if isinstance(o, str)],
+        current_scenario=_scenario(p.get("currentScenario")),
+        current_scenario_status=p.get("currentScenarioStatus"),
+        last_planned_failover_at=_ts(p.get("lastPlannedFailoverTime")),
+        last_unplanned_failover_at=_ts(p.get("lastUnplannedFailoverTime")),
+        last_test_failover_at=_ts(p.get("lastTestFailoverTime")),
+        groups=len(groups),
+        item_external_ids=[
+            (i.get("id") or "").lower()
+            for g in groups for i in (g.get("replicationProtectedItems") or [])
+            if isinstance(i, dict) and i.get("id")
+        ],
+    )
+
+
 def _resource_group(resource_id: str) -> str | None:
     match = re.search(r"/resourceGroups/([^/]+)", resource_id, re.IGNORECASE)
     return match.group(1) if match else None
@@ -260,10 +354,13 @@ class AzureBackupCollector(AzureCollector):
                 {"api-version": VAULTS_API},
             )
             raw["status"]["vaults"] = "collected" if vaults else "empty"
-            items_failed = jobs_failed = policies_failed = usage_failed = False
+            items_failed = jobs_failed = policies_failed = usage_failed = replication_failed = False
             for vault in vaults:
                 vault_id = vault.get("id") or ""
-                entry: dict[str, Any] = {"vault": vault, "items": None, "jobs": None, "policies": None, "usages": None}
+                entry: dict[str, Any] = {
+                    "vault": vault, "items": None, "jobs": None, "policies": None, "usages": None,
+                    "replicated": None, "plans": None,
+                }
                 try:
                     entry["items"] = await self._list(client, f"{vault_id}/backupProtectedItems", {"api-version": BACKUP_API})
                 except httpx.HTTPError as exc:
@@ -291,6 +388,17 @@ class AzureBackupCollector(AzureCollector):
                 except httpx.HTTPError as exc:
                     usage_failed = True
                     logger.warning("Azure Backup: usage read failed for %s: %s", vault_id, exc)
+                if not replication_failed:
+                    # One refusal (no Site Recovery Reader role) means none will
+                    # succeed: stop asking for the rest of the vaults.
+                    try:
+                        params = {"api-version": SITE_RECOVERY_API}
+                        entry["replicated"] = await self._list(client, f"{vault_id}/replicationProtectedItems", params)
+                        entry["plans"] = await self._list(client, f"{vault_id}/replicationRecoveryPlans", params)
+                    except httpx.HTTPError as exc:
+                        replication_failed = True
+                        entry["replicated"] = entry["plans"] = None
+                        logger.warning("Azure Backup: Site Recovery read failed for %s: %s", vault_id, exc)
                 raw["vaults"].append(entry)
             if vaults:
                 any_items = any(e["items"] for e in raw["vaults"])
@@ -301,9 +409,14 @@ class AzureBackupCollector(AzureCollector):
                 any_usage = any(e["usages"] for e in raw["vaults"])
                 raw["status"]["policies"] = "failed" if policies_failed else ("collected" if any_policies else "empty")
                 raw["status"]["usage"] = "failed" if usage_failed else ("collected" if any_usage else "empty")
+                any_replication = any(e["replicated"] or e["plans"] for e in raw["vaults"])
+                raw["status"]["replication"] = (
+                    "failed" if replication_failed else ("collected" if any_replication else "empty")
+                )
             else:
                 raw["status"]["items"] = raw["status"]["jobs"] = "empty"
                 raw["status"]["policies"] = raw["status"]["usage"] = "empty"
+                raw["status"]["replication"] = "empty"
         return raw
 
     def normalize(self, raw: dict[str, Any]) -> NormalizedBundle:
@@ -414,4 +527,12 @@ class AzureBackupCollector(AzureCollector):
                         error_message=first_error.get("errorString") or first_error.get("errorTitle"),
                     )
                 )
+            for row in entry.get("replicated") or []:
+                item = _replicated_item(vault_id, row)
+                if item:
+                    bundle.replicated_items.append(item)
+            for row in entry.get("plans") or []:
+                plan = _recovery_plan(vault_id, row)
+                if plan:
+                    bundle.recovery_plans.append(plan)
         return bundle

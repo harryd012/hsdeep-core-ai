@@ -345,6 +345,66 @@ class NormalizedBackupPolicy:
 
 
 @dataclass
+class NormalizedReplicatedItem:
+    """A machine replicated for disaster recovery (Azure Site Recovery
+    replication protected item). Health and states as the provider reports
+    them (snake_case); anything not reported stays None."""
+
+    external_id: str
+    vault_external_id: str
+    name: str
+    #: Resource id of the source machine (Azure-to-Azure: the VM's ARM id).
+    source_resource_id: str | None = None
+    #: Replication scenario: A2A, HyperVReplicaAzure, InMageRcm ...
+    replication_type: str | None = None
+    protected_item_type: str | None = None
+    source_location: str | None = None
+    target_location: str | None = None
+    protection_state: str | None = None
+    protection_state_description: str | None = None
+    #: normal | warning | critical
+    replication_health: str | None = None
+    failover_health: str | None = None
+    #: primary | recovery
+    active_location: str | None = None
+    test_failover_state: str | None = None
+    last_failover_at: datetime | None = None
+    last_test_failover_at: datetime | None = None
+    #: Replication lag the provider last calculated (its "RPO"), seconds.
+    rpo_seconds: int | None = None
+    rpo_calculated_at: datetime | None = None
+    policy_name: str | None = None
+    recovery_vm_name: str | None = None
+    #: Operation running now (e.g. "TestFailover"); None when idle.
+    current_scenario: str | None = None
+    allowed_operations: list[str] = field(default_factory=list)
+    #: [{"code", "message", "level", "recommended_action", "created_at"}]
+    health_errors: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class NormalizedRecoveryPlan:
+    """An ordered failover plan over replicated items (Site Recovery recovery plan)."""
+
+    external_id: str
+    vault_external_id: str
+    name: str
+    primary_location: str | None = None
+    recovery_location: str | None = None
+    failover_deployment_model: str | None = None
+    replication_providers: list[str] = field(default_factory=list)
+    allowed_operations: list[str] = field(default_factory=list)
+    current_scenario: str | None = None
+    current_scenario_status: str | None = None
+    last_planned_failover_at: datetime | None = None
+    last_unplanned_failover_at: datetime | None = None
+    last_test_failover_at: datetime | None = None
+    groups: int = 0
+    #: Replicated item external ids in the plan (lower case).
+    item_external_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
 class NormalizedBackupJob:
     """One backup/restore job run by a vault."""
 
@@ -401,6 +461,9 @@ class NormalizedBundle:
     backup_items: list[NormalizedBackupItem] = field(default_factory=list)
     backup_jobs: list[NormalizedBackupJob] = field(default_factory=list)
     backup_policies: list[NormalizedBackupPolicy] = field(default_factory=list)
+    #: Disaster-recovery replication (Azure Site Recovery); status key "replication".
+    replicated_items: list[NormalizedReplicatedItem] = field(default_factory=list)
+    recovery_plans: list[NormalizedRecoveryPlan] = field(default_factory=list)
     #: Outcome per backup table ("vaults", "items", "jobs"), same values and
     #: retirement rule as ``l3_status``. A missing key means not read.
     backup_status: dict[str, str] = field(default_factory=dict)

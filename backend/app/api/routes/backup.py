@@ -33,10 +33,14 @@ from app.schemas.backup import (
     BackupSettingsUpdate,
     BackupStorageHistory,
     BackupVaultOut,
+    RecoveryPlanOut,
+    ReplicatedItemOut,
+    ReplicationOverview,
 )
 from app.services.audit_service import AuditService
 from app.services.backup_service import BackupFilters, BackupService
 from app.services.backup_settings import set_tenant_rpo
+from app.services.dr_service import DisasterRecoveryService
 
 router = APIRouter(
     prefix="/backup",
@@ -206,6 +210,49 @@ async def backup_storage_history(
 ) -> BackupStorageHistory:
     """Daily storage used / capacity / free, and a growth estimate after 14 days of history."""
     return await BackupService(db).storage_history(tenant_id, days=days, filters=filters)
+
+
+@router.get("/replication/overview", response_model=ReplicationOverview, dependencies=_READ)
+async def replication_overview(
+    filters: BackupFilters = Depends(backup_filters),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> ReplicationOverview:
+    """Disaster-recovery replication health and readiness (Azure Site Recovery)."""
+    return await DisasterRecoveryService(db).overview(tenant_id, filters=filters)
+
+
+@router.get("/replication/items", response_model=list[ReplicatedItemOut], dependencies=_READ)
+async def replicated_items(
+    filters: BackupFilters = Depends(backup_filters),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> list[ReplicatedItemOut]:
+    """Replicated machines with health, failover state, replication lag and DR readiness."""
+    return await DisasterRecoveryService(db).items(tenant_id, filters=filters)
+
+
+@router.get("/replication/items/{item_id}", response_model=ReplicatedItemOut, dependencies=_READ)
+async def replicated_item(
+    item_id: uuid.UUID,
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> ReplicatedItemOut:
+    """One replicated machine; 404 for another tenant's."""
+    item = await DisasterRecoveryService(db).item(tenant_id, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Replicated item not found")
+    return item
+
+
+@router.get("/replication/plans", response_model=list[RecoveryPlanOut], dependencies=_READ)
+async def recovery_plans(
+    filters: BackupFilters = Depends(backup_filters),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> list[RecoveryPlanOut]:
+    """Recovery plans with their last failovers and readiness of their members."""
+    return await DisasterRecoveryService(db).plans(tenant_id, filters=filters)
 
 
 @router.get("/settings", response_model=BackupSettingsOut, dependencies=_READ)

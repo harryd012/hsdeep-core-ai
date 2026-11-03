@@ -17,12 +17,17 @@ Called by `BundleSaver.save()` for bundles that carry backup tables
     auto-resolve through the existing sensor path (AlertService.evaluate_sensor),
     exactly like firewall state - no second alerting mechanism.
 
+  - syncs `backup_replicated_items` and `backup_recovery_plans` (Site
+    Recovery) per vault when the "replication" table was read.
+
 Rules (all from what the provider reported; nothing is inferred):
   * RPO        - a protected item with no backup inside the tenant's RPO
                  (its own, or `backup_rpo_hours`).
   * last backup - the provider's last backup verdict (failed / with warnings).
   * protection - protection stopped, paused or in error.
   * soft delete - vault soft delete disabled.
+  * replication - a replicated machine whose replication health is
+                  warning or critical (Site Recovery's own verdict).
   * free space  - a fixed-size repository with less free space than
                   `backup_repository_free_warning_pct` / `_critical_pct`.
 Items whose protection was stopped get an "unknown" RPO reading, which
@@ -57,10 +62,20 @@ from app.collectors.base import (
     NormalizedBackupPolicy,
     NormalizedBackupVault,
     NormalizedBundle,
+    NormalizedRecoveryPlan,
+    NormalizedReplicatedItem,
     NormalizedSensorReading,
 )
 from app.core.config import get_settings
-from app.models.backup import BackupItem, BackupJob, BackupPolicy, BackupStorageSnapshot, BackupVault
+from app.models.backup import (
+    BackupItem,
+    BackupJob,
+    BackupPolicy,
+    BackupRecoveryPlan,
+    BackupReplicatedItem,
+    BackupStorageSnapshot,
+    BackupVault,
+)
 from app.services.backup_settings import effective_rpo_hours
 
 _READ_OK = ("collected", "empty")
@@ -71,6 +86,18 @@ _ITEM_FIELDS = (
     "name", "workload_type", "protection_state", "last_backup_status", "last_backup_at",
     "source_resource_id", "policy_name", "health_status",
     "recovery_point_count", "oldest_recovery_point_at", "size_bytes",
+)
+_REPLICATED_FIELDS = (
+    "name", "source_resource_id", "replication_type", "protected_item_type", "source_location",
+    "target_location", "protection_state", "protection_state_description", "replication_health",
+    "failover_health", "active_location", "test_failover_state", "last_failover_at",
+    "last_test_failover_at", "rpo_seconds", "rpo_calculated_at", "policy_name", "recovery_vm_name",
+    "current_scenario", "allowed_operations", "health_errors",
+)
+_PLAN_FIELDS = (
+    "name", "primary_location", "recovery_location", "failover_deployment_model", "replication_providers",
+    "allowed_operations", "current_scenario", "current_scenario_status", "last_planned_failover_at",
+    "last_unplanned_failover_at", "last_test_failover_at", "groups", "item_external_ids",
 )
 _POLICY_FIELDS = (
     "workload_type", "schedule_frequency", "schedule_times", "daily_retention_days",
@@ -101,6 +128,9 @@ class BackupSaveResult:
     jobs_upserted: int = 0
     jobs_purged: int = 0
     policies_upserted: int = 0
+    replicated_upserted: int = 0
+    replicated_retired: int = 0
+    plans_upserted: int = 0
     readings: list[NormalizedSensorReading] = field(default_factory=list)
 
 
@@ -163,6 +193,16 @@ def item_readings(item: NormalizedBackupItem, vault_name: str, now: datetime, rp
     return out
 
 
+def replication_readings(item: NormalizedReplicatedItem, vault_name: str) -> list[NormalizedSensorReading]:
+    """Replication-health reading for one replicated machine. Pure."""
+    status, value = {"normal": ("up", 1.0), "warning": ("warning", 0.5), "critical": ("down", 0.0)}.get(
+        item.replication_health or "", ("unknown", None)
+    )
+    key = f"dr:{item.external_id.rsplit('/', 1)[-1]}"
+    return [_reading(item.vault_external_id, f"{key}:replication", f"{item.name} ({vault_name}) replication",
+                     "replication_health", value, status)]
+
+
 def _resolve_item(vault_ext: str, external_id: str, name: str, vault_name: str) -> list[NormalizedSensorReading]:
     """'unknown' readings that resolve every alert of an item that disappeared."""
     key = f"item:{external_id.rsplit('/', 1)[-1]}"
@@ -199,6 +239,12 @@ async def save_backup(
     policies_by_vault: dict[str, list[NormalizedBackupPolicy]] = {}
     for policy in bundle.backup_policies:
         policies_by_vault.setdefault(policy.vault_external_id, []).append(policy)
+    replicated_by_vault: dict[str, list[NormalizedReplicatedItem]] = {}
+    for rep in bundle.replicated_items:
+        replicated_by_vault.setdefault(rep.vault_external_id, []).append(rep)
+    plans_by_vault: dict[str, list[NormalizedRecoveryPlan]] = {}
+    for plan in bundle.recovery_plans:
+        plans_by_vault.setdefault(plan.vault_external_id, []).append(plan)
 
     for nv in bundle.backup_vaults:
         vault = (
@@ -246,6 +292,11 @@ async def save_backup(
             await _sync_policies(db, tenant_id, vault, policies_by_vault.get(nv.external_id, []), now, result)
         if tables.get("usage") in _READ_OK:
             await _snapshot(db, tenant_id, vault, now)
+        if tables.get("replication") in _READ_OK:
+            await _sync_replication(
+                db, tenant_id, vault, replicated_by_vault.get(nv.external_id, []),
+                plans_by_vault.get(nv.external_id, []), now, result,
+            )
 
     cutoff = now - timedelta(days=settings.backup_job_retention_days)
     purged = await db.execute(
@@ -264,6 +315,57 @@ async def save_backup(
     )
     await db.flush()
     return result
+
+
+async def _sync_replication(db, tenant_id, vault: BackupVault, items, plans, now, result) -> None:
+    """Upsert this vault's replicated machines and recovery plans; drop what the read no longer lists."""
+    existing = {
+        row.external_id: row
+        for row in (await db.execute(select(BackupReplicatedItem).where(BackupReplicatedItem.vault_id == vault.id))).scalars()
+    }
+    seen: set[str] = set()
+    for item in items:
+        if item.external_id in seen:
+            continue
+        seen.add(item.external_id)
+        row = existing.get(item.external_id)
+        if row is None:
+            row = BackupReplicatedItem(tenant_id=tenant_id, vault_id=vault.id, external_id=item.external_id, name=item.name)
+            db.add(row)
+        for f in _REPLICATED_FIELDS:
+            setattr(row, f, getattr(item, f))
+        row.observed_at = now
+        result.replicated_upserted += 1
+        result.readings.extend(replication_readings(item, vault.name))
+    for ext, row in existing.items():
+        if ext in seen:
+            continue
+        key = f"dr:{ext.rsplit('/', 1)[-1]}"
+        result.readings.append(_reading(vault.external_id, f"{key}:replication", f"{row.name} ({vault.name}) replication",
+                                        "replication_health", None, "unknown"))
+        await db.delete(row)
+        result.replicated_retired += 1
+
+    existing_plans = {
+        row.external_id: row
+        for row in (await db.execute(select(BackupRecoveryPlan).where(BackupRecoveryPlan.vault_id == vault.id))).scalars()
+    }
+    seen_plans: set[str] = set()
+    for plan in plans:
+        if plan.external_id in seen_plans:
+            continue
+        seen_plans.add(plan.external_id)
+        row = existing_plans.get(plan.external_id)
+        if row is None:
+            row = BackupRecoveryPlan(tenant_id=tenant_id, vault_id=vault.id, external_id=plan.external_id, name=plan.name)
+            db.add(row)
+        for f in _PLAN_FIELDS:
+            setattr(row, f, getattr(plan, f))
+        row.observed_at = now
+        result.plans_upserted += 1
+    for ext, row in existing_plans.items():
+        if ext not in seen_plans:
+            await db.delete(row)
 
 
 async def _snapshot(db, tenant_id, vault: BackupVault, now: datetime) -> None:

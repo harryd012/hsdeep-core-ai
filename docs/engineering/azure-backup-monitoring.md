@@ -21,6 +21,11 @@ open the matching filtered view, and the **Backup Instances** inventory page.
 **BR-1 slice 3 shipped** (2026-11-03), master brief P2: **Backup Jobs** (job controller with
 details drawer), **Vaults & Storage** list and vault detail page, **Backup Policies** with a
 retention simulation.
+**Master brief P3 shipped** (2026-11-03): disaster-recovery replication read from **Azure Site
+Recovery** in the same vaults (replicated items, recovery plans), a replication-health alert, a
+DR-readiness rule and the *Business Continuity* pages (DR Overview, Replicated Items, Recovery Plans).
+Read-only: no failover, test failover or failback is started. **STATUS = Needs Verification**
+against a real Site Recovery vault (tests replay the documented REST shapes, api-version 2025-01-01).
 Next (approved plan): Veeam Service Provider Console, AWS Backup and S3-compatible storage
 connectors, then a backup storage cost/SLA advisor.
 
@@ -144,6 +149,10 @@ route takes the tenant from the signed-in principal:
 | `GET /api/backup/jobs/{id}` | one job, its provider, the backup item it ran for and that item's 10 most recent other jobs; 404 for another tenant's |
 | `GET /api/backup/vaults/{id}` | one storage location (same shape as the list); 404 for another tenant's |
 | `GET /api/backup/policies` | every policy with its storage, provider, schedule, retention per tier and the items stored under it (`items_assigned`) next to the provider's own count (`protected_items_count`) |
+| `GET /api/backup/replication/overview` | Site Recovery replication across vaults: health counts, failed over, test failover never / overdue, DR-ready %, largest replication lag, recovery plans ready, region pairs, and the read status (`failed` usually means the Site Recovery Reader role is missing) |
+| `GET /api/backup/replication/items` | replicated machines: source / target region, replication and failover health, active location, replication lag, last (test) failover, health errors with Azure's recommended action, recovery plans, `readiness` + `readiness_reasons` |
+| `GET /api/backup/replication/items/{id}` | one replicated machine; 404 for another tenant's |
+| `GET /api/backup/replication/plans` | recovery plans with last test / planned / unplanned failover and how many members are DR-ready |
 | `GET /api/backup/settings` | the tenant's RPO, whether it is the default, and the default |
 | `PUT /api/backup/settings` `{"rpo_hours": 1-720 \| null}` | sets the tenant's RPO; null returns it to the default (`backup.write`) |
 
@@ -210,3 +219,32 @@ queries and the multi-vault report. Item size is not reported by the Recovery Se
 per-item storage is not shown; vault storage is. RPO is per tenant, not yet per site or per item.
 Other providers (Veeam, AWS Backup, S3-compatible storage) follow the approved plan and plug into
 the provider-neutral model above.
+
+## Disaster recovery (Azure Site Recovery)
+
+The Azure Backup collector also reads, per Recovery Services vault,
+`GET {vault}/replicationProtectedItems` and `GET {vault}/replicationRecoveryPlans`
+(api-version `2025-01-01`, `nextLink` paging). This needs the built-in **Site Recovery Reader**
+role in addition to Backup Reader. Without it the `replication` table reports `failed`, the
+collector stops asking for the other vaults in that poll, backup data is unaffected, and stored
+replication rows are kept (migration `e6a1c3d8f2b4`: `backup_replicated_items`,
+`backup_recovery_plans`).
+
+Mapping: `friendlyName` → name; provider details (`A2A`): `fabricObjectId` (source VM),
+`primaryFabricLocation` / `recoveryFabricLocation` (else the fabric friendly names), `rpoInSeconds`
+and `lastRpoCalculatedTime` (replication lag), `recoveryAzureVMName`; `replicationHealth` /
+`failoverHealth` (Normal / Warning / Critical; "None" = not reported); `activeLocation`;
+`lastSuccessfulTestFailoverTime`, `lastSuccessfulFailoverTime`; `healthErrors` (code, summary,
+level, recommended action); `allowedOperations`; `currentScenario` ("None" = idle). Recovery
+plans: groups and their member item ids, last test / planned / unplanned failover times.
+
+**Alert**: a replicated machine whose replication health is warning or critical raises a
+`replication_health` sensor alert on the vault (warning / critical); it resolves when health is
+normal again or the machine is no longer replicated.
+
+**DR-readiness rule** (platform rule, `app/services/dr_service.py::readiness`): *ready* = replication
+health normal, failover health not warning/critical, running in the primary location, and a
+successful test failover within `dr_test_max_age_days` (180). Running in the recovery location is
+*failed over*. A recovery plan is ready when all its members are ready and the plan was test-failed-
+over within the same window. Nothing here starts a failover: test, planned and unplanned failover,
+failback and DR drills need write access and the approval workflow (plan phase BR-3).

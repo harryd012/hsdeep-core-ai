@@ -3829,6 +3829,105 @@ export function listBackupPolicies(filters: BackupFilters = {}): Promise<BackupP
   return apiFetch<BackupPolicyRow[]>(`/api/backup/policies${backupFilterParams(filters)}`);
 }
 
+/** ready | not_ready | failed_over (running in the recovery location). Platform rule; see docs. */
+export type DrReadiness = "ready" | "not_ready" | "failed_over";
+
+export interface ReplicatedItem {
+  id: string;
+  vault_id: string;
+  vault_name: string;
+  name: string;
+  source_resource_id: string | null;
+  /** A2A | HyperVReplicaAzure | InMageRcm ... */
+  replication_type: string | null;
+  protected_item_type: string | null;
+  source_location: string | null;
+  target_location: string | null;
+  protection_state: string | null;
+  protection_state_description: string | null;
+  /** normal | warning | critical; null when not reported. */
+  replication_health: string | null;
+  failover_health: string | null;
+  /** primary | recovery */
+  active_location: string | null;
+  test_failover_state: string | null;
+  last_failover_at: string | null;
+  last_test_failover_at: string | null;
+  /** Replication lag Site Recovery last calculated, seconds. */
+  rpo_seconds: number | null;
+  rpo_calculated_at: string | null;
+  policy_name: string | null;
+  recovery_vm_name: string | null;
+  current_scenario: string | null;
+  allowed_operations: string[];
+  health_errors: { code: string | null; message: string | null; level: string | null; recommended_action: string | null; created_at: string | null }[];
+  observed_at: string | null;
+  readiness: DrReadiness;
+  readiness_reasons: string[];
+  recovery_plans: string[];
+  device_id: string | null;
+}
+
+export interface RecoveryPlan {
+  id: string;
+  vault_id: string;
+  vault_name: string;
+  name: string;
+  primary_location: string | null;
+  recovery_location: string | null;
+  failover_deployment_model: string | null;
+  replication_providers: string[];
+  allowed_operations: string[];
+  current_scenario: string | null;
+  current_scenario_status: string | null;
+  last_planned_failover_at: string | null;
+  last_unplanned_failover_at: string | null;
+  last_test_failover_at: string | null;
+  groups: number;
+  items_total: number;
+  items_found: number;
+  items_ready: number;
+  readiness: DrReadiness;
+  readiness_reasons: string[];
+  observed_at: string | null;
+}
+
+export interface ReplicationOverview {
+  configured: boolean;
+  /** collected | empty | failed | null (not read yet). failed: usually the Site Recovery Reader role is missing. */
+  replication_status: string | null;
+  generated_at: string;
+  dr_test_max_age_days: number;
+  items_total: number;
+  health_normal: number;
+  health_warning: number;
+  health_critical: number;
+  health_not_reported: number;
+  failover_health_warning: number;
+  failover_health_critical: number;
+  failed_over: number;
+  never_tested: number;
+  test_overdue: number;
+  ready: number;
+  readiness_pct: number | null;
+  max_rpo_seconds: number | null;
+  plans_total: number;
+  plans_ready: number;
+  by_region: { source_location: string | null; target_location: string | null; items: number; ready: number; unhealthy: number }[];
+}
+
+export function getReplicationOverview(filters: BackupFilters = {}): Promise<ReplicationOverview> {
+  return apiFetch<ReplicationOverview>(`/api/backup/replication/overview${backupFilterParams(filters)}`);
+}
+
+export function listReplicatedItems(filters: BackupFilters = {}): Promise<ReplicatedItem[]> {
+  return apiFetch<ReplicatedItem[]>(`/api/backup/replication/items${backupFilterParams(filters)}`);
+}
+
+export function listRecoveryPlans(filters: BackupFilters = {}): Promise<RecoveryPlan[]> {
+  return apiFetch<RecoveryPlan[]>(`/api/backup/replication/plans${backupFilterParams(filters)}`);
+}
+
 export interface BackupFailureGroup {
   /** null when the provider did not report a code. */
   error_code: string | null;

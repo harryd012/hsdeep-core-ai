@@ -404,3 +404,105 @@ class BackupStorageHistory(BaseModel):
 
 
 BackupOverview.model_rebuild()
+
+
+#: ready | not_ready | failed_over (running in the recovery location)
+DrReadiness = Literal["ready", "not_ready", "failed_over"]
+
+
+class ReplicatedItemOut(BaseModel):
+    id: uuid.UUID
+    vault_id: uuid.UUID
+    vault_name: str
+    name: str
+    source_resource_id: str | None
+    replication_type: str | None
+    protected_item_type: str | None
+    source_location: str | None
+    target_location: str | None
+    protection_state: str | None
+    protection_state_description: str | None
+    replication_health: str | None
+    failover_health: str | None
+    active_location: str | None
+    test_failover_state: str | None
+    last_failover_at: datetime | None
+    last_test_failover_at: datetime | None
+    rpo_seconds: int | None
+    rpo_calculated_at: datetime | None
+    policy_name: str | None
+    recovery_vm_name: str | None
+    current_scenario: str | None
+    allowed_operations: list[str]
+    health_errors: list[dict]
+    observed_at: datetime | None
+    #: Platform DR-readiness rule (see docs); reasons say why it is not ready.
+    readiness: DrReadiness
+    readiness_reasons: list[str]
+    #: Recovery plans this item belongs to.
+    recovery_plans: list[str] = []
+    #: The inventory device this item replicates (matched by resource id).
+    device_id: uuid.UUID | None = None
+
+
+class RecoveryPlanOut(BaseModel):
+    id: uuid.UUID
+    vault_id: uuid.UUID
+    vault_name: str
+    name: str
+    primary_location: str | None
+    recovery_location: str | None
+    failover_deployment_model: str | None
+    replication_providers: list[str]
+    allowed_operations: list[str]
+    current_scenario: str | None
+    current_scenario_status: str | None
+    last_planned_failover_at: datetime | None
+    last_unplanned_failover_at: datetime | None
+    last_test_failover_at: datetime | None
+    groups: int
+    items_total: int
+    #: Member items found among the replicated items, and how many are DR-ready.
+    items_found: int
+    items_ready: int
+    readiness: DrReadiness
+    readiness_reasons: list[str]
+    observed_at: datetime | None
+
+
+class ReplicationRegionGroup(BaseModel):
+    source_location: str | None
+    target_location: str | None
+    items: int
+    ready: int
+    unhealthy: int
+
+
+class ReplicationOverview(BaseModel):
+    """Disaster-recovery replication across the tenant's Recovery Services vaults."""
+
+    #: True when an Azure Backup source exists (replication is read by it).
+    configured: bool
+    #: collected | empty | failed | None (not read yet) - across vaults; failed
+    #: when any vault's read failed (usually the Site Recovery Reader role is missing).
+    replication_status: str | None
+    generated_at: datetime
+    dr_test_max_age_days: int
+    items_total: int
+    health_normal: int
+    health_warning: int
+    health_critical: int
+    health_not_reported: int
+    failover_health_warning: int
+    failover_health_critical: int
+    failed_over: int
+    never_tested: int
+    test_overdue: int
+    ready: int
+    #: Ready / items, %; None without items.
+    readiness_pct: float | None
+    #: Largest replication lag reported, seconds.
+    max_rpo_seconds: int | None
+    plans_total: int
+    plans_ready: int
+    by_region: list[ReplicationRegionGroup]

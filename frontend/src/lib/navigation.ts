@@ -1,6 +1,6 @@
 import {
   Activity, ArrowLeftRight, Bell, BookOpen, Bot, Building2, CreditCard, Database, DatabaseBackup, LayoutDashboard,
-  LayoutGrid, Server, Settings, Shield, Ticket, TriangleAlert, Workflow, type LucideIcon,
+  LayoutGrid, LifeBuoy, Server, Settings, Shield, Ticket, TriangleAlert, Workflow, type LucideIcon,
 } from "lucide-react";
 
 /**
@@ -25,9 +25,9 @@ export interface NavChild {
   keywords?: string;
 }
 
-export type NavSection = "Observe" | "Infrastructure" | "Protect" | "Respond" | "Security" | "Automation & AI" | "Manage";
+export type NavSection = "Observe" | "Infrastructure" | "Protect" | "Business Continuity" | "Respond" | "Security" | "Automation & AI" | "Manage";
 
-export const NAV_SECTIONS: readonly NavSection[] = ["Observe", "Infrastructure", "Protect", "Respond", "Security", "Automation & AI", "Manage"];
+export const NAV_SECTIONS: readonly NavSection[] = ["Observe", "Infrastructure", "Protect", "Business Continuity", "Respond", "Security", "Automation & AI", "Manage"];
 
 export interface NavGroup {
   id: string;
@@ -88,6 +88,15 @@ export const NAV_CONFIG: NavGroup[] = [
       { label: "Backup Jobs", route: "/infrastructure/backup/jobs", keywords: "job controller restore failed error" },
       { label: "Vaults & Storage", route: "/infrastructure/backup/vaults", keywords: "recovery services vault repository storage security" },
       { label: "Backup Policies", route: "/infrastructure/backup/policies", keywords: "retention schedule gfs simulation" },
+    ] },
+
+  // -- Business Continuity -----------------------------------------------------------
+  { id: "dr", label: "Disaster Recovery", icon: LifeBuoy, route: "/business-continuity", section: "Business Continuity", permission: "backup.read",
+    description: "Replication health, DR readiness and recovery plans (Azure Site Recovery)",
+    children: [
+      { label: "DR Overview", route: "/business-continuity", keywords: "site recovery asr readiness failover" },
+      { label: "Replicated Items", route: "/business-continuity/replicated-items", keywords: "replication health rpo lag failover" },
+      { label: "Recovery Plans", route: "/business-continuity/recovery-plans", keywords: "test failover drill plan" },
     ] },
 
   // -- Respond --------------------------------------------------------------------
