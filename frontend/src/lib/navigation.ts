@@ -1,5 +1,5 @@
 import {
-  Activity, ArrowLeftRight, Bell, BookOpen, Bot, Building2, CreditCard, Database, LayoutDashboard,
+  Activity, ArrowLeftRight, Bell, BookOpen, Bot, Building2, CreditCard, Database, DatabaseBackup, LayoutDashboard,
   LayoutGrid, Server, Settings, Shield, Ticket, TriangleAlert, Workflow, type LucideIcon,
 } from "lucide-react";
 
@@ -25,9 +25,9 @@ export interface NavChild {
   keywords?: string;
 }
 
-export type NavSection = "Observe" | "Infrastructure" | "Respond" | "Security" | "Automation & AI" | "Manage";
+export type NavSection = "Observe" | "Infrastructure" | "Protect" | "Respond" | "Security" | "Automation & AI" | "Manage";
 
-export const NAV_SECTIONS: readonly NavSection[] = ["Observe", "Infrastructure", "Respond", "Security", "Automation & AI", "Manage"];
+export const NAV_SECTIONS: readonly NavSection[] = ["Observe", "Infrastructure", "Protect", "Respond", "Security", "Automation & AI", "Manage"];
 
 export interface NavGroup {
   id: string;
@@ -71,7 +71,6 @@ export const NAV_CONFIG: NavGroup[] = [
       { label: "Universal Resources", route: "/infrastructure/universal", keywords: "cloud firewall router switch" },
       { label: "Asset Inventory", route: "/infrastructure/assets", keywords: "cmdb devices" },
       { label: "Firewalls", route: "/infrastructure/firewalls", keywords: "firewall fortigate palo alto ha vpn licence" },
-      { label: "Backup", route: "/infrastructure/backup", keywords: "azure backup recovery services vault rpo restore" },
       { label: "Explorer", route: "/explorer", keywords: "hosts sites sensors" },
       { label: "Topology", route: "/infrastructure-topology/live", keywords: "map smartscape graph" },
       { label: "Discovery", route: "/infrastructure/discovery", keywords: "scan probe snmp" },
@@ -79,6 +78,14 @@ export const NAV_CONFIG: NavGroup[] = [
   { id: "org", label: "Organization", icon: Building2, route: "/organization", section: "Infrastructure",
     description: "Tenant, people and estate hierarchy",
     children: [{ label: "Hierarchy", route: "/organization" }] },
+
+  // -- Protect ---------------------------------------------------------------------
+  { id: "backup", label: "Backup Center", icon: DatabaseBackup, route: "/infrastructure/backup", section: "Protect", permission: "backup.read",
+    description: "Backup protection, jobs, storage and security across Azure Backup and Veeam",
+    children: [
+      { label: "Backup Overview", route: "/infrastructure/backup", keywords: "azure backup veeam rpo command center" },
+      { label: "Backup Instances", route: "/infrastructure/backup/instances", keywords: "protected items workloads recovery points vault" },
+    ] },
 
   // -- Respond --------------------------------------------------------------------
   { id: "incidents", label: "Incidents", icon: TriangleAlert, route: "/incidents", section: "Respond", permission: "incidents.read",

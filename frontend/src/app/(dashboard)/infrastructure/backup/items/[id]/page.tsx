@@ -92,8 +92,8 @@ function ItemContent() {
   const id = useParams<{ id: string }>()?.id ?? "";
   const q = useQuery({ queryKey: ["backup", "item", id], queryFn: () => getBackupItem(id), enabled: !!id, refetchInterval: 60_000, retry: false });
   const crumbs = (last: string) => [
-    { label: "Infrastructure", href: "/infrastructure" },
-    { label: "Backup", href: "/infrastructure/backup" },
+    { label: "Backup Center", href: "/infrastructure/backup" },
+    { label: "Backup Instances", href: "/infrastructure/backup/instances" },
     { label: last },
   ];
 

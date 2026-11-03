@@ -3589,11 +3589,31 @@ export interface BackupOverview {
   recovery_points_total: number | null;
   /** Azure VMs in a connected subscription with no backup; null when no source is configured or filters are applied. */
   unprotected_resources: number | null;
+  /** Days covered by `daily` and `jobs_range` (time-range filter). */
+  range_days: number;
+  jobs_range: BackupJobCounts | null;
   /** Items by workload type (filters applied). */
   workloads: BackupWorkloadSummary[];
+  /** Items by subscription / region of their storage. */
+  by_subscription: BackupStatusGroup[];
+  by_region: BackupStatusGroup[];
+  /** Protected items by age of their newest backup. */
+  recovery_point_age: { key: string; label: string; items: number }[];
   /** True when a filter narrowed the figures. */
   filtered: boolean;
   filter_options: BackupFilterOptions | null;
+}
+
+export interface BackupStatusGroup {
+  /** Subscription id / region; null when not reported. */
+  key: string | null;
+  items_total: number;
+  items_protected: number;
+  items_within_rpo: number;
+  items_breaching_rpo: number;
+  items_never_backed_up: number;
+  items_not_protected: number;
+  items_last_failed: number;
 }
 
 export interface BackupWorkloadSummary {
@@ -3748,8 +3768,8 @@ export interface BackupJob {
   error_message: string | null;
 }
 
-export function getBackupOverview(filters: BackupFilters = {}): Promise<BackupOverview> {
-  return apiFetch<BackupOverview>(`/api/backup/overview${backupFilterParams(filters)}`);
+export function getBackupOverview(filters: BackupFilters = {}, days?: number): Promise<BackupOverview> {
+  return apiFetch<BackupOverview>(`/api/backup/overview${backupFilterParams(filters, days ? { days: String(days) } : {})}`);
 }
 
 export function listBackupVaults(filters: BackupFilters = {}): Promise<BackupVault[]> {

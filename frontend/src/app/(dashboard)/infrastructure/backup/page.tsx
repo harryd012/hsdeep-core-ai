@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DatabaseBackup } from "lucide-react";
 import {
@@ -24,6 +24,7 @@ import {
   type BackupOverview,
   type BackupRpoState,
   type BackupSecurityPosture,
+  type BackupStatusGroup,
   type BackupStorageHistory,
   type BackupVault,
   type BackupWorkloadSummary,
@@ -33,8 +34,10 @@ import { useSiteHealth } from "@/hooks/useSiteHealth";
 import { useAuth } from "@/lib/auth-context";
 import { createMonitoringSource, syncMonitoringSource } from "@/lib/monitoringApi";
 import { DonutRing, Legend } from "@/components/command-center/primitives";
+import { instancesHref } from "./instancesHref";
 import {
   Banner,
+  BarList,
   DataTable,
   DayColumns,
   PageShell,
@@ -384,6 +387,39 @@ function ConnectAzureBackup({ onDone }: { onDone: () => void }) {
 }
 
 type BackupTab = "items" | "coverage" | "jobs" | "failures" | "vaults" | "security";
+const TAB_KEYS: readonly string[] = ["items", "coverage", "jobs", "failures", "vaults", "security"];
+/** The open tab lives in the URL hash (#jobs ...), so KPIs and other pages can link to it. */
+function subscribeHash(onChange: () => void) {
+  window.addEventListener("hashchange", onChange);
+  return () => window.removeEventListener("hashchange", onChange);
+}
+const RANGES = [
+  { days: 1, label: "Last 24 hours" },
+  { days: 7, label: "Last 7 days" },
+  { days: 14, label: "Last 14 days" },
+  { days: 30, label: "Last 30 days" },
+  { days: 90, label: "Last 90 days" },
+];
+const AGE_COLORS: Record<string, string> = {
+  lt_24h: "var(--ecc-good)",
+  "1_3d": "var(--ecc-warn)",
+  "3_7d": "var(--ecc-warn)",
+  "7_30d": "var(--ecc-bad)",
+  gt_30d: "var(--ecc-bad)",
+  never: "var(--ecc-unknown)",
+};
+
+function statusGroupColumns(header: string, notReported: string): Column<BackupStatusGroup>[] {
+  return [
+    { key: "key", header, sortValue: (g) => g.key, render: (g) => (g.key ? <span className="pk-truncate" title={g.key}>{g.key}</span> : <span className="pk-muted">{notReported}</span>) },
+    { key: "items", header: "Items", numeric: true, sortValue: (g) => g.items_total, render: (g) => g.items_total },
+    { key: "within", header: "Within RPO", numeric: true, sortValue: (g) => (g.items_protected ? g.items_within_rpo / g.items_protected : null), render: (g) => (g.items_protected ? `${Math.round((g.items_within_rpo / g.items_protected) * 100)}%` : <span className="pk-muted">—</span>) },
+    { key: "breached", header: "Breached", numeric: true, sortValue: (g) => g.items_breaching_rpo + g.items_never_backed_up, render: (g) => { const v = g.items_breaching_rpo + g.items_never_backed_up; return v ? <span style={{ color: "var(--ecc-bad)" }} title={`${g.items_breaching_rpo} outside the RPO, ${g.items_never_backed_up} never backed up`}>{v}</span> : "0"; } },
+    { key: "failed", header: "Failed", numeric: true, sortValue: (g) => g.items_last_failed, render: (g) => (g.items_last_failed ? <span style={{ color: "var(--ecc-bad)" }}>{g.items_last_failed}</span> : "0") },
+  ];
+}
+const subscriptionColumns = statusGroupColumns("Subscription", "Not reported (on-premises)");
+const regionColumns = statusGroupColumns("Region", "Not reported (on-premises)");
 const TAB_TITLES: Record<BackupTab, string> = {
   items: "Protected items",
   coverage: "Backup coverage",
@@ -492,14 +528,17 @@ function SecurityView({ posture }: { posture: BackupSecurityPosture }) {
 
 export default function BackupPage() {
   const qc = useQueryClient();
-  const [tab, setTab] = useState<BackupTab>("items");
+  const hash = useSyncExternalStore(subscribeHash, () => window.location.hash.slice(1), () => "");
+  const tab: BackupTab = TAB_KEYS.includes(hash) ? (hash as BackupTab) : "items";
+  const setTab = (t: BackupTab) => { window.location.hash = t; };
+  const [range, setRange] = useState(14);
   const [rpoFilter, setRpoFilter] = useState<BackupRpoState | "all">("all");
   const [coverageFilter, setCoverageFilter] = useState<BackupCoverageState | "all">("all");
   const [siteFilter, setSiteFilter] = useState<string>("all");
   const [showConnect, setShowConnect] = useState(false);
   const [filters, setFilters] = useState<BackupFilters>({});
 
-  const overview = useQuery({ queryKey: ["backup", "overview", filters], queryFn: () => getBackupOverview(filters), refetchInterval: 60_000, placeholderData: (prev) => prev });
+  const overview = useQuery({ queryKey: ["backup", "overview", filters, range], queryFn: () => getBackupOverview(filters, range), refetchInterval: 60_000, placeholderData: (prev) => prev });
   const o: BackupOverview | undefined = overview.data;
   const configured = !!o?.configured;
   const items = useQuery({ queryKey: ["backup", "items", filters], queryFn: () => listBackupItems({}, filters), enabled: configured, refetchInterval: 60_000 });
@@ -701,9 +740,9 @@ export default function BackupPage() {
 
   return (
     <PageShell
-      title="Backup"
+      title="Backup Overview"
       icon={DatabaseBackup}
-      crumbs={[{ label: "Infrastructure", href: "/infrastructure" }, { label: "Backup" }]}
+      crumbs={[{ label: "Backup Center" }, { label: "Overview" }]}
       subtitle={`${o?.providers.length ? o.providers.map((p) => titleCaseWords(p)).join(", ") : "Azure"} Backup: whether every workload has a recent good backup, which servers have none, what failed, how long restore points are kept and how the backup storage is secured.`}
       actions={
         configured ? (
@@ -729,24 +768,34 @@ export default function BackupPage() {
         </Panel>
       )}
 
+      {configured && (
+        <div className="pk-toolbar">
+          <select className="pk-input" aria-label="Time range" value={range} onChange={(e) => setRange(Number(e.target.value))} style={{ width: "auto" }}>
+            {RANGES.map((r) => <option key={r.days} value={r.days}>{r.label}</option>)}
+          </select>
+          <button type="button" className="pk-button" onClick={refresh} disabled={overview.isFetching}>{overview.isFetching ? "Refreshing…" : "Refresh"}</button>
+          {o && <span className="pk-muted">Updated {ago(o.generated_at)}</span>}
+          <a className="pk-button" href={instancesHref(filters)}>Open backup instances</a>
+        </div>
+      )}
       {configured && o?.filter_options && <FilterBar options={o.filter_options} value={filters} onChange={setFilters} />}
       {configured && o?.filtered && <Banner tone="info">Filtered view: every figure below covers only the selected storage and workloads. Coverage of VMs is not filtered and is left out of the tiles.</Banner>}
 
       <StatStrip>
-        <StatTile label="Protected items" value={n(o?.items_protected)} info="Items under active backup protection." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
-        <StatTile label="Within RPO" value={n(o?.items_within_rpo)} tone="good" sub={o && configured && o.items_protected ? `${Math.round((o.items_within_rpo / o.items_protected) * 100)}% of protected` : undefined} info={`Protected items with a backup in the last ${o?.rpo_hours ?? 24} hours.`} loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
-        <StatTile label="RPO breached" value={n(o?.items_breaching_rpo)} alarm={(o?.items_breaching_rpo ?? 0) > 0} info={`Protected items whose last backup is older than ${o?.rpo_hours ?? 24} hours.`} loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
-        <StatTile label="Never backed up" value={n(o?.items_never_backed_up)} tone="warn" info="Protected items with no backup yet (for example, initial backup pending)." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
-        <StatTile label="Last backup failed" value={n(o?.items_last_failed)} alarm={(o?.items_last_failed ?? 0) > 0} info="Items whose most recent backup failed." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
-        <StatTile label="Job success" badge="24h" value={configured && o?.success_rate_24h !== null && o?.success_rate_24h !== undefined ? `${o.success_rate_24h}%` : "—"} naText={configured ? "No job finished in 24h" : "Not configured"} sub={o && configured ? `${o.jobs_24h.failed} failed of ${o.jobs_24h.total}` : undefined} info="Completed (including with warnings) over finished jobs in the last 24 hours." loading={loadingOverview} />
-        <StatTile label="Unprotected VMs" value={configured && o?.unprotected_resources !== null && o?.unprotected_resources !== undefined ? o.unprotected_resources.toLocaleString("en-US") : "—"} alarm={(o?.unprotected_resources ?? 0) > 0} info="Azure VMs in a connected subscription that no backup item protects. VMs in subscriptions without a backup source are listed as not monitored in Coverage." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
-        <StatTile label="Storage used" value={configured && o?.storage_used_bytes !== null && o?.storage_used_bytes !== undefined ? formatBytes(o.storage_used_bytes) : "—"} sub={o && configured && o.recovery_points_total !== null ? `${o.recovery_points_total.toLocaleString("en-US")} restore points` : undefined} info="Backup storage the vaults report (all redundancy tiers)." loading={loadingOverview} naText={configured ? "Not reported" : "Not configured"} />
-        <StatTile label="Storage" value={n(o?.vaults)} sub={o && configured ? (o.vaults_soft_delete_off ? `${o.vaults_soft_delete_off} with soft delete off` : `${o.vaults_offsite} off-site · ${o.vaults_immutable} immutable`) : undefined} alarm={(o?.vaults_soft_delete_off ?? 0) > 0} info="Backup storage locations read from the connected sources. Off-site: a copy is kept in another region or site. Immutable: restore points are locked against deletion until they expire." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="Protected items" href={configured ? instancesHref(filters, { protection: "active" }) : undefined} value={n(o?.items_protected)} info="Items under active backup protection." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="Within RPO" href={configured ? instancesHref(filters, { rpo: "within" }) : undefined} value={n(o?.items_within_rpo)} tone="good" sub={o && configured && o.items_protected ? `${Math.round((o.items_within_rpo / o.items_protected) * 100)}% of protected` : undefined} info={`Protected items with a backup in the last ${o?.rpo_hours ?? 24} hours.`} loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="RPO breached" href={configured ? instancesHref(filters, { rpo: "breached" }) : undefined} value={n(o?.items_breaching_rpo)} alarm={(o?.items_breaching_rpo ?? 0) > 0} info={`Protected items whose last backup is older than ${o?.rpo_hours ?? 24} hours.`} loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="Never backed up" href={configured ? instancesHref(filters, { rpo: "never" }) : undefined} value={n(o?.items_never_backed_up)} tone="warn" info="Protected items with no backup yet (for example, initial backup pending)." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="Last backup failed" href={configured ? instancesHref(filters, { result: "failed" }) : undefined} value={n(o?.items_last_failed)} alarm={(o?.items_last_failed ?? 0) > 0} info="Items whose most recent backup failed." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="Job success" badge="24h" href={configured ? "#jobs" : undefined} value={configured && o?.success_rate_24h !== null && o?.success_rate_24h !== undefined ? `${o.success_rate_24h}%` : "—"} naText={configured ? "No job finished in 24h" : "Not configured"} sub={o && configured ? `${o.jobs_24h.failed} failed of ${o.jobs_24h.total}` : undefined} info="Completed (including with warnings) over finished jobs in the last 24 hours." loading={loadingOverview} />
+        <StatTile label="Unprotected VMs" href={configured ? "#coverage" : undefined} value={configured && o?.unprotected_resources !== null && o?.unprotected_resources !== undefined ? o.unprotected_resources.toLocaleString("en-US") : "—"} alarm={(o?.unprotected_resources ?? 0) > 0} info="Azure VMs in a connected subscription that no backup item protects. VMs in subscriptions without a backup source are listed as not monitored in Coverage." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="Storage used" href={configured ? "#vaults" : undefined} value={configured && o?.storage_used_bytes !== null && o?.storage_used_bytes !== undefined ? formatBytes(o.storage_used_bytes) : "—"} sub={o && configured && o.recovery_points_total !== null ? `${o.recovery_points_total.toLocaleString("en-US")} restore points` : undefined} info="Backup storage the vaults report (all redundancy tiers)." loading={loadingOverview} naText={configured ? "Not reported" : "Not configured"} />
+        <StatTile label="Storage" href={configured ? "#security" : undefined} value={n(o?.vaults)} sub={o && configured ? (o.vaults_soft_delete_off ? `${o.vaults_soft_delete_off} with soft delete off` : `${o.vaults_offsite} off-site · ${o.vaults_immutable} immutable`) : undefined} alarm={(o?.vaults_soft_delete_off ?? 0) > 0} info="Backup storage locations read from the connected sources. Off-site: a copy is kept in another region or site. Immutable: restore points are locked against deletion until they expire." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
       </StatStrip>
 
       {configured && (
         <div className="pk-grid">
-          <Panel title="Job outcomes" info="Backup jobs per day by outcome, last 14 days." aside="last 14 days" state={overview.isLoading ? "loading" : o!.jobs_7d.total === 0 && o!.daily.every((d) => d.completed + d.completed_with_warnings + d.failed + d.other === 0) ? "empty" : "ready"} emptyText="No backup job has run in the last 14 days." className="pk-col-8">
+          <Panel title="Job outcomes" info={`Backup jobs per day by outcome over the selected range${o!.jobs_range ? `: ${o!.jobs_range.total} jobs, ${o!.jobs_range.failed} failed` : ""}.`} aside={RANGES.find((r) => r.days === o!.range_days)?.label.toLowerCase() ?? `last ${o!.range_days} days`} state={overview.isLoading ? "loading" : o!.daily.every((d) => d.completed + d.completed_with_warnings + d.failed + d.other === 0) ? "empty" : "ready"} emptyText="No backup job has run in this time range." className="pk-col-8">
             <DayColumns
               label="Backup jobs per day"
               buckets={o!.daily.map((d) => ({ key: d.day, label: new Date(`${d.day}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" }), values: { completed: d.completed, completed_with_warnings: d.completed_with_warnings, failed: d.failed, other: d.other } }))}
@@ -765,7 +814,20 @@ export default function BackupPage() {
           </Panel>
 
           <Panel title="Workloads" info="Protected items by workload type, as each provider reports it, against the RPO." state={o!.workloads.length === 0 ? "empty" : "ready"} emptyText="No protected items reported yet." className="pk-col-12">
-            <DataTable caption="Workloads" columns={workloadColumns} rows={o!.workloads} rowKey={(w) => w.workload_type ?? "_none"} defaultSort={{ key: "items", dir: "desc" }} maxHeight={320} emptyText="No protected items reported yet." />
+            <DataTable caption="Workloads" columns={workloadColumns} rows={o!.workloads} rowKey={(w) => w.workload_type ?? "_none"} rowHref={(w) => (w.workload_type ? instancesHref({ ...filters, workload_type: w.workload_type }) : null)} defaultSort={{ key: "items", dir: "desc" }} maxHeight={320} emptyText="No protected items reported yet." />
+          </Panel>
+
+          <Panel title="By subscription" info="Items by the subscription of their storage. Veeam and other on-premises storage reports none." state={o!.by_subscription.length === 0 ? "empty" : "ready"} emptyText="No protected items reported yet." className="pk-col-4">
+            <DataTable caption="Backup status by subscription" columns={subscriptionColumns} rows={o!.by_subscription} rowKey={(g) => g.key ?? "_none"} rowHref={(g) => (g.key ? instancesHref({ ...filters, subscription_id: g.key }) : null)} defaultSort={{ key: "items", dir: "desc" }} maxHeight={260} emptyText="—" />
+          </Panel>
+          <Panel title="By region" info="Items by the region of their storage." state={o!.by_region.length === 0 ? "empty" : "ready"} emptyText="No protected items reported yet." className="pk-col-4">
+            <DataTable caption="Backup status by region" columns={regionColumns} rows={o!.by_region} rowKey={(g) => g.key ?? "_none"} rowHref={(g) => (g.key ? instancesHref({ ...filters, location: g.key }) : null)} defaultSort={{ key: "items", dir: "desc" }} maxHeight={260} emptyText="—" />
+          </Panel>
+          <Panel title="Recovery point age" info="Protected items by the age of their newest backup." state={o!.items_protected === 0 ? "empty" : "ready"} emptyText="No protected items reported yet." className="pk-col-4">
+            <BarList
+              rows={o!.recovery_point_age.map((b) => ({ key: b.key, label: b.label, value: b.items, color: AGE_COLORS[b.key] }))}
+              valueLabel={(v) => `${v} item${v === 1 ? "" : "s"}`}
+            />
           </Panel>
 
           <Panel
