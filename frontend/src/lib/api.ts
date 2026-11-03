@@ -1033,6 +1033,8 @@ export interface SecuritySettings {
   max_login_attempts: number;
   created_at: string;
   updated_at: string;
+  /** True when the tenant never saved a policy (platform defaults apply). */
+  is_default?: boolean;
 }
 
 export interface SecuritySettingsUpdate {

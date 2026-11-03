@@ -58,6 +58,8 @@ from app.services.billing_service import (
 
 logger = logging.getLogger(__name__)
 
+from app.services.security_policy import PasswordPolicyError
+
 router = APIRouter(prefix="/billing", tags=["billing"])
 
 settings = get_settings()
@@ -480,6 +482,8 @@ async def signup(
             is_superuser=False,
             role_ids=role_ids,
         )
+    except PasswordPolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

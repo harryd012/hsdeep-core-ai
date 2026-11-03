@@ -145,7 +145,8 @@ export const NAV_CONFIG: NavGroup[] = [
     description: "Tenant, security, users, notifications and API keys",
     children: [
       { label: "General", route: "/settings/general" },
-      { label: "Security", route: "/settings/security", keywords: "sso mfa password" },
+      { label: "Security", route: "/settings/security", keywords: "password policy sessions sign out lockout timeout mfa" },
+      { label: "Audit Log", route: "/settings/audit-log", keywords: "audit history compliance who changed export" },
       { label: "Users & Roles", route: "/settings/users-roles", keywords: "rbac permissions" },
       { label: "Notifications", route: "/settings/notifications", keywords: "email slack pagerduty" },
       { label: "API Keys", route: "/settings/api-keys", keywords: "tokens" },

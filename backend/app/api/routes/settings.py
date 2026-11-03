@@ -14,17 +14,25 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import Principal, get_tenant_id, hash_api_key as core_hash_api_key, require_admin
+from app.core.auth import Principal, get_tenant_id, hash_api_key as core_hash_api_key, require_admin, require_permission
 from app.core.db import get_db
 from app.core.entitlements import require_active_subscription
 from app.models.api_key import ApiKey
 from app.models.incident_notification import IncidentNotification
 from app.models.notification_setting import NotificationSetting
 from app.models.security_setting import SecuritySetting
+from app.services.security_policy import (
+    DEFAULT_SECURITY_SETTINGS,
+    default_security_settings,
+    MAX_LOGIN_ATTEMPTS_RANGE,
+    MAX_SESSION_TIMEOUT_MINUTES,
+    MIN_PASSWORD_LENGTH,
+    MIN_SESSION_TIMEOUT_MINUTES,
+)
 from app.models.setting import Setting
 from app.services.audit_service import AuditService
 from app.services.notifications import NotificationDispatcher, is_allowed_slack_webhook
@@ -83,26 +91,25 @@ class SecuritySettingOut(BaseModel):
 
 
 class SecuritySettingUpdate(BaseModel):
-    min_password_length: int = 8
-    require_uppercase: bool = True
-    require_numbers: bool = True
-    require_special_chars: bool = True
-    mfa_enabled: bool = False
-    session_timeout_minutes: int = 60
-    max_login_attempts: int = 5
+    """The tenant security policy. Enforced (services/security_policy.py):
+    password rules wherever a password is set, the lockout threshold at
+    sign-in, and the idle timeout at refresh. Omitted fields keep their value."""
 
-    @field_validator("min_password_length")
-    @classmethod
-    def _min_password_length(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("min_password_length must be a positive integer")
-        return v
+    min_password_length: int | None = Field(None, ge=MIN_PASSWORD_LENGTH, le=64)
+    require_uppercase: bool | None = None
+    require_numbers: bool | None = None
+    require_special_chars: bool | None = None
+    #: Multi-factor authentication arrives in security programme S2; until then
+    #: it cannot be switched on, so the page never claims protection it lacks.
+    mfa_enabled: bool | None = None
+    session_timeout_minutes: int | None = Field(None, ge=MIN_SESSION_TIMEOUT_MINUTES, le=MAX_SESSION_TIMEOUT_MINUTES)
+    max_login_attempts: int | None = Field(None, ge=MAX_LOGIN_ATTEMPTS_RANGE[0], le=MAX_LOGIN_ATTEMPTS_RANGE[1])
 
-    @field_validator("session_timeout_minutes", "max_login_attempts")
+    @field_validator("mfa_enabled")
     @classmethod
-    def _positive_int(cls, v: int, info) -> int:
-        if v < 1:
-            raise ValueError(f"{info.field_name} must be a positive integer")
+    def _mfa_not_available(cls, v: bool | None) -> bool | None:
+        if v:
+            raise ValueError("Multi-factor authentication is not available yet")
         return v
 
 
@@ -258,18 +265,8 @@ async def update_general_settings(
 
 # ---- Security settings ----------------------------------------------------
 
-# Defaults mirror SecuritySetting column defaults (see app/models/security_setting.py)
-# so the "no row yet" response is indistinguishable from a freshly-created row,
-# apart from the is_default flag.
-DEFAULT_SECURITY_SETTINGS = {
-    "min_password_length": 8,
-    "require_uppercase": True,
-    "require_numbers": True,
-    "require_special_chars": True,
-    "mfa_enabled": False,
-    "session_timeout_minutes": 60,
-    "max_login_attempts": 5,
-}
+# default_security_settings() (services/security_policy.py) is what an
+# untouched tenant gets, both here and where the policy is enforced.
 
 
 @router.get("/security", response_model=SecuritySettingOut)
@@ -281,7 +278,7 @@ async def get_security_settings(
     if not row:
         # Return defaults instead of 404 — don't error just because
         # the row hasn't been created yet
-        return SecuritySettingOut(tenant_id=tenant_id, **DEFAULT_SECURITY_SETTINGS, is_default=True)
+        return SecuritySettingOut(tenant_id=tenant_id, **default_security_settings(), is_default=True)
     return row
 
 
@@ -289,16 +286,37 @@ async def get_security_settings(
 async def update_security_settings(
     payload: SecuritySettingUpdate,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
-    _: Principal = Depends(require_admin),
+    principal: Principal = Depends(require_permission("security.manage")),
     db: AsyncSession = Depends(get_db),
 ):
     row = (await db.execute(select(SecuritySetting).where(SecuritySetting.tenant_id == tenant_id))).scalar_one_or_none()
     if not row:
         # Upsert: create the row on first save rather than 404'ing.
-        row = SecuritySetting(tenant_id=tenant_id)
+        row = SecuritySetting(tenant_id=tenant_id, **default_security_settings())
         db.add(row)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+        before = default_security_settings()
+    else:
+        before = {k: getattr(row, k) for k in DEFAULT_SECURITY_SETTINGS}
+    old: dict = {}
+    new: dict = {}
+    for field, value in payload.model_dump(exclude_unset=True, exclude_none=True).items():
+        if before.get(field) != value:
+            old[field] = before.get(field)
+            new[field] = value
         setattr(row, field, value)
+    await db.flush()
+    if new:
+        await AuditService(db).record_entity(
+            tenant_id=tenant_id,
+            action="security.policy_updated",
+            entity_type="security_settings",
+            entity_id=row.id,
+            actor_id=principal.user_id,
+            actor_email=principal.email,
+            description=f"Security policy changed: {', '.join(sorted(new))}",
+            old_values=old,
+            new_values=new,
+        )
     await db.commit()
     await db.refresh(row)
     return row

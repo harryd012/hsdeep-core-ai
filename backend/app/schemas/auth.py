@@ -193,3 +193,16 @@ class RoleOut(BaseModel):
     name: str
     description: str | None
     permission_codes: list[str]
+
+
+class AuthSessionOut(BaseModel):
+    """One live sign-in session of the current user ("Your sessions")."""
+
+    session_id: uuid.UUID
+    started_at: datetime
+    last_seen_at: datetime
+    expires_at: datetime
+    ip_address: str | None = None
+    user_agent: str | None = None
+    #: The session making this request.
+    current: bool = False

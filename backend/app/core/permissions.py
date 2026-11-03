@@ -92,7 +92,14 @@ PERMISSION_CATALOG: Final[list[tuple[str, str]]] = [
     ("users.delete", "Delete users"),
     ("roles.read", "View roles and permission assignments"),
     ("roles.write", "Create/update/delete roles and assign permissions"),
+    # Security & compliance (enterprise security programme S1)
+    ("security.manage", "Set the tenant security policy and sign users out of their sessions"),
+    ("audit.read", "View and export the tenant audit log"),
 ]
+
+#: `.read` permissions that are NOT part of the read-only Viewer role: the
+#: audit log shows who did what across the tenant, so it is an admin view.
+SENSITIVE_READS: Final[frozenset[str]] = frozenset({"audit.read"})
 
 ALL_PERMISSION_CODES: Final[frozenset[str]] = frozenset(code for code, _ in PERMISSION_CATALOG)
 
@@ -126,7 +133,7 @@ DEFAULT_ROLES: Final[dict[str, tuple[str, object]]] = {
     ),
     "Viewer": (
         "Read-only access to monitoring, alerts and dashboards",
-        [c for c in ALL_PERMISSION_CODES if c.endswith(".read")],
+        [c for c in ALL_PERMISSION_CODES if c.endswith(".read") and c not in SENSITIVE_READS],
     ),
 }
 

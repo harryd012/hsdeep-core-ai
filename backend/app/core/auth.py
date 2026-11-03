@@ -433,6 +433,7 @@ async def get_current_user(
             await _validate_override_tenant(principal.tenant_id)
             await _require_support_grant(principal)
         request.state.token_tenant_id = uuid.UUID(payload["tid"])
+        request.state.session_id = payload.get("sid")
         _publish_principal(request, principal)
         return principal
 
@@ -479,8 +480,17 @@ async def get_optional_user(
         # P0 hardening: validate the override target before trusting it.
         # (Outside the except block so a 403 for a bogus override is NOT
         # silently swallowed into "no principal".)
+        # Same checks as get_current_user, so this path can never be a way
+        # around session revocation or the break-glass grant.
+        if payload.get("sid") and not await session_is_live(payload["sid"]):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session has ended. Sign in again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         if _override_applied(principal, payload):
             await _validate_override_tenant(principal.tenant_id)
+            await _require_support_grant(principal)
         return principal
 
 

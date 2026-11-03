@@ -15,6 +15,9 @@ Security invariants enforced here:
   * Refresh is single-use: on every refresh the presented token is revoked
     and a new one issued (rotation), so a stolen-then-used token is detectable
     as a revoked-token reuse and cannot be replayed.
+  * The tenant security policy (services/security_policy.py) applies: its
+    password rules wherever a password is set, its lockout threshold at
+    sign-in, and its idle timeout at refresh.
 """
 from __future__ import annotations
 
@@ -26,10 +29,12 @@ from app.core.config import get_settings
 from app.core.permissions import DEFAULT_ROLES, resolve_role_permissions
 from app.models.role import Role
 from app.models.user import User
+from app.repositories.auth_session_repository import AuthSessionRepository
 from app.repositories.permission_repository import PermissionRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.role_repository import RoleRepository
 from app.repositories.user_repository import UserRepository
+from app.services.security_policy import load_policy
 
 settings = get_settings()
 
@@ -44,6 +49,10 @@ class InvalidCredentials(AuthError):
 
 class EmailNotVerified(AuthError):
     """Correct password, but a self-service sign-up has not confirmed its email."""
+
+
+class SessionIdleTimeout(AuthError):
+    """The session was not used within the tenant's idle timeout."""
 
 
 class InvalidRefreshToken(AuthError):
@@ -71,13 +80,22 @@ class AuthService:
         self.roles = roles
         self.permissions = permissions
         self.refresh_tokens = refresh_tokens
+        self.sessions = AuthSessionRepository(users.db)
 
     # -- Token minting ----------------------------------------------------
 
-    async def _issue_tokens(self, user: User, session_id: uuid.UUID | None = None) -> tuple[str, str, int]:
+    async def _issue_tokens(
+        self,
+        user: User,
+        session_id: uuid.UUID | None = None,
+        *,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> tuple[str, str, int]:
         """Mint an access JWT + a rotated refresh token for `user`. The
         refresh token plaintext is returned to the caller and only its hash is
-        persisted. A new sign-in starts a session; a refresh keeps it."""
+        persisted. A new sign-in starts a session; a refresh keeps it. The
+        session's device details and last use are recorded for "Your sessions"."""
         session_id = session_id or uuid.uuid4()
         perms = UserRepository.resolved_permissions(user)
         access = auth.create_access_token(
@@ -97,13 +115,23 @@ class AuthService:
             + timedelta(days=settings.refresh_token_expire_days),
             session_id=session_id,
         )
+        await self.sessions.touch(
+            session_id=session_id, tenant_id=user.tenant_id, user_id=user.id,
+            ip_address=ip_address, user_agent=user_agent,
+        )
         expires_in = settings.access_token_expire_minutes * 60
         return access, refresh_plain, expires_in
 
     # -- Authentication ---------------------------------------------------
 
     async def login(
-        self, *, tenant_id: uuid.UUID | None, email: str, password: str
+        self,
+        *,
+        tenant_id: uuid.UUID | None,
+        email: str,
+        password: str,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
     ) -> tuple[str, str, int, uuid.UUID | None]:
         """Authenticate and return (access, refresh, expires_in,
         resolved_tenant_id). resolved_tenant_id is the tenant the login
@@ -144,9 +172,12 @@ class AuthService:
         if user is None or not user.is_active or locked or not password_ok:
             if user is not None and not locked and not password_ok:
                 cfg = get_settings()
+                # A saved tenant policy sets how many failures lock the
+                # account; otherwise the deployment's setting does.
+                policy = await load_policy(self.users.db, user.tenant_id)
                 await self.users.record_failed_login(
                     user,
-                    max_attempts=cfg.login_max_failed_attempts,
+                    max_attempts=policy.max_login_attempts if policy.saved else cfg.login_max_failed_attempts,
                     lockout_minutes=cfg.login_lockout_minutes,
                 )
             raise InvalidCredentials("Invalid email or password")
@@ -154,10 +185,12 @@ class AuthService:
         if user.requires_email_verification and user.email_verified_at is None:
             raise EmailNotVerified("Confirm your email address before signing in. Check your inbox for the link.")
         await self.users.touch_last_login(user)
-        access, refresh, expires_in = await self._issue_tokens(user)
+        access, refresh, expires_in = await self._issue_tokens(user, ip_address=ip_address, user_agent=user_agent)
         return access, refresh, expires_in, user.tenant_id
 
-    async def refresh(self, *, refresh_token: str) -> tuple[str, str, int]:
+    async def refresh(
+        self, *, refresh_token: str, ip_address: str | None = None, user_agent: str | None = None
+    ) -> tuple[str, str, int]:
         token_hash = auth.hash_refresh_token(refresh_token)
         row = await self.refresh_tokens.get_by_hash(token_hash)
         if row is not None and row.revoked_at is not None and row.session_id is not None:
@@ -172,10 +205,25 @@ class AuthService:
         user = await self.users.get_by_id_any_tenant(row.user_id)
         if user is None or not user.is_active:
             raise InvalidRefreshToken("Invalid or expired refresh token")
+        # Idle timeout: the presented token was issued at sign-in or at the
+        # last refresh, so its age is the time since the session was last used.
+        policy = await load_policy(self.users.db, user.tenant_id)
+        idle = datetime.now(timezone.utc) - row.created_at
+        if idle > timedelta(minutes=policy.session_timeout_minutes):
+            if row.session_id is not None:
+                await self.refresh_tokens.revoke_session(row.session_id)
+                auth.forget_session(row.session_id)
+            else:
+                await self.refresh_tokens.revoke(row)
+            raise SessionIdleTimeout(
+                f"Your session ended after {policy.session_timeout_minutes} minutes without activity. Sign in again."
+            )
         # Rotate: revoke the presented token before issuing the replacement,
         # keeping the session so access tokens in flight stay valid.
         await self.refresh_tokens.revoke(row)
-        return await self._issue_tokens(user, session_id=row.session_id)
+        return await self._issue_tokens(
+            user, session_id=row.session_id, ip_address=ip_address, user_agent=user_agent
+        )
 
     async def logout(self, *, refresh_token: str) -> uuid.UUID | None:
         """End the sign-in session the refresh token belongs to; its access
@@ -195,6 +243,35 @@ class AuthService:
         count = await self.refresh_tokens.revoke_all_for_user(user_id)
         auth.forget_session()
         return count
+
+    # -- Sessions ("Your sessions") ----------------------------------------
+
+    async def list_sessions(self, user_id: uuid.UUID) -> list[dict]:
+        return await self.sessions.live_sessions(user_id)
+
+    async def end_session(self, *, user_id: uuid.UUID, session_id: uuid.UUID) -> bool:
+        """End one of the user's own sessions; False if it is not theirs or not live."""
+        mine = {s["session_id"] for s in await self.sessions.live_sessions(user_id)}
+        if session_id not in mine:
+            return False
+        await self.refresh_tokens.revoke_session(session_id)
+        auth.forget_session(session_id)
+        return True
+
+    async def end_other_sessions(self, *, user_id: uuid.UUID, keep: uuid.UUID | None) -> int:
+        """End every live session of the user except `keep` (the current one)."""
+        ended = 0
+        for s in await self.sessions.live_sessions(user_id):
+            if s["session_id"] != keep:
+                await self.refresh_tokens.revoke_session(s["session_id"])
+                auth.forget_session(s["session_id"])
+                ended += 1
+        return ended
+
+    async def _check_password(self, tenant_id: uuid.UUID, password: str, email: str | None) -> None:
+        """Raise PasswordPolicyError when the password breaks the tenant's policy."""
+        policy = await load_policy(self.users.db, tenant_id)
+        policy.check_password(password, email)
 
     # -- Tenant RBAC provisioning ----------------------------------------
 
@@ -232,6 +309,8 @@ class AuthService:
         in until they accept an invitation and set one)."""
         if await self.users.get_by_email(tenant_id, email) is not None:
             raise Conflict(f"A user with email {email!r} already exists in this tenant")
+        if password:
+            await self._check_password(tenant_id, password, email)
         user = await self.users.create(
             tenant_id=tenant_id,
             email=email,
@@ -248,6 +327,7 @@ class AuthService:
         user = await self.users.get_by_id(user_id, tenant_id)
         if user is None:
             raise NotFound("User not found")
+        await self._check_password(tenant_id, password, user.email)
         await self.users.set_password(user, password_hash=auth.hash_password(password))
         # An admin reset is the unlock path for a locked-out user.
         await self.users.clear_lockout(user)

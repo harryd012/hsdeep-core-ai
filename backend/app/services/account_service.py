@@ -22,6 +22,7 @@ from app.repositories.user_repository import UserRepository
 from app.services.audit_service import AuditService
 from app.services.email import templates
 from app.services.email.outbox import EmailDisabled, email_enabled, enqueue_email
+from app.services.security_policy import load_policy
 
 PASSWORD_RESET_TTL = timedelta(minutes=30)
 EMAIL_VERIFY_TTL = timedelta(hours=24)
@@ -93,6 +94,8 @@ class AccountService:
         )
 
     async def _set_password(self, user: User, password: str) -> None:
+        # The tenant's password policy applies to self-service resets and invitations too.
+        (await load_policy(self.db, user.tenant_id)).check_password(password, user.email)
         await self.users.set_password(user, password_hash=auth.hash_password(password))
         await self.users.clear_lockout(user)
         await RefreshTokenRepository(self.db).revoke_all_for_user(user.id)
