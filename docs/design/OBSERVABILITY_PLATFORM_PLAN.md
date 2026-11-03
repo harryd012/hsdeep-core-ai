@@ -43,7 +43,7 @@ Earlier audits: `docs/REPOSITORY_AUDIT.md`, `docs/PLATFORM_LEDGER.md` (batches 1
 | P2 Inventory & discovery | Saved views and bulk actions on hosts; discovery schedules, exclusions and approval of recommended sensors (on the existing discovery engine) | **Slices 1–2 implemented and tested**: scheduled discovery + scopes UI (`tests/test_discovery_schedule.py`); host saved views, bulk classification / monitoring pause and a tag facet (`tests/test_host_views_bulk.py`, UI not verified in a signed-in browser); sensor recommendations wait for P3's library |
 | P3 Sensor library | Sensor templates (catalogue from the collectors' real metric types), recommendation from discovery profiles, bulk add for collectors that support configuration (SNMP, connectivity) | **Slice 1 implemented and tested**: catalogue of 29 templates with tenant usage, bulk thresholds through the P1 lifecycle, per-host coverage rules, sensors linked to their host; **slice 2**: bulk reachability checks tied to their hosts, a reachability sensor that alerts when a host stops answering (`tests/test_sensor_library.py`) |
 | P4 Network Monitoring Center | Interface traffic / errors / utilization pages from `interfaces` + metrics, top-N bandwidth, VPN tunnels (FortiGate / Palo Alto data already collected) | **Slice 1 implemented and tested**: per-interface history (traffic, utilisation, error rates), network overview / interface list / interface history API, Network Monitoring and interface pages (`tests/test_network_center.py`) |
-| P5 Infrastructure monitoring | Windows / Linux / VMware host views from existing collectors | planned |
+| P5 Infrastructure monitoring | Windows / Linux / VMware host views from existing collectors | **Slice 1 implemented and tested**: server fleet page (`tests/test_server_fleet.py`); per-host detail already existed |
 | P6 Dashboards & topology | Widget registry over aggregated APIs, saved dashboards per tenant / role; topology already exists, add drill-down to sensors | planned |
 | P7 Metrics / logs | Syslog receiver on the edge agent → normalized events, Logs Explorer over events | planned (needs agent work) |
 | P8 APM / tracing | OTLP/HTTP ingest of traces → spans table, service map from span parent/child | planned (new ingestion path) |
@@ -281,3 +281,30 @@ interfaces across devices, and VPN tunnels appeared only per firewall.
 - **Not in this slice**: per-interface alert thresholds (utilisation, errors) and top-talkers
   by flow need NetFlow / sFlow (not collected); WAN / SD-WAN path quality; interface charts on
   the host page.
+
+## 9. P5 slice 1: server fleet
+
+Already in place: the Linux (SSH), Windows (WinRM / WMI) and VMware collectors report per-device
+CPU, memory, disk, load, uptime and process sensors, every reading is kept as history (P1), and
+`/infrastructure/hosts/[id]` shows one host's verdict, sensors and metric history. Missing: a view
+across all servers.
+
+- **API** `GET /api/explorer/hosts/resources[?platform=windows|linux|vmware|other]`
+  (`devices.read`, tenant from the token; `app/services/host_resources_service.py`): one row per
+  server with a host-resource sensor, worst first (any sensor down, then warnings, then the
+  highest CPU / memory / disk %), and a fleet summary that always covers every platform.
+- **Resources** come from each sensor's metric type through the existing canonical vocabulary
+  (`canonical_metric_name`); generic checks (PRTG `prtg_sensor`, SSL, ping) and per-process
+  sensors are not host resources. The busiest core and the fullest volume speak for CPU and disk
+  (worst sensor status first, then highest %).
+- **Platform** is the reporting collector, else the device's OS string, else "other"; never the
+  name.
+- **No fabricated values**: each value carries its own sensor's status; percentages are compared
+  only when the unit is `%` (VMware MHz / MB are shown as reported); a server with no reading for
+  an hour is "stale". Nothing is written.
+- **UI** `/infrastructure/servers` (nav: Infrastructure → Servers): stat strip (measured, down,
+  warning, disk ≥ 90 %, CPU ≥ 90 %, stale), platform tabs, table with gauges, rows open the host
+  page.
+- **Known gap**: PRTG sensors arrive as `prtg_sensor` with no resource type, so a PRTG-only
+  estate shows no servers here until PRTG sensor types (CPU Load, Memory, Disk Free) are mapped
+  to resources (next slice). The dev tenant's 34 PRTG sensors are of this kind.

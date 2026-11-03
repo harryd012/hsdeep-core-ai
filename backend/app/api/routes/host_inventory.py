@@ -9,6 +9,7 @@ Routes (mounted under /api):
   GET    /explorer/hosts/vocabulary       - allowed criticality / environment values
   POST   /explorer/hosts/bulk             - classify hosts (devices.write)
   POST   /explorer/hosts/bulk/monitoring  - pause / resume monitoring (monitoring.update)
+  GET    /explorer/hosts/resources        - server fleet: CPU / memory / disk / load / uptime (P5)
 
 The tenant always comes from the authenticated principal. Another tenant's (or,
 for writes, another user's) view is a 404. Saved views are personal settings: a
@@ -20,7 +21,9 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from dataclasses import asdict
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Principal, require_permission
@@ -38,6 +41,8 @@ from app.schemas.host_inventory import (
     HostViewOut,
     HostViewUpdate,
 )
+from app.schemas.host_resources import FleetSummaryOut, ServerFleetOut, ServerResourcesOut
+from app.services.host_resources_service import PLATFORMS, HostResourcesService
 from app.services.host_inventory_service import (
     Actor,
     HostBulkService,
@@ -159,3 +164,18 @@ async def _run_bulk(body: HostBulkRequest, principal: Principal, db: AsyncSessio
         return await HostBulkService(db).run(_actor(principal), body)
     except TooManySensors as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.get("/resources", response_model=ServerFleetOut)
+async def server_fleet_resources(
+    platform: str | None = Query(None, pattern=f"^({'|'.join(PLATFORMS)})$"),
+    principal: Principal = Depends(require_permission("devices.read")),
+    db: AsyncSession = Depends(get_db),
+) -> ServerFleetOut:
+    """Every server reporting host resources, worst first, with a fleet summary
+    (the summary always covers all platforms; `platform` filters the rows)."""
+    summary, rows = await HostResourcesService(db).fleet(principal.tenant_id, platform=platform)
+    return ServerFleetOut(
+        summary=FleetSummaryOut(**asdict(summary)),
+        servers=[ServerResourcesOut(**asdict(r)) for r in rows],
+    )

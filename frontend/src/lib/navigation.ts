@@ -74,6 +74,7 @@ export const NAV_CONFIG: NavGroup[] = [
     children: [
       { label: "Overview", route: "/infrastructure" },
       { label: "Hosts", route: "/infrastructure/hosts", keywords: "servers devices health facets" },
+      { label: "Servers", route: "/infrastructure/servers", keywords: "windows linux vmware cpu memory disk uptime" },
       { label: "Universal Resources", route: "/infrastructure/universal", keywords: "cloud firewall router switch" },
       { label: "Asset Inventory", route: "/infrastructure/assets", keywords: "cmdb devices" },
       { label: "Firewalls", route: "/infrastructure/firewalls", keywords: "firewall fortigate palo alto ha vpn licence" },
