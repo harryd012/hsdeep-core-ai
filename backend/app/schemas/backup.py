@@ -506,3 +506,51 @@ class ReplicationOverview(BaseModel):
     plans_total: int
     plans_ready: int
     by_region: list[ReplicationRegionGroup]
+
+
+class BackupStrikeRow(BaseModel):
+    """Items whose most recent backups failed in a row (1, 2, 3 or more)."""
+
+    #: "All items" or a workload type.
+    label: str
+    one: int
+    two: int
+    three_plus: int
+
+
+class BackupStrikeItem(BaseModel):
+    item_name: str
+    vault_id: uuid.UUID
+    vault_name: str
+    #: Consecutive failed backups, most recent first.
+    strikes: int
+    last_failed_at: datetime | None
+    last_error_code: str | None
+    last_error_message: str | None
+
+
+class BackupRetentionBucket(BaseModel):
+    #: 0_30d | 30_90d | 90_365d | 1y_plus | not_reported
+    key: str
+    label: str
+    items: int
+
+
+class BackupHealth(BaseModel):
+    """Operational health for the backup dashboard: open backup alerts by
+    severity, failure strikes from job history, and how far back each item's
+    policy keeps restore points."""
+
+    alerts_critical: int
+    alerts_warning: int
+    alerts_info: int
+    #: Open alerts someone has acknowledged (included in the counts above).
+    alerts_acknowledged: int
+    #: Protected items inside the RPO whose last backup did not fail.
+    items_healthy: int
+    #: Days of job history the strikes are counted over.
+    strike_window_days: int
+    strikes: list[BackupStrikeRow]
+    #: Items with the most strikes (up to 10).
+    strike_items: list[BackupStrikeItem]
+    retention: list[BackupRetentionBucket]

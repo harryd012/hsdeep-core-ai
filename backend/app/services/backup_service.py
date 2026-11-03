@@ -39,6 +39,10 @@ from app.schemas.backup import (
     BackupAgeBucket,
     BackupDailyJobs,
     BackupFailureAnalysis,
+    BackupHealth,
+    BackupRetentionBucket,
+    BackupStrikeItem,
+    BackupStrikeRow,
     BackupFailureGroup,
     BackupFilterOption,
     BackupFilterOptions,
@@ -82,6 +86,15 @@ AGE_BUCKETS = (
 )
 #: Inventory resources Azure Backup can protect, by resource id (lower case).
 _PROTECTABLE = "/providers/microsoft.compute/virtualmachines/"
+#: Days of job history failure strikes are counted over.
+STRIKE_WINDOW_DAYS = 30
+#: Retention-horizon buckets: (key, label, upper bound in days; None = no bound).
+RETENTION_BUCKETS = (
+    ("0_30d", "0–30 days", 30),
+    ("30_90d", "30–90 days", 90),
+    ("90_365d", "90–365 days", 365),
+    ("1y_plus", "1 year and more", None),
+)
 #: Days of storage history a growth estimate needs.
 MIN_GROWTH_HISTORY_DAYS = 14
 #: Item names listed per failure group.
@@ -787,6 +800,135 @@ class BackupService:
                 max(0, int(measured[-1][1] + growth * 30)) if growth is not None else None
             ),
         )
+
+    async def health(
+        self, tenant_id: uuid.UUID, *, filters: BackupFilters = NO_FILTERS, now: datetime | None = None,
+    ) -> BackupHealth:
+        """Open backup alerts, failure strikes and retention horizons (dashboard)."""
+        from app.models.alert import Alert
+        from app.models.sensor import Sensor
+        from app.services.monitoring.backup_saver import SENSOR_PREFIX
+
+        now = now or datetime.now(timezone.utc)
+        rpo_hours, _ = await self._rpo(tenant_id)
+        vaults = {v.id: v for v in await self._scoped_vaults(tenant_id, filters)}
+        vault_ids = list(vaults)
+        items = await self._scoped_items(tenant_id, filters, vault_ids)
+
+        # Open alerts raised by backup sensors on the selected storage.
+        alert_rows = (
+            await self.db.execute(
+                select(Alert.severity, Alert.status, func.count())
+                .join(Sensor, Sensor.id == Alert.sensor_id)
+                .where(
+                    Alert.tenant_id == tenant_id,
+                    Alert.status != "resolved",
+                    Alert.is_deleted.is_(False),
+                    Sensor.external_id.startswith(SENSOR_PREFIX),
+                    *([Alert.device_id.in_([v.device_id for v in vaults.values() if v.device_id])] if filters.active else []),
+                )
+                .group_by(Alert.severity, Alert.status)
+            )
+        ).all()
+        by_severity: dict[str, int] = {}
+        acknowledged = 0
+        for severity, status, n in alert_rows:
+            by_severity[severity] = by_severity.get(severity, 0) + n
+            if status == "acknowledged":
+                acknowledged += n
+
+        # Strikes: failed backups in a row, newest first, per item (restores excluded).
+        jobs = (
+            await self.db.execute(
+                select(
+                    BackupJob.vault_id, BackupJob.item_name, BackupJob.status, BackupJob.operation,
+                    BackupJob.started_at, BackupJob.error_code, BackupJob.error_message,
+                )
+                .where(
+                    BackupJob.tenant_id == tenant_id,
+                    BackupJob.vault_id.in_(vault_ids),
+                    BackupJob.item_name.is_not(None),
+                    BackupJob.started_at >= now - timedelta(days=STRIKE_WINDOW_DAYS),
+                    BackupJob.status.in_(("completed", "completed_with_warnings", "failed")),
+                    *self._job_clauses(filters, None),
+                )
+                .order_by(BackupJob.started_at.desc())
+            )
+        ).all()
+        streaks: dict[tuple, dict] = {}
+        for vault_id, item_name, status, operation, started, code, message in jobs:
+            if operation and "restore" in operation.lower():
+                continue
+            key = (vault_id, item_name)
+            s = streaks.setdefault(key, {"count": 0, "open": True, "last": None, "code": None, "message": None})
+            if not s["open"]:
+                continue
+            if status == "failed":
+                s["count"] += 1
+                if s["last"] is None:
+                    s["last"], s["code"], s["message"] = started, code, message
+            else:
+                s["open"] = False
+        workload_of = {(i.vault_id, i.name): i.workload_type for i in items}
+        struck = [(k, s) for k, s in streaks.items() if s["count"] and k in workload_of]
+
+        def row(label: str, counts: list[int]) -> BackupStrikeRow:
+            return BackupStrikeRow(
+                label=label, one=counts.count(1), two=counts.count(2), three_plus=sum(1 for c in counts if c >= 3),
+            )
+
+        strike_rows = [row("All items", [s["count"] for _, s in struck])]
+        for workload in sorted({w for w in workload_of.values() if w}):
+            strike_rows.append(row(workload, [s["count"] for k, s in struck if workload_of[k] == workload]))
+
+        # Retention horizon per item, from its policy's tiers.
+        policies = await self._policies(tenant_id)
+        buckets = {key: 0 for key, _, _ in RETENTION_BUCKETS}
+        not_reported = 0
+        for item in items:
+            policy = policies.get((item.vault_id, item.policy_name)) if item.policy_name else None
+            horizon = _retention_horizon_days(policy) if policy else None
+            if horizon is None:
+                not_reported += 1
+                continue
+            for key, _, bound in RETENTION_BUCKETS:
+                if bound is None or horizon <= bound:
+                    buckets[key] += 1
+                    break
+
+        return BackupHealth(
+            alerts_critical=by_severity.get("critical", 0),
+            alerts_warning=by_severity.get("warning", 0),
+            alerts_info=by_severity.get("info", 0),
+            alerts_acknowledged=acknowledged,
+            items_healthy=sum(
+                1 for i in items
+                if rpo_state(i, now, rpo_hours)[0] == "within" and i.last_backup_status != "failed"
+            ),
+            strike_window_days=STRIKE_WINDOW_DAYS,
+            strikes=strike_rows,
+            strike_items=[
+                BackupStrikeItem(
+                    item_name=name, vault_id=vault_id, vault_name=vaults[vault_id].name, strikes=s["count"],
+                    last_failed_at=s["last"], last_error_code=s["code"], last_error_message=s["message"],
+                )
+                for (vault_id, name), s in sorted(struck, key=lambda kv: (-kv[1]["count"], kv[0][1]))[:10]
+            ],
+            retention=[BackupRetentionBucket(key=k, label=label, items=buckets[k]) for k, label, _ in RETENTION_BUCKETS]
+            + [BackupRetentionBucket(key="not_reported", label="Not reported", items=not_reported)],
+        )
+
+
+def _retention_horizon_days(p: BackupPolicy) -> int | None:
+    """How far back the policy keeps restore points, days; None if no tier is reported."""
+    spans = [
+        p.daily_retention_days,
+        p.weekly_retention_weeks * 7 if p.weekly_retention_weeks is not None else None,
+        round(p.monthly_retention_months * 365 / 12) if p.monthly_retention_months is not None else None,
+        p.yearly_retention_years * 365 if p.yearly_retention_years is not None else None,
+    ]
+    known = [s for s in spans if s is not None]
+    return max(known) if known else None
 
 
 def _escape_like(text: str) -> str:

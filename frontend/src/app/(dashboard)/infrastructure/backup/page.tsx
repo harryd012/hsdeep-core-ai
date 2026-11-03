@@ -16,7 +16,6 @@ import {
   type BackupCoverage,
   type BackupCoverageState,
   type BackupFailureGroup,
-  type BackupFilterOptions,
   type BackupFilters,
   type BackupItem,
   type BackupJob,
@@ -33,7 +32,7 @@ import { useAuth } from "@/lib/auth-context";
 import { createMonitoringSource, syncMonitoringSource } from "@/lib/monitoringApi";
 import { DonutRing, Legend } from "@/components/command-center/primitives";
 import { instancesHref } from "./instancesHref";
-import { CHECK_TEXT, CHECK_TONE, StorageTrend, duration, flag, hours, jobTone, posture, retention, workloadLabel } from "./ui";
+import { CHECK_TEXT, CHECK_TONE, FilterBar, StorageTrend, duration, flag, hours, jobTone, posture, retention, workloadLabel } from "./ui";
 import {
   Banner,
   BarList,
@@ -70,45 +69,6 @@ const JOB_SERIES = [
   { key: "failed", label: "Failed", color: "var(--ecc-bad)" },
   { key: "other", label: "Other", color: "var(--ecc-unknown)" },
 ];
-
-type FilterKey = keyof BackupFilters;
-
-/** Command Center filters: each select appears only when it has a choice to make. */
-function FilterBar({ options, value, onChange }: { options: BackupFilterOptions; value: BackupFilters; onChange: (f: BackupFilters) => void }) {
-  const selects: { key: FilterKey; label: string; all: string; values: { value: string; label: string }[] }[] = [
-    { key: "provider", label: "Provider", all: "All providers", values: options.providers.map((p) => ({ value: p, label: titleCaseWords(p) })) },
-    { key: "subscription_id", label: "Subscription", all: "All subscriptions", values: options.subscriptions.map((s) => ({ value: s, label: s })) },
-    { key: "resource_group", label: "Resource group", all: "All resource groups", values: options.resource_groups.map((r) => ({ value: r, label: r })) },
-    { key: "location", label: "Region", all: "All regions", values: options.locations.map((l) => ({ value: l, label: l })) },
-    { key: "storage_id", label: "Storage", all: "All storage", values: options.vaults },
-    { key: "workload_type", label: "Workload", all: "All workloads", values: options.workload_types.map((w) => ({ value: w, label: workloadLabel(w) })) },
-  ];
-  const shown = selects.filter((s) => s.values.length > 1 || value[s.key]);
-  if (shown.length === 0) return null;
-  const active = Object.values(value).some(Boolean);
-  return (
-    <div className="pk-toolbar" role="group" aria-label="Backup filters">
-      {shown.map((s) => (
-        <select
-          key={s.key}
-          className="pk-input"
-          aria-label={`Filter by ${s.label.toLowerCase()}`}
-          value={value[s.key] ?? ""}
-          onChange={(e) => onChange({ ...value, [s.key]: e.target.value || undefined })}
-          style={{ width: "auto", maxWidth: 260 }}
-        >
-          <option value="">{s.all}</option>
-          {s.values.map((o) => (
-            <option key={o.value} value={o.value}>{o.label}</option>
-          ))}
-        </select>
-      ))}
-      {active && (
-        <button type="button" className="pk-button" onClick={() => onChange({})}>Clear filters</button>
-      )}
-    </div>
-  );
-}
 
 /** Site filter: "all", "none" (no site assigned) or a site id. */
 function inSite(siteId: string | null, filter: string): boolean {

@@ -2,7 +2,7 @@
 
 import { useEffect, type ReactNode } from "react";
 import { X } from "lucide-react";
-import type { BackupCheckStatus, BackupRpoState, BackupStorageHistory } from "@/lib/api";
+import type { BackupCheckStatus, BackupFilterOptions, BackupFilters, BackupRpoState, BackupStorageHistory } from "@/lib/api";
 import { formatBytes } from "@/lib/csv";
 import { DayColumns, titleCaseWords, type Tone } from "@/components/ui/PageKit";
 
@@ -161,6 +161,45 @@ export function StorageTrend({ history, asOf }: { history: BackupStorageHistory;
           ? `A growth estimate needs ${history.min_history_days} days of history.`
           : `Estimated growth ${formatBytes(Math.abs(history.growth_bytes_per_day))}/day${history.growth_bytes_per_day < 0 ? " (shrinking)" : ""}; at that rate about ${formatBytes(history.projected_used_bytes_30d ?? 0)} in 30 days. This is an estimate from the recorded trend, not a forecast from the provider.`}
       </p>
+    </div>
+  );
+}
+
+type FilterKey = keyof BackupFilters;
+
+/** Command Center filters: each select appears only when it has a choice to make. */
+export function FilterBar({ options, value, onChange }: { options: BackupFilterOptions; value: BackupFilters; onChange: (f: BackupFilters) => void }) {
+  const selects: { key: FilterKey; label: string; all: string; values: { value: string; label: string }[] }[] = [
+    { key: "provider", label: "Provider", all: "All providers", values: options.providers.map((p) => ({ value: p, label: titleCaseWords(p) })) },
+    { key: "subscription_id", label: "Subscription", all: "All subscriptions", values: options.subscriptions.map((s) => ({ value: s, label: s })) },
+    { key: "resource_group", label: "Resource group", all: "All resource groups", values: options.resource_groups.map((r) => ({ value: r, label: r })) },
+    { key: "location", label: "Region", all: "All regions", values: options.locations.map((l) => ({ value: l, label: l })) },
+    { key: "storage_id", label: "Storage", all: "All storage", values: options.vaults },
+    { key: "workload_type", label: "Workload", all: "All workloads", values: options.workload_types.map((w) => ({ value: w, label: workloadLabel(w) })) },
+  ];
+  const shown = selects.filter((s) => s.values.length > 1 || value[s.key]);
+  if (shown.length === 0) return null;
+  const active = Object.values(value).some(Boolean);
+  return (
+    <div className="pk-toolbar" role="group" aria-label="Backup filters">
+      {shown.map((s) => (
+        <select
+          key={s.key}
+          className="pk-input"
+          aria-label={`Filter by ${s.label.toLowerCase()}`}
+          value={value[s.key] ?? ""}
+          onChange={(e) => onChange({ ...value, [s.key]: e.target.value || undefined })}
+          style={{ width: "auto", maxWidth: 260 }}
+        >
+          <option value="">{s.all}</option>
+          {s.values.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      ))}
+      {active && (
+        <button type="button" className="pk-button" onClick={() => onChange({})}>Clear filters</button>
+      )}
     </div>
   );
 }

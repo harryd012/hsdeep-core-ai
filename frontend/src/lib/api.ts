@@ -3949,6 +3949,26 @@ export interface BackupFailureAnalysis {
   groups: BackupFailureGroup[];
 }
 
+export interface BackupHealth {
+  alerts_critical: number;
+  alerts_warning: number;
+  alerts_info: number;
+  /** Open alerts someone acknowledged (included above). */
+  alerts_acknowledged: number;
+  /** Protected items inside the RPO whose last backup did not fail. */
+  items_healthy: number;
+  strike_window_days: number;
+  /** Items whose latest backups failed in a row: 1, 2, 3+. First row is "All items", then per workload type. */
+  strikes: { label: string; one: number; two: number; three_plus: number }[];
+  strike_items: { item_name: string; vault_id: string; vault_name: string; strikes: number; last_failed_at: string | null; last_error_code: string | null; last_error_message: string | null }[];
+  /** Items by how far back their policy keeps restore points. */
+  retention: { key: string; label: string; items: number }[];
+}
+
+export function getBackupHealth(filters: BackupFilters = {}): Promise<BackupHealth> {
+  return apiFetch<BackupHealth>(`/api/backup/health${backupFilterParams(filters)}`);
+}
+
 export function getBackupFailures(days = 7, filters: BackupFilters = {}): Promise<BackupFailureAnalysis> {
   return apiFetch<BackupFailureAnalysis>(`/api/backup/failures${backupFilterParams(filters, { days: String(days) })}`);
 }

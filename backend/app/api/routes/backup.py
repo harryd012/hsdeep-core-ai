@@ -22,6 +22,7 @@ from app.core.entitlements import require_active_subscription
 from app.schemas.backup import (
     BackupCoverage,
     BackupFailureAnalysis,
+    BackupHealth,
     BackupItemDetail,
     BackupItemOut,
     BackupJobDetail,
@@ -189,6 +190,16 @@ async def backup_failures(
 ) -> BackupFailureAnalysis:
     """Failed jobs grouped by error code: how many, which items, when."""
     return await BackupService(db).failures(tenant_id, days=days, filters=filters)
+
+
+@router.get("/health", response_model=BackupHealth, dependencies=_READ)
+async def backup_health(
+    filters: BackupFilters = Depends(backup_filters),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> BackupHealth:
+    """Open backup alerts by severity, failure strikes (30 days) and retention horizons."""
+    return await BackupService(db).health(tenant_id, filters=filters)
 
 
 @router.get("/security", response_model=BackupSecurityPosture, dependencies=_READ)

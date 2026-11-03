@@ -1202,3 +1202,48 @@ async def test_replication_saved_alerts_api_and_isolation(db, monitoring_source_
     async with _client(source.tenant_id, permissions=frozenset({"devices.read"})) as client:
         for path in ("/api/backup/replication/overview", "/api/backup/replication/items", "/api/backup/replication/plans"):
             assert (await client.get(path)).status_code == 403, path
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_backup_health_strikes_alerts_retention_and_isolation(db, monitoring_source_factory, other_tenant):
+    from app.collectors.base import NormalizedBackupJob
+
+    source = await monitoring_source_factory(source_type="azure_backup")
+    bundle = await _bundle()
+    # db-01 failed three times in a row (newest first: job-2 at 2 h, then 26 h and 50 h ago);
+    # a restore failure in between does not count, and an older success ends the streak.
+    for jid, hours, op, status in (("s1", 26, "Backup", "failed"), ("s2", 30, "Restore", "failed"),
+                                   ("s3", 50, "Backup", "failed"), ("s4", 74, "Backup", "completed"),
+                                   ("s5", 98, "Backup", "failed")):
+        bundle.backup_jobs.append(NormalizedBackupJob(
+            external_id=f"{VAULT_ID}/backupjobs/{jid}".lower(), vault_external_id=VAULT_ID.lower(), item_name="db-01",
+            operation=op, status=status, started_at=NOW - timedelta(hours=hours),
+            error_code="UserErrorVmNotFound" if status == "failed" else None,
+        ))
+    result = await _saver(db).save(source, bundle)
+    alerts = await _evaluate(db, result)
+    await db.commit()
+    open_alerts = [a for a in alerts if a.status != "resolved"]
+
+    async with _client(source.tenant_id) as client:
+        h = (await client.get("/api/backup/health")).json()
+        assert h["strike_window_days"] == 30
+        assert h["strikes"][0] == {"label": "All items", "one": 0, "two": 0, "three_plus": 1}
+        (top,) = h["strike_items"]
+        assert (top["item_name"], top["strikes"], top["last_error_code"]) == ("db-01", 3, "UserErrorVmNotFound")
+        assert h["alerts_critical"] + h["alerts_warning"] + h["alerts_info"] == len(open_alerts) > 0
+        assert h["alerts_critical"] == sum(1 for a in open_alerts if a.severity == "critical")
+        assert h["items_healthy"] == 1  # web-01
+        # DailyPolicy keeps 30 daily + 12 weekly points: 84 days back, for all 4 items.
+        assert {b["key"]: b["items"] for b in h["retention"]} == {
+            "0_30d": 0, "30_90d": 4, "90_365d": 0, "1y_plus": 0, "not_reported": 0,
+        }
+        narrowed = (await client.get("/api/backup/health", params={"location": "eastus"})).json()
+        assert narrowed["strike_items"] == [] and narrowed["alerts_critical"] == 0
+
+    async with _client(other_tenant) as client:
+        other = (await client.get("/api/backup/health")).json()
+        assert (other["alerts_critical"], other["strike_items"], other["items_healthy"]) == (0, [], 0)
+
+    async with _client(source.tenant_id, permissions=frozenset({"devices.read"})) as client:
+        assert (await client.get("/api/backup/health")).status_code == 403

@@ -83,6 +83,7 @@ export const NAV_CONFIG: NavGroup[] = [
   { id: "backup", label: "Backup Center", icon: DatabaseBackup, route: "/infrastructure/backup", section: "Protect", permission: "backup.read",
     description: "Backup protection, jobs, storage and security across Azure Backup and Veeam",
     children: [
+      { label: "Backup Dashboard", route: "/infrastructure/backup/dashboard", keywords: "strikes sla capacity errors health worldwide" },
       { label: "Backup Overview", route: "/infrastructure/backup", keywords: "azure backup veeam rpo command center" },
       { label: "Backup Instances", route: "/infrastructure/backup/instances", keywords: "protected items workloads recovery points vault" },
       { label: "Backup Jobs", route: "/infrastructure/backup/jobs", keywords: "job controller restore failed error" },

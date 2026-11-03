@@ -21,6 +21,9 @@ open the matching filtered view, and the **Backup Instances** inventory page.
 **BR-1 slice 3 shipped** (2026-11-03), master brief P2: **Backup Jobs** (job controller with
 details drawer), **Vaults & Storage** list and vault detail page, **Backup Policies** with a
 retention simulation.
+**Backup Dashboard shipped** (2026-11-03): one-screen operations dashboard (layout modelled on
+enterprise backup consoles; original design, no third-party branding): failure strikes, usage
+overview, data retention, SLA, 7-day job summary, health, capacity and top 5 errors.
 **Master brief P3 shipped** (2026-11-03): disaster-recovery replication read from **Azure Site
 Recovery** in the same vaults (replicated items, recovery plans), a replication-health alert, a
 DR-readiness rule and the *Business Continuity* pages (DR Overview, Replicated Items, Recovery Plans).
@@ -140,6 +143,7 @@ route takes the tenant from the signed-in principal:
 | `GET /api/backup/overview?days=1-90` | KPIs, RPO verdict counts, job counts (24 h / 7 d), 14-day daily outcomes, items by workload type (`workloads`), subscription and region (`by_subscription`, `by_region`), protected items by newest-backup age (`recovery_point_age`), job counts over the range (`jobs_range`), and the values each filter can take (`filter_options`) |
 | `GET /api/backup/vaults` | vaults with posture and item counts |
 | `GET /api/backup/failures?days=` | failed jobs in the window grouped by error code: jobs, items, storage, first / last seen, latest message |
+| `GET /api/backup/health` | open backup alerts by severity (alerts from `bk:` sensors), healthy items, failure strikes (consecutive failed backups per item, newest first, restores excluded, last 30 days of job history) overall and per workload, the top 10 struck items, and items by retention horizon (longest tier of their policy: 0–30 d, 30–90 d, 90–365 d, 1 y+, not reported) |
 | `GET /api/backup/security` | per storage location: soft delete, immutability, off-site copy, multi-user authorization, cross-region restore, encryption, public network access as pass / warn / fail / not_reported / not_applicable, and the share of passing checks |
 | `GET /api/backup/storage/history?days=7-365` | storage used / capacity / free per day; growth (least squares, bytes/day) and a 30-day projection once 14 days are recorded, labelled as estimates |
 | `GET /api/backup/items?vault_id=&rpo_state=&site_id=&q=&protection_state=&last_backup_status=&policy_name=` | items with `rpo_state` (within / breached / never / not_protected), age, restore points, daily retention, and the inventory device and site they protect |
@@ -184,6 +188,11 @@ is never reported as unprotected. An item whose protection is stopped or paused 
   protected item with search, inventory filters (RPO state, protection, last result, policy) and
   the Command Center filters, optional columns (remembered per browser), paging, CSV export and a
   details drawer. Filters live in the URL, so a view can be bookmarked or shared. Read-only.
+- **Backup Dashboard** (`/infrastructure/backup/dashboard`): strikes, usage overview, data
+  retention, SLA (RPO met vs. missed), last 7 days job summary, health rings (open backup alerts
+  critical / warning / info, healthy items), capacity gauge for fixed-size repositories (elastic
+  Azure storage shown separately; it has no capacity), top 5 errors of the last 24 hours. Same
+  filters as the overview; every number links to the filtered list behind it.
 - **Backup Jobs** (`/infrastructure/backup/jobs`): 24 h / 7 / 30 / 90 days, status, operation,
   storage, workload and region filters, search, CSV, details drawer (timeline, error, the resource's
   other recent jobs, links to the instance and storage). Retry and cancel are not offered (read-only).
