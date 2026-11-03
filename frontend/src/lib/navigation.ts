@@ -49,7 +49,11 @@ export const NAV_CONFIG: NavGroup[] = [
   { id: "command-center", label: "Command Center", icon: LayoutGrid, route: "/portal", section: "Observe",
     description: "Operations portal: live alerts, incidents and services" },
   { id: "monitoring", label: "Monitoring", icon: Activity, route: "/monitoring", section: "Observe", permission: "monitoring.read",
-    description: "Collection sources and sensors" },
+    description: "Collection sources and sensors",
+    children: [
+      { label: "Sources & Sensors", route: "/monitoring" },
+      { label: "Sensor Library", route: "/monitoring/library", keywords: "templates thresholds coverage recommendations" },
+    ] },
   { id: "alerts", label: "Alerts", icon: Bell, route: "/alerts", section: "Observe", permission: "alerts.read",
     description: "Alerts from every connected source" },
   { id: "reports", label: "Reports", icon: Database, route: "/reports", section: "Observe", permission: "dashboard.read",

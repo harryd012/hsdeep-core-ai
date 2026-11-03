@@ -548,7 +548,6 @@ class BundleSaver:
             result.vpn_tunnels_upserted = fw_result.tunnels_upserted
             result.vpn_tunnels_retired = fw_result.tunnels_retired
             result.firewall_status = dict(bundle.firewall_status)
-        firewall_reading_ids = {r.external_id for r in firewall_readings}
 
         # -- 2c. Backup vaults, protected items and jobs ----------------------
         # Same shape as the firewall tables: own tables, and what the provider
@@ -572,9 +571,6 @@ class BundleSaver:
             result.backup_items_retired = bk_result.items_retired
             result.backup_jobs_upserted = bk_result.jobs_upserted
             result.backup_status = dict(bundle.backup_status)
-        # Firewall and backup readings always name their device (the firewall /
-        # the vault), so their alerts are linked to it below.
-        device_linked_reading_ids = firewall_reading_ids | {r.external_id for r in backup_readings}
 
         # -- 3. Sensors ------------------------------------------------------
         # external_id -> Sensor.id, for metric sensor_id resolution in step 4.
@@ -656,13 +652,15 @@ class BundleSaver:
                     dimensions={"provider_metric_type": reading.metric_type, "channel": PRIMARY_CHANNEL},
                 )
                 result.metrics_recorded += 1
-            # Firewall readings always name their device, so their alerts
-            # carry it for correlation and health (KNOWN GAP #2 is about the
-            # repository signature; the link is set on the row directly).
-            if reading.external_id in device_linked_reading_ids:
-                fw_device_id = device_id_by_external.get(reading.device_external_id)
-                if fw_device_id is not None and sensor.device_id != fw_device_id:
-                    sensor.device_id = fw_device_id
+            # A reading that names a device of this bundle is linked to it, so
+            # its alerts carry the host for correlation and health, and host
+            # views see the sensor (KNOWN GAP #2 is about the repository
+            # signature; the link is set on the row directly). A reading whose
+            # device is not in the bundle keeps the link it already has.
+            if reading.device_external_id is not None:
+                linked_device_id = device_id_by_external.get(reading.device_external_id)
+                if linked_device_id is not None and sensor.device_id != linked_device_id:
+                    sensor.device_id = linked_device_id
 
             if created:
                 result.sensors_created += 1

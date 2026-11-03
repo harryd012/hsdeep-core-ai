@@ -41,7 +41,7 @@ Earlier audits: `docs/REPOSITORY_AUDIT.md`, `docs/PLATFORM_LEDGER.md` (batches 1
 | P0 Audit, stabilization | This document; full backend suite green on the branch | **Done** |
 | P1 Unified sensor model | Sensor lifecycle (active / paused / disabled), user thresholds with direction, sensor detail with channels, bucketed channel history API, sensor detail page with time-series chart, PRTG channel names kept, every sensor reading kept as history, metric retention job (off by default) | **Slice 1 implemented and tested** (`tests/test_sensor_lifecycle.py`) |
 | P2 Inventory & discovery | Saved views and bulk actions on hosts; discovery schedules, exclusions and approval of recommended sensors (on the existing discovery engine) | **Slices 1–2 implemented and tested**: scheduled discovery + scopes UI (`tests/test_discovery_schedule.py`); host saved views, bulk classification / monitoring pause and a tag facet (`tests/test_host_views_bulk.py`, UI not verified in a signed-in browser); sensor recommendations wait for P3's library |
-| P3 Sensor library | Sensor templates (catalogue from the collectors' real metric types), recommendation from discovery profiles, bulk add for collectors that support configuration (SNMP, connectivity) | planned |
+| P3 Sensor library | Sensor templates (catalogue from the collectors' real metric types), recommendation from discovery profiles, bulk add for collectors that support configuration (SNMP, connectivity) | **Slice 1 implemented and tested**: catalogue of 29 templates with tenant usage, bulk thresholds through the P1 lifecycle, per-host coverage rules, sensors linked to their host (`tests/test_sensor_library.py`); bulk creation of checks is slice 2 |
 | P4 Network Monitoring Center | Interface traffic / errors / utilization pages from `interfaces` + metrics, top-N bandwidth, VPN tunnels (FortiGate / Palo Alto data already collected) | planned |
 | P5 Infrastructure monitoring | Windows / Linux / VMware host views from existing collectors | planned |
 | P6 Dashboards & topology | Widget registry over aggregated APIs, saved dashboards per tenant / role; topology already exists, add drill-down to sensors | planned |
@@ -157,3 +157,49 @@ the dev database had them unset, so the priority engine treated every host as `m
   select-all checkbox).
 - **Not verified**: the UI was type-checked, linted and served, but not exercised in a
   signed-in browser session.
+
+## 6. P3 slice 1: sensor library, bulk thresholds and coverage
+
+Before this slice nothing described what the collectors measure as a whole: every sensor carried
+only its own `metric_type`, there was no way to set thresholds on many sensors at once, and no
+view of hosts that miss a kind of monitoring.
+
+- **Catalogue** (`app/services/monitoring/sensor_library.py`): 29 templates, one per kind of
+  measurement a collector really emits (the `metric_type` strings in `app/collectors/*.py`,
+  `firewall_saver.py` and `backup_saver.py`): collectors, unit, which way is worse (`above`,
+  `below`, or a 1 / 0 state sensor). Default thresholds only where the platform already defines
+  one: CPU 80 / 95 and memory 85 / 95 (`actions/health_thresholds.py`), firewall settings, the
+  backup RPO and the backup collector's free-space limits. Every other template says "none
+  defined". A metric type belongs to exactly one template (tested).
+- **Usage**: `GET /api/monitoring/sensor-library` (`monitoring.read`): per template, the tenant's
+  sensors by status, how many run on user thresholds, and which collectors reported them. Metric
+  types no template covers are listed as uncatalogued (Datadog passes its query names through).
+- **Bulk thresholds**: `POST /api/monitoring/sensor-library/templates/{key}/apply`
+  (`monitoring.update`, active subscription): set thresholds, or `reset` to the provider's, on
+  every sensor of the template or only those of up to 200 chosen hosts (`device_ids`; ids of
+  another tenant come back in `not_found`). `dry_run` counts first; at most 1,000 sensors per
+  call. Each sensor goes through `SensorService.apply` (P1), so status and alerts follow at
+  once; each changed sensor is one audit event `sensor.template_applied` with old and new values.
+  State sensors and PRTG sensors refuse with 422.
+- **Coverage** (`GET /api/monitoring/sensor-library/recommendations`, read-only): per host,
+  `unmonitored` (no sensor and no polled interface), `server_without_os` (a server with no
+  sensor from SSH, WinRM / WMI, VMware, Zabbix, Datadog or PRTG), `network_without_polling` (a
+  switch, router or firewall with no interfaces and no network-collector sensor) and
+  `unclassified` (type unknown or other). Each rule names the step that resolves it; nothing is
+  created, since adding a check needs a source and usually credentials. Filter by rule, paged.
+- **Sensors linked to their host**: `BundleSaver` linked only firewall and backup sensors to
+  their device (`SensorRepository.upsert` has no `device_id`), so sensors from SSH, WinRM,
+  connectivity, VMware and every other collector had no host: host views, alert correlation
+  and the coverage rules could not see them. Every reading that names a device of the same bundle
+  is now linked; a reading whose device is not in the bundle keeps its existing link.
+- **UI** (`/monitoring/library`, under Monitoring in the sidebar): Templates (catalogue with
+  live counts and status mix; select one to see its details and, with `monitoring.update`, check
+  then apply or reset its thresholds) and Coverage (gap counts per rule, filter, host list
+  linking to the host page). Verified on the dev tenant: 34 PRTG sensors on the PRTG template,
+  260 of 269 hosts with no sensor or interface, 267 of unknown or other type.
+- **Not in this slice**: PRTG's own sensor kind (`type_raw`) is not fetched, so PRTG sensors stay
+  one vendor-defined template; storing it needs a column on `sensors`, and the test database's
+  `sensors` table is still owned by `postgres` (section 3). Recommendations from discovery
+  profiles wait for profiles that describe devices (today's profiles are scan presets). Bulk
+  creation of checks (reachability for many hosts) is slice 2: it creates monitoring sources and
+  counts against plan limits. Applying to hosts chosen in the UI is API-only for now.

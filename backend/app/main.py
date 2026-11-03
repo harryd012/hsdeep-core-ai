@@ -27,6 +27,7 @@ from app.api.routes import agents, tasks
 from app.api.routes import command_center
 from app.api.routes import discovery_scopes
 from app.api.routes import host_inventory
+from app.api.routes import sensor_library
 from app.api.routes import admin_tenants
 from app.api.routes import copilot
 from app.api.routes import billing, onboarding, stripe_webhook
@@ -606,5 +607,6 @@ app.include_router(discovery.router, prefix="/api")
 app.include_router(discovery_probe_jobs.router, prefix="/api")
 app.include_router(discovery_scopes.router, prefix="/api")
 app.include_router(host_inventory.router, prefix="/api")
+app.include_router(sensor_library.router, prefix="/api")
 app.include_router(admin_tenants.router, prefix="/api")
 app.include_router(ingest.router, prefix="/api/v1")
