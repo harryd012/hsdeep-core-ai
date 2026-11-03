@@ -1,7 +1,9 @@
-"""DiscoveryScope repository. Every query is tenant-scoped (Phase 6.3 §4)."""
+"""DiscoveryScope repository. Every query is tenant-scoped (Phase 6.3 §4), except
+the scheduler's `list_due`, whose rows each carry their own tenant."""
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +46,26 @@ class DiscoveryScopeRepository:
             DiscoveryScope.is_deleted.is_(False),
         )
         return (await self.db.execute(stmt)).scalar_one_or_none()
+
+    async def list_due(
+        self, now: datetime, scope_types: frozenset[str], limit: int
+    ) -> list[DiscoveryScope]:
+        """Scheduled scopes whose next run has come, across tenants, oldest
+        first. Scheduler use only: each row carries its own ``tenant_id`` and
+        is probed under it."""
+        stmt = (
+            select(DiscoveryScope)
+            .where(
+                DiscoveryScope.is_deleted.is_(False),
+                DiscoveryScope.enabled.is_(True),
+                DiscoveryScope.schedule.is_not(None),
+                DiscoveryScope.next_run_at <= now,
+                DiscoveryScope.scope_type.in_(scope_types),
+            )
+            .order_by(DiscoveryScope.next_run_at)
+            .limit(limit)
+        )
+        return list((await self.db.execute(stmt)).scalars().all())
 
     async def create(self, **fields) -> DiscoveryScope:
         scope = DiscoveryScope(**fields)

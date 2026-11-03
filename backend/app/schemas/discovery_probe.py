@@ -42,6 +42,8 @@ class DiscoveryProbeJobOut(BaseModel):
     reachable: int
     truncated: bool
     error: str | None = None
+    #: scheduler | manual
+    trigger: str = "manual"
     materialization_state: str
     started_at: datetime
     finished_at: datetime | None = None

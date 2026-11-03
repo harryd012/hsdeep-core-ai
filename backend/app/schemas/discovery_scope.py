@@ -30,6 +30,7 @@ class DiscoveryScopeCreate(BaseModel):
     max_concurrency: int = Field(default=32, ge=1, le=256)
     timeout: float = Field(default=1.0, gt=0, le=60)
     excluded_targets: list[str] = Field(default_factory=list)
+    #: Repeat interval: a number and m, h or d (15m to 30d); blank / null clears it.
     schedule: str | None = Field(default=None, max_length=100)
 
 
@@ -48,6 +49,7 @@ class DiscoveryScopeUpdate(BaseModel):
     max_concurrency: int | None = Field(default=None, ge=1, le=256)
     timeout: float | None = Field(default=None, gt=0, le=60)
     excluded_targets: list[str] | None = None
+    #: Repeat interval: a number and m, h or d (15m to 30d); blank / null clears it.
     schedule: str | None = Field(default=None, max_length=100)
 
 
@@ -70,9 +72,13 @@ class DiscoveryScopeOut(BaseModel):
     max_concurrency: int
     timeout: float
     excluded_targets: list[str] = Field(default_factory=list)
+    #: Repeat interval ("15m", "6h", "1d"); None runs only on demand.
     schedule: str | None = None
+    #: When the scheduler next probes this scope (None without a schedule).
+    next_run_at: datetime | None = None
     status: str
     last_run_at: datetime | None = None
+    last_error: str | None = None
     created_at: datetime
     updated_at: datetime
 

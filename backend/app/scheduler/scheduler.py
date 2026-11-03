@@ -15,6 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.core.config import get_settings
 from app.core.db import AsyncSessionLocal
 from app.repositories.collector_run_repository import CollectorRunRepository
+from app.scheduler.discovery_jobs import DISCOVERY_SCHEDULE_INTERVAL_SECONDS, discovery_schedule_job
 from app.scheduler.email_jobs import EMAIL_DELIVERY_INTERVAL_SECONDS, deliver_email_outbox_job
 from app.scheduler.metric_jobs import METRIC_RETENTION_INTERVAL_SECONDS, metric_retention_job
 from app.scheduler.incident_lifecycle import close_stale_incidents_job
@@ -126,6 +127,16 @@ def start_scheduler(app: "FastAPI") -> AsyncIOScheduler:
         "interval",
         seconds=METRIC_RETENTION_INTERVAL_SECONDS,
         id="metric_retention",
+        max_instances=1,
+        coalesce=True,
+    )
+    # Scheduled discovery: probe scopes whose schedule is due (observation
+    # only; hosts become devices when an operator approves them).
+    scheduler.add_job(
+        discovery_schedule_job,
+        "interval",
+        seconds=DISCOVERY_SCHEDULE_INTERVAL_SECONDS,
+        id="discovery_schedule",
         max_instances=1,
         coalesce=True,
     )

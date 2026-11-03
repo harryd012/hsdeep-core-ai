@@ -40,7 +40,7 @@ Earlier audits: `docs/REPOSITORY_AUDIT.md`, `docs/PLATFORM_LEDGER.md` (batches 1
 |---|---|---|
 | P0 Audit, stabilization | This document; full backend suite green on the branch | **Done** |
 | P1 Unified sensor model | Sensor lifecycle (active / paused / disabled), user thresholds with direction, sensor detail with channels, bucketed channel history API, sensor detail page with time-series chart, PRTG channel names kept, every sensor reading kept as history, metric retention job (off by default) | **Slice 1 implemented and tested** (`tests/test_sensor_lifecycle.py`) |
-| P2 Inventory & discovery | Saved views and bulk actions on hosts; discovery schedules, exclusions and approval of recommended sensors (on the existing discovery engine) | next |
+| P2 Inventory & discovery | Saved views and bulk actions on hosts; discovery schedules, exclusions and approval of recommended sensors (on the existing discovery engine) | **Slice 1 implemented and tested** (scheduled discovery + scopes UI, `tests/test_discovery_schedule.py`); saved views / bulk actions next; sensor recommendations wait for P3's library |
 | P3 Sensor library | Sensor templates (catalogue from the collectors' real metric types), recommendation from discovery profiles, bulk add for collectors that support configuration (SNMP, connectivity) | planned |
 | P4 Network Monitoring Center | Interface traffic / errors / utilization pages from `interfaces` + metrics, top-N bandwidth, VPN tunnels (FortiGate / Palo Alto data already collected) | planned |
 | P5 Infrastructure monitoring | Windows / Linux / VMware host views from existing collectors | planned |
@@ -83,3 +83,34 @@ cannot run a migration that alters those tables. `f2b7d9e4a6c1` was applied to `
 `postgres`. **Open:** every later migration that alters a `postgres`-owned table hits the same
 wall until the tables are reassigned to `test` (`REASSIGN OWNED BY postgres ...` is not usable
 for a superuser; reassign per table, or recreate the test database as `test`).
+
+## 4. P2 slice 1: scheduled discovery and the scopes console
+
+Already in place before this slice: discovery scopes (target, protocols, limits, **exclusions**),
+"probe now" storing a durable probe job, and operator-approved materialization of probed hosts
+into devices. Missing: `schedule` was a stored, never-executed string, and scopes had no UI.
+
+- **Schedule format** (`app/services/discovery/schedule.py`): a repeat interval, a number and
+  `m` / `h` / `d`, from 15 minutes to 30 days, stored normalized (`"6H"` → `"6h"`); anything else
+  is a 422. No scope in the dev database had a schedule, so tightening the validation breaks no
+  data.
+- **Next run** (`discovery_scopes.next_run_at`, migration `a8c4e2f6b1d3`): one interval after the
+  schedule is set, after the scope is re-enabled, and after every run (success or failure), so
+  saving a schedule never starts an unplanned sweep and a failing scope is not retried every
+  tick. An unchanged schedule keeps its slot; clearing it clears the next run.
+- **One probe path** (`scope_probe_service.run_scope_probe`): "probe now" and the scheduler record
+  the same durable job, now with `trigger` (`manual` | `scheduler`) on `discovery_probe_jobs`.
+- **Scheduler job** (`app/scheduler/discovery_jobs.py`, every 60 s): advisory lock (one worker),
+  at most 5 due scopes per tick probed one after another, each in its own session; only enabled,
+  probeable scopes of tenants with an active subscription. A lapsed tenant's scope moves on one
+  interval without probing.
+- **Approval stays manual**: a scheduled probe creates no device. Hosts are reviewed and
+  materialized under "Probe jobs", exactly as before.
+- **Audit**: scope create / update (changed fields, old and new) / delete are audit events
+  (`discovery_scope.*`). Fixed on the way: `AuditService.record` re-inserted a failed event on the
+  caller's commit (event added outside its savepoint), so an audit failure broke the request it
+  was meant never to break (`tests/test_audit_service_savepoint.py`).
+- **UI**: "Discovery scopes" panel on `/infrastructure/discovery`: list with schedule, last and
+  next run; create / edit (type, target, exclusions, host limit, protocols, schedule); run now,
+  enable / disable, delete, for users with `devices.write`. Scheduled probe jobs are marked in
+  the probe review list.

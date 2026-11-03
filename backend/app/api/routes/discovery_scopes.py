@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Principal, get_tenant_id, require_permission
 from app.core.db import get_db
-from app.models.discovery_probe import JOB_STATUS_COMPLETED, JOB_STATUS_FAILED
 from app.models.discovery_scope import SCOPE_TYPES, DiscoveryScope
 from app.repositories.discovery_probe_repository import DiscoveryProbeRepository
 from app.repositories.discovery_scope_repository import DiscoveryScopeRepository
@@ -30,10 +29,10 @@ from app.services.discovery.profiles import (
     UnknownDiscoveryProfile,
     apply_profile,
 )
-from app.services.discovery.scope_runner import (
-    ScopeNotProbeable,
-    probe_scope,
-)
+from app.services.audit_service import AuditService
+from app.services.discovery.schedule import ScheduleInvalid, next_run_after, normalize_schedule
+from app.services.discovery.scope_probe_service import ScopeProbeFailed, run_scope_probe
+from app.services.discovery.scope_runner import ScopeNotProbeable
 from app.services.discovery.scope_target import (
     ScopeTargetInvalid,
     validate_protocols,
@@ -71,8 +70,10 @@ def to_out(scope: DiscoveryScope) -> DiscoveryScopeOut:
         timeout=float(scope.timeout),
         excluded_targets=list(scope.excluded_targets or []),
         schedule=scope.schedule,
+        next_run_at=scope.next_run_at,
         status=scope.status,
         last_run_at=scope.last_run_at,
+        last_error=scope.last_error,
         created_at=scope.created_at,
         updated_at=scope.updated_at,
     )
@@ -121,6 +122,44 @@ async def _get_or_404(
     return scope
 
 
+def _schedule(value: str | None) -> str | None:
+    """Normalized schedule, or a 422 naming the accepted form."""
+    try:
+        return normalize_schedule(value)
+    except ScheduleInvalid as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+#: Scope fields recorded in the audit trail (never credential material).
+_AUDITED = (
+    "name", "scope_type", "target", "enabled", "credential_profile_id", "allowed_protocols",
+    "max_depth", "max_hosts", "max_concurrency", "timeout", "excluded_targets", "schedule",
+)
+
+
+def _audit_value(value):
+    return str(value) if isinstance(value, uuid.UUID) else value
+
+
+async def _audit(
+    db: AsyncSession, principal: Principal, scope: DiscoveryScope, action: str, description: str,
+    old: dict | None = None, new: dict | None = None,
+) -> None:
+    await AuditService(db).record_entity(
+        tenant_id=scope.tenant_id,
+        action=action,
+        entity_type="discovery_scope",
+        entity_id=scope.id,
+        actor_id=principal.user_id,
+        actor_email=principal.email,
+        description=description,
+        old_values={k: _audit_value(v) for k, v in (old or {}).items()} or None,
+        new_values={k: _audit_value(v) for k, v in (new or {}).items()} or None,
+    )
+
+
 @router.get("", response_model=list[DiscoveryScopeOut])
 async def list_scopes(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -135,11 +174,12 @@ async def list_scopes(
 async def create_scope(
     body: DiscoveryScopeCreate,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
-    _principal: Principal = Depends(require_permission("devices.write")),
+    principal: Principal = Depends(require_permission("devices.write")),
     db: AsyncSession = Depends(get_db),
     repo: DiscoveryScopeRepository = Depends(_get_repo),
 ):
-    """Create a scope. Target is validated against its scope type."""
+    """Create a scope. Target is validated against its scope type; a schedule
+    first runs one interval from now."""
     if body.scope_type not in SCOPE_TYPES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -157,6 +197,7 @@ async def create_scope(
     target, protocols = _validate(
         body.scope_type, body.target, fields["allowed_protocols"]
     )
+    schedule = _schedule(body.schedule)
     scope = await repo.create(
         tenant_id=tenant_id,
         name=body.name,
@@ -170,7 +211,12 @@ async def create_scope(
         max_concurrency=fields["max_concurrency"],
         timeout=fields["timeout"],
         excluded_targets=list(fields["excluded_targets"] or []),
-        schedule=body.schedule,
+        schedule=schedule,
+        next_run_at=next_run_after(schedule, datetime.now(timezone.utc)),
+    )
+    await _audit(
+        db, principal, scope, "discovery_scope.created", f"Discovery scope {scope.name} created",
+        new={k: getattr(scope, k) for k in _AUDITED},
     )
     await db.commit()
     return to_out(scope)
@@ -191,7 +237,7 @@ async def update_scope(
     scope_id: uuid.UUID,
     body: DiscoveryScopeUpdate,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
-    _principal: Principal = Depends(require_permission("devices.write")),
+    principal: Principal = Depends(require_permission("devices.write")),
     db: AsyncSession = Depends(get_db),
     repo: DiscoveryScopeRepository = Depends(_get_repo),
 ):
@@ -226,8 +272,24 @@ async def update_scope(
         fields["allowed_protocols"] = clean_protocols
     if "excluded_targets" in fields:
         fields["excluded_targets"] = list(fields["excluded_targets"] or [])
+    if "schedule" in fields:
+        fields["schedule"] = _schedule(fields["schedule"])
+        if fields["schedule"] != scope.schedule:
+            # A new interval counts from now; an unchanged one keeps its slot.
+            fields["next_run_at"] = next_run_after(fields["schedule"], datetime.now(timezone.utc))
+    if fields.get("enabled") is True and not scope.enabled:
+        # Re-enabled: the interval restarts, so a long-paused scope does not
+        # sweep at the next tick.
+        fields["next_run_at"] = next_run_after(fields.get("schedule", scope.schedule), datetime.now(timezone.utc))
 
+    old = {k: getattr(scope, k) for k in _AUDITED if k in fields and fields[k] != getattr(scope, k)}
+    new = {k: fields[k] for k in old}
     scope = await repo.update(scope, **fields)
+    if new:
+        await _audit(
+            db, principal, scope, "discovery_scope.updated",
+            f"Discovery scope {scope.name} changed: {', '.join(sorted(new))}", old=old, new=new,
+        )
     await db.commit()
     return to_out(scope)
 
@@ -236,12 +298,13 @@ async def update_scope(
 async def delete_scope(
     scope_id: uuid.UUID,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
-    _principal: Principal = Depends(require_permission("devices.write")),
+    principal: Principal = Depends(require_permission("devices.write")),
     db: AsyncSession = Depends(get_db),
     repo: DiscoveryScopeRepository = Depends(_get_repo),
 ):
     scope = await _get_or_404(repo, scope_id, tenant_id)
     await repo.delete(scope)
+    await _audit(db, principal, scope, "discovery_scope.deleted", f"Discovery scope {scope.name} deleted")
     await db.commit()
 
 
@@ -268,61 +331,17 @@ async def probe_scope_target(
             status_code=status.HTTP_409_CONFLICT, detail="Scope is disabled"
         )
 
-    now = datetime.now(timezone.utc)
     try:
-        report = await probe_scope(scope)
+        outcome = await run_scope_probe(repo, probe_repo, scope, trigger="manual")
     except ScopeNotProbeable as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001 - record the failed run durably
-        logger.exception("scope probe failed for scope %s", scope.id)
-        await probe_repo.create_job(
-            tenant_id=tenant_id,
-            scope_id=scope.id,
-            target=scope.target,
-            scope_type=scope.scope_type,
-            status=JOB_STATUS_FAILED,
-            error=str(exc)[:2000],
-            started_at=now,
-            finished_at=now,
-        )
-        await repo.update(
-            scope, status="error", last_run_at=now, last_error=str(exc)[:2000]
-        )
+    except ScopeProbeFailed as exc:
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail="probe failed"
         ) from exc
-
-    job = await probe_repo.create_job(
-        tenant_id=tenant_id,
-        scope_id=scope.id,
-        target=scope.target,
-        scope_type=scope.scope_type,
-        status=JOB_STATUS_COMPLETED,
-        hosts_probed=report.hosts_probed,
-        hosts_total=report.hosts_total,
-        reachable=len(report.reachable),
-        truncated=report.truncated,
-        started_at=now,
-        finished_at=now,
-    )
-    await probe_repo.add_hosts(
-        job.id,
-        tenant_id,
-        [
-            {
-                "address": h.address,
-                "reachable": h.reachable,
-                "latency_ms": h.latency_ms,
-                "packet_loss_pct": h.packet_loss_pct,
-                "protocols": dict(h.protocols),
-                "evidence": list(h.evidence),
-            }
-            for h in report.hosts
-        ],
-    )
-    scope = await repo.update(scope, status="ok", last_run_at=now, last_error=None)
     await db.commit()
+    job, report = outcome.job, outcome.report
 
     return ScopeProbeResultOut(
         scope_id=scope.id,

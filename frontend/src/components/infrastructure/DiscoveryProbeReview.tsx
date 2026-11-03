@@ -108,6 +108,7 @@ export default function DiscoveryProbeReview() {
               <span className="ni-audit__stage">{j.status.toUpperCase()}</span>
               <span className="ni-audit__decision">
                 {j.reachable} reachable · {j.materialization_state}
+                {j.trigger === "scheduler" ? " · scheduled" : ""}
               </span>
               <span className="ni-audit__meta">
                 {j.target}

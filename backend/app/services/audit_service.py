@@ -47,6 +47,7 @@ class AuditService:
         context: dict | None = None,
     ) -> None:
         """Write one audit event. Best-effort: failures are logged, never raised."""
+        event = None
         try:
             event = AuditEvent(
                 tenant_id=tenant_id,
@@ -63,14 +64,18 @@ class AuditService:
                 user_agent=user_agent,
                 context=context or {},
             )
-            self.db.add(event)
             # SAVEPOINT: if the insert fails (e.g. an unknown actor_id FK),
             # only the audit write rolls back - the caller's business
             # transaction stays intact instead of being poisoned by a
-            # PendingRollbackError.
+            # PendingRollbackError. The event is added inside the savepoint
+            # (and expunged on failure) so the caller's commit does not try
+            # to insert the failed event again.
             async with self.db.begin_nested():
+                self.db.add(event)
                 await self.db.flush()
         except Exception:  # noqa: BLE001 - auditing must never break the request
+            if event is not None and event in self.db:
+                self.db.expunge(event)
             logger.exception("Failed to write audit event action=%s tenant=%s", action, tenant_id)
 
     # -- Convenience wrappers for common security-sensitive actions ---------

@@ -1349,6 +1349,8 @@ export interface DiscoveryProbeJob {
   reachable: number;
   truncated: boolean;
   error: string | null;
+  /** scheduler | manual */
+  trigger?: string;
   materialization_state: string;
   started_at: string;
   finished_at: string | null;
@@ -1407,5 +1409,78 @@ export function materializeProbeJob(
       body: JSON.stringify({ hosts }),
     },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Discovery scopes (where discovery may run, its limits and schedule)
+// ---------------------------------------------------------------------------
+
+export interface DiscoveryScope {
+  id: string;
+  tenant_id: string;
+  name: string;
+  scope_type: string;
+  target: string;
+  enabled: boolean;
+  credential_profile_id: string | null;
+  credential_configured: boolean;
+  allowed_protocols: string[];
+  max_depth: number;
+  max_hosts: number;
+  max_concurrency: number;
+  timeout: number;
+  excluded_targets: string[];
+  /** Repeat interval ("15m", "6h", "1d"); null runs only on demand. */
+  schedule: string | null;
+  next_run_at: string | null;
+  status: string;
+  last_run_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DiscoveryScopeInput {
+  name?: string;
+  scope_type?: string;
+  target?: string;
+  enabled?: boolean;
+  allowed_protocols?: string[];
+  max_hosts?: number;
+  excluded_targets?: string[];
+  schedule?: string | null;
+}
+
+export interface ScopeProbeResult {
+  scope_id: string;
+  job_id: string;
+  target: string;
+  hosts_probed: number;
+  hosts_total: number;
+  truncated: boolean;
+  reachable: number;
+}
+
+const SCOPES_BASE = "/api/infrastructure/discovery/scopes";
+
+export function listDiscoveryScopes(): Promise<DiscoveryScope[]> {
+  return apiFetch<DiscoveryScope[]>(SCOPES_BASE);
+}
+
+export function createDiscoveryScope(body: DiscoveryScopeInput): Promise<DiscoveryScope> {
+  return apiFetch<DiscoveryScope>(SCOPES_BASE, { method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateDiscoveryScope(id: string, body: DiscoveryScopeInput): Promise<DiscoveryScope> {
+  return apiFetch<DiscoveryScope>(`${SCOPES_BASE}/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function deleteDiscoveryScope(id: string): Promise<void> {
+  return apiFetch<void>(`${SCOPES_BASE}/${id}`, { method: "DELETE" });
+}
+
+/** Probe the scope now (observation only; hosts are reviewed before they become devices). */
+export function probeDiscoveryScope(id: string): Promise<ScopeProbeResult> {
+  return apiFetch<ScopeProbeResult>(`${SCOPES_BASE}/${id}/probe`, { method: "POST" });
 }
 
