@@ -956,3 +956,48 @@ async def test_overview_time_range_breakdowns_age_and_item_search(db, monitoring
         assert [i["name"] for i in (await search(protection_state="protection_stopped")).json()] == ["old-app"]
         assert [i["name"] for i in (await search(last_backup_status="failed")).json()] == ["db-01"]
         assert len((await search(policy_name="DailyPolicy")).json()) == 4
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_job_controller_vault_and_policy_reads_with_isolation(db, monitoring_source_factory, other_tenant):
+    source = await monitoring_source_factory(source_type="azure_backup")
+    await _saver(db).save(source, await _bundle())
+    await db.commit()
+    vault_id = (await db.execute(select(BackupVault.id).where(BackupVault.tenant_id == source.tenant_id))).scalar_one()
+    db01 = (await db.execute(select(BackupItem.id).where(BackupItem.vault_id == vault_id, BackupItem.name == "db-01"))).scalar_one()
+
+    async with _client(source.tenant_id) as client:
+        jobs = lambda **p: client.get("/api/backup/jobs", params=p)  # noqa: E731
+        assert len((await jobs(operation="backup")).json()) == 4  # case-insensitive
+        assert (await jobs(operation="Restore")).json() == []
+        assert [j["item_name"] for j in (await jobs(q="vmnotfound")).json()] == ["db-01"]  # error code
+        assert [j["item_name"] for j in (await jobs(q="was not found")).json()] == ["db-01"]  # message
+        failed = (await jobs(status="failed")).json()[0]
+
+        detail = (await client.get(f"/api/backup/jobs/{failed['id']}")).json()
+        assert detail["job"]["error_code"] == "UserErrorVmNotFound" and detail["provider"] == "azure"
+        assert detail["item_id"] == str(db01) and detail["item_jobs"] == []
+        web = next(j for j in (await jobs()).json() if j["item_name"] == "web-01")
+        web_detail = (await client.get(f"/api/backup/jobs/{web['id']}")).json()
+        assert len(web_detail["item_jobs"]) == 2 and all(j["id"] != web["id"] for j in web_detail["item_jobs"])
+        assert (await client.get(f"/api/backup/jobs/{uuid.uuid4()}")).status_code == 404
+
+        vault = (await client.get(f"/api/backup/vaults/{vault_id}")).json()
+        assert (vault["name"], vault["items_total"], vault["policies"]) == ("vault-prod", 4, 2)
+        assert (await client.get(f"/api/backup/vaults/{uuid.uuid4()}")).status_code == 404
+
+        policies = {p["name"]: p for p in (await client.get("/api/backup/policies")).json()}
+        daily = policies["DailyPolicy"]
+        assert (daily["vault_name"], daily["provider"], daily["items_assigned"]) == ("vault-prod", "azure", 4)
+        assert (daily["daily_retention_days"], daily["weekly_retention_weeks"], daily["protected_items_count"]) == (30, 12, 3)
+        assert policies["SqlPolicy"]["items_assigned"] == 0
+        assert (await client.get("/api/backup/policies", params={"location": "eastus"})).json() == []
+
+    async with _client(other_tenant) as client:
+        assert (await client.get(f"/api/backup/jobs/{failed['id']}")).status_code == 404
+        assert (await client.get(f"/api/backup/vaults/{vault_id}")).status_code == 404
+        assert (await client.get("/api/backup/policies")).json() == []
+
+    async with _client(source.tenant_id, permissions=frozenset({"devices.read"})) as client:
+        for path in (f"/api/backup/jobs/{failed['id']}", f"/api/backup/vaults/{vault_id}", "/api/backup/policies"):
+            assert (await client.get(path)).status_code == 403, path

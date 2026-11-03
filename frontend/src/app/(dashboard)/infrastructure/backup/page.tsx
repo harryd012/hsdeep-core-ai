@@ -13,7 +13,6 @@ import {
   listBackupJobs,
   listBackupVaults,
   updateBackupSettings,
-  type BackupCheckStatus,
   type BackupCoverage,
   type BackupCoverageState,
   type BackupFailureGroup,
@@ -25,7 +24,6 @@ import {
   type BackupRpoState,
   type BackupSecurityPosture,
   type BackupStatusGroup,
-  type BackupStorageHistory,
   type BackupVault,
   type BackupWorkloadSummary,
 } from "@/lib/api";
@@ -35,6 +33,7 @@ import { useAuth } from "@/lib/auth-context";
 import { createMonitoringSource, syncMonitoringSource } from "@/lib/monitoringApi";
 import { DonutRing, Legend } from "@/components/command-center/primitives";
 import { instancesHref } from "./instancesHref";
+import { CHECK_TEXT, CHECK_TONE, StorageTrend, duration, flag, hours, jobTone, posture, retention, workloadLabel } from "./ui";
 import {
   Banner,
   BarList,
@@ -71,39 +70,6 @@ const JOB_SERIES = [
   { key: "failed", label: "Failed", color: "var(--ecc-bad)" },
   { key: "other", label: "Other", color: "var(--ecc-unknown)" },
 ];
-
-/** Provider workload names in words; anything else is title-cased. */
-const WORKLOAD_LABELS: Record<string, string> = {
-  VM: "Virtual machines",
-  SQLDataBase: "SQL databases",
-  SAPHanaDatabase: "SAP HANA databases",
-  SAPHanaDBInstance: "SAP HANA instances",
-  SAPAseDatabase: "SAP ASE databases",
-  AzureFileShare: "Azure file shares",
-  FileFolder: "Files and folders",
-  AzureSqlDb: "Azure SQL databases",
-  Exchange: "Exchange",
-  Sharepoint: "SharePoint",
-};
-
-function workloadLabel(w: string | null): string {
-  return w === null ? "Not reported" : WORKLOAD_LABELS[w] ?? titleCaseWords(w);
-}
-
-const CHECK_TONE: Record<BackupCheckStatus, Tone> = {
-  pass: "good",
-  warn: "warn",
-  fail: "bad",
-  not_reported: "neutral",
-  not_applicable: "neutral",
-};
-const CHECK_TEXT: Record<BackupCheckStatus, string> = {
-  pass: "Pass",
-  warn: "Review",
-  fail: "Fail",
-  not_reported: "Not reported",
-  not_applicable: "Not applicable",
-};
 
 type FilterKey = keyof BackupFilters;
 
@@ -144,48 +110,9 @@ function FilterBar({ options, value, onChange }: { options: BackupFilterOptions;
   );
 }
 
-function jobTone(status: string): Tone {
-  if (status === "completed") return "good";
-  if (status === "completed_with_warnings") return "warn";
-  if (status === "failed") return "bad";
-  if (status === "in_progress") return "info";
-  return "neutral";
-}
-
-function hours(h: number | null): string {
-  if (h === null) return "—";
-  if (h < 1) return `${Math.round(h * 60)} min`;
-  if (h < 48) return `${h.toFixed(1)} h`;
-  return `${Math.round(h / 24)} d`;
-}
-
 /** Site filter: "all", "none" (no site assigned) or a site id. */
 function inSite(siteId: string | null, filter: string): boolean {
   return filter === "all" || (filter === "none" ? siteId === null : siteId === filter);
-}
-
-function retention(days: number | null): string {
-  if (days === null) return "—";
-  return days % 365 === 0 ? `${days / 365} y` : days % 7 === 0 && days >= 14 ? `${days / 7} wk` : `${days} d`;
-}
-
-function duration(s: number | null): string {
-  if (s === null) return "—";
-  if (s < 60) return `${Math.round(s)} s`;
-  if (s < 3600) return `${Math.round(s / 60)} min`;
-  return `${(s / 3600).toFixed(1)} h`;
-}
-
-/** Posture label + tone: what Azure reported, never a guess. */
-function posture(value: string | null, good: string[], label = titleCaseWords): { text: string; tone: Tone } {
-  if (!value) return { text: "Not reported", tone: "neutral" };
-  return { text: label(value), tone: good.includes(value) ? "good" : "warn" };
-}
-
-/** Yes / No / Not reported for a provider-reported flag (never inferred). */
-function flag(value: boolean | null): { text: string; tone: Tone } {
-  if (value === null) return { text: "Not reported", tone: "neutral" };
-  return value ? { text: "Yes", tone: "good" } : { text: "No", tone: "warn" };
 }
 
 /** The tenant's RPO target. Everyone sees it; backup.write can change it or
@@ -457,36 +384,6 @@ const failureColumns: Column<BackupFailureGroup>[] = [
   { key: "storage", header: "Storage", render: (g) => g.vaults.join(", ") },
   { key: "last", header: "Last seen", sortValue: (g) => g.last_seen, render: (g) => <span className="pk-muted" title={g.last_seen ?? undefined}>{ago(g.last_seen)}</span> },
 ];
-
-/** `asOf`: the overview's generated_at, so the last column is today on the server. */
-function StorageTrend({ history, asOf }: { history: BackupStorageHistory; asOf: string }) {
-  const gb = (b: number | null) => (b === null ? 0 : Math.round((b / 1024 ** 3) * 10) / 10);
-  const byDay = new Map(history.points.map((p) => [p.day, p]));
-  const last = history.points[history.points.length - 1];
-  const start = new Date(Date.parse(asOf) - (history.days - 1) * 86_400_000);
-  const buckets = Array.from({ length: history.days }, (_, i) => {
-    const d = new Date(start.getTime() + i * 86_400_000).toISOString().slice(0, 10);
-    const p = byDay.get(d);
-    return {
-      key: d,
-      label: new Date(`${d}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-      values: { used: gb(p?.storage_used_bytes ?? null) },
-    };
-  });
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <DayColumns label="Backup storage used per day" buckets={buckets} series={[{ key: "used", label: "Storage used (GB)", color: "var(--ecc-accent)" }]} height={120} format={(v) => `${v.toLocaleString("en-US")} GB`} />
-      <p className="pk-help">
-        {history.history_days === 0
-          ? "Storage history starts with the next collection."
-          : `${history.history_days} day${history.history_days === 1 ? "" : "s"} recorded${last?.storage_used_bytes != null ? `; latest ${formatBytes(last.storage_used_bytes)}` : ""}.`}{" "}
-        {history.growth_bytes_per_day === null
-          ? `A growth estimate needs ${history.min_history_days} days of history.`
-          : `Estimated growth ${formatBytes(Math.abs(history.growth_bytes_per_day))}/day${history.growth_bytes_per_day < 0 ? " (shrinking)" : ""}; at that rate about ${formatBytes(history.projected_used_bytes_30d ?? 0)} in 30 days. This is an estimate from the recorded trend, not a forecast from the provider.`}
-      </p>
-    </div>
-  );
-}
 
 function SecurityView({ posture }: { posture: BackupSecurityPosture }) {
   if (posture.locations.length === 0) return <p className="pk-muted pk-empty-note">No backup storage reported.</p>;
@@ -913,7 +810,7 @@ export default function BackupPage() {
             {tab === "vaults" && (
               <>
                 {history.data && <StorageTrend history={history.data} asOf={o!.generated_at} />}
-                <DataTable caption="Backup storage" columns={vaultColumns} rows={vaults.data ?? []} rowKey={(v) => v.id} rowHref={(v) => (v.device_id ? `/infrastructure/hosts/${v.device_id}` : null)} maxHeight={480} emptyText="No backup storage reported." />
+                <DataTable caption="Backup storage" columns={vaultColumns} rows={vaults.data ?? []} rowKey={(v) => v.id} rowHref={(v) => `/infrastructure/backup/vaults/${v.id}`} maxHeight={480} emptyText="No backup storage reported." />
               </>
             )}
             {tab === "security" && security.data && <SecurityView posture={security.data} />}

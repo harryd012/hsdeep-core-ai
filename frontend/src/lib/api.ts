@@ -3787,10 +3787,46 @@ export function listBackupItems(
   return apiFetch<BackupItem[]>(`/api/backup/items${backupFilterParams(filters, base)}`);
 }
 
-export function listBackupJobs(params: { days?: number; status?: string; limit?: number } = {}, filters: BackupFilters = {}): Promise<BackupJob[]> {
+export function listBackupJobs(
+  params: { days?: number; status?: string; limit?: number; operation?: string; q?: string } = {},
+  filters: BackupFilters = {},
+): Promise<BackupJob[]> {
   const base: Record<string, string> = { days: String(params.days ?? 7), limit: String(params.limit ?? 200) };
   if (params.status) base.status = params.status;
+  if (params.operation) base.operation = params.operation;
+  if (params.q) base.q = params.q;
   return apiFetch<BackupJob[]>(`/api/backup/jobs${backupFilterParams(filters, base)}`);
+}
+
+export interface BackupJobDetail {
+  job: BackupJob;
+  provider: string;
+  /** The item the job ran for (same storage, same name); null if not found. */
+  item_id: string | null;
+  /** The item's other recent jobs, newest first. */
+  item_jobs: BackupJob[];
+}
+
+export function getBackupJob(id: string): Promise<BackupJobDetail> {
+  return apiFetch<BackupJobDetail>(`/api/backup/jobs/${encodeURIComponent(id)}`);
+}
+
+export function getBackupVault(id: string): Promise<BackupVault> {
+  return apiFetch<BackupVault>(`/api/backup/vaults/${encodeURIComponent(id)}`);
+}
+
+export interface BackupPolicyRow extends BackupPolicy {
+  id: string;
+  vault_id: string;
+  vault_name: string;
+  provider: string;
+  /** Items stored with this policy name in its storage location. */
+  items_assigned: number;
+  observed_at: string | null;
+}
+
+export function listBackupPolicies(filters: BackupFilters = {}): Promise<BackupPolicyRow[]> {
+  return apiFetch<BackupPolicyRow[]>(`/api/backup/policies${backupFilterParams(filters)}`);
 }
 
 export interface BackupFailureGroup {

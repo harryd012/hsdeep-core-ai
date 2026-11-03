@@ -18,6 +18,9 @@ growth estimate.
 **BR-1 slice 2 shipped** (2026-11-03): *Protect → Backup Center* navigation, overview time range
 (24 h – 90 days), status by subscription and region, recovery-point age distribution, KPIs that
 open the matching filtered view, and the **Backup Instances** inventory page.
+**BR-1 slice 3 shipped** (2026-11-03), master brief P2: **Backup Jobs** (job controller with
+details drawer), **Vaults & Storage** list and vault detail page, **Backup Policies** with a
+retention simulation.
 Next (approved plan): Veeam Service Provider Console, AWS Backup and S3-compatible storage
 connectors, then a backup storage cost/SLA advisor.
 
@@ -137,7 +140,10 @@ route takes the tenant from the signed-in principal:
 | `GET /api/backup/items?vault_id=&rpo_state=&site_id=&q=&protection_state=&last_backup_status=&policy_name=` | items with `rpo_state` (within / breached / never / not_protected), age, restore points, daily retention, and the inventory device and site they protect |
 | `GET /api/backup/items/{id}` | one item with its policy (schedule, retention per tier) and its latest 50 jobs; 404 for another tenant's item |
 | `GET /api/backup/coverage` | every Azure VM in inventory as protected / protection_stopped / unprotected / not_monitored |
-| `GET /api/backup/jobs?days=&status=&limit=` | job history with error codes |
+| `GET /api/backup/jobs?days=&status=&limit=&operation=&q=` | job history with error codes; `operation` compares case-insensitively, `q` searches item name, error code and message |
+| `GET /api/backup/jobs/{id}` | one job, its provider, the backup item it ran for and that item's 10 most recent other jobs; 404 for another tenant's |
+| `GET /api/backup/vaults/{id}` | one storage location (same shape as the list); 404 for another tenant's |
+| `GET /api/backup/policies` | every policy with its storage, provider, schedule, retention per tier and the items stored under it (`items_assigned`) next to the provider's own count (`protected_items_count`) |
 | `GET /api/backup/settings` | the tenant's RPO, whether it is the default, and the default |
 | `PUT /api/backup/settings` `{"rpo_hours": 1-720 \| null}` | sets the tenant's RPO; null returns it to the default (`backup.write`) |
 
@@ -169,6 +175,16 @@ is never reported as unprotected. An item whose protection is stopped or paused 
   protected item with search, inventory filters (RPO state, protection, last result, policy) and
   the Command Center filters, optional columns (remembered per browser), paging, CSV export and a
   details drawer. Filters live in the URL, so a view can be bookmarked or shared. Read-only.
+- **Backup Jobs** (`/infrastructure/backup/jobs`): 24 h / 7 / 30 / 90 days, status, operation,
+  storage, workload and region filters, search, CSV, details drawer (timeline, error, the resource's
+  other recent jobs, links to the instance and storage). Retry and cancel are not offered (read-only).
+- **Vaults & Storage** (`/infrastructure/backup/vaults`, `/vaults/{id}`): storage list with security
+  check score; detail page with overview, instances, policies, jobs (30 days), storage trend and
+  security tabs. Diagnostic settings, activity log and access control are not collected yet.
+- **Backup Policies** (`/infrastructure/backup/policies`): policy inventory and a retention simulation
+  (`frontend/src/lib/backupRetention.ts`, unit-tested): oldest restore point and steady-state
+  restore points per item for current vs. proposed tiers. Arithmetic only; no storage or cost
+  estimate, nothing is changed at the provider. Veeam job retention is not collected yet.
 - **Protect → Backup Center → Overview** (`/infrastructure/backup`, tab in the URL hash): time range,
   refresh, filter bar (shown when a filter has a choice), KPIs (incl. unprotected VMs, storage used, off-site and immutable
   vaults), job outcomes per day, RPO compliance with the customer's RPO target (editable with

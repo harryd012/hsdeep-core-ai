@@ -85,6 +85,9 @@ export const NAV_CONFIG: NavGroup[] = [
     children: [
       { label: "Backup Overview", route: "/infrastructure/backup", keywords: "azure backup veeam rpo command center" },
       { label: "Backup Instances", route: "/infrastructure/backup/instances", keywords: "protected items workloads recovery points vault" },
+      { label: "Backup Jobs", route: "/infrastructure/backup/jobs", keywords: "job controller restore failed error" },
+      { label: "Vaults & Storage", route: "/infrastructure/backup/vaults", keywords: "recovery services vault repository storage security" },
+      { label: "Backup Policies", route: "/infrastructure/backup/policies", keywords: "retention schedule gfs simulation" },
     ] },
 
   // -- Respond --------------------------------------------------------------------

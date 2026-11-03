@@ -43,11 +43,13 @@ from app.schemas.backup import (
     BackupFilterOption,
     BackupFilterOptions,
     BackupItemDetail,
+    BackupJobDetail,
     BackupItemOut,
     BackupJobCounts,
     BackupJobOut,
     BackupOverview,
     BackupPolicyOut,
+    BackupPolicyRow,
     BackupSecurityCheck,
     BackupSecurityCheckSummary,
     BackupSecurityLocation,
@@ -432,8 +434,7 @@ class BackupService:
         if filters.workload_type:
             stmt = stmt.where(BackupItem.workload_type == filters.workload_type)
         if q:
-            escaped = q.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            like = f"%{escaped}%"
+            like = f"%{_escape_like(q.lower())}%"
             stmt = stmt.where(
                 func.lower(BackupItem.name).like(like, escape="\\")
                 | func.lower(func.coalesce(BackupItem.source_resource_id, "")).like(like, escape="\\")
@@ -576,6 +577,7 @@ class BackupService:
     async def jobs(
         self, tenant_id: uuid.UUID, *, days: int = 7, status: str | None = None, limit: int = 200,
         now: datetime | None = None, filters: BackupFilters = NO_FILTERS,
+        operation: str | None = None, q: str | None = None,
     ) -> list[BackupJobOut]:
         now = now or datetime.now(timezone.utc)
         stmt = (
@@ -590,14 +592,84 @@ class BackupService:
         )
         if status:
             stmt = stmt.where(BackupJob.status == status)
-        return [
-            BackupJobOut(
-                id=j.id, vault_id=j.vault_id, vault_name=vault_name, item_name=j.item_name, operation=j.operation,
-                status=j.status, started_at=j.started_at, ended_at=j.ended_at, duration_seconds=j.duration_seconds,
-                error_code=j.error_code, error_message=j.error_message,
+        if operation:
+            stmt = stmt.where(func.lower(BackupJob.operation) == operation.lower())
+        if q:
+            like = f"%{_escape_like(q.lower())}%"
+            stmt = stmt.where(
+                func.lower(func.coalesce(BackupJob.item_name, "")).like(like, escape="\\")
+                | func.lower(func.coalesce(BackupJob.error_code, "")).like(like, escape="\\")
+                | func.lower(func.coalesce(BackupJob.error_message, "")).like(like, escape="\\")
             )
-            for j, vault_name in (await self.db.execute(stmt)).all()
-        ]
+        return [_job_out(j, vault_name) for j, vault_name in (await self.db.execute(stmt)).all()]
+
+    async def job_detail(self, tenant_id: uuid.UUID, job_id: uuid.UUID, *, item_jobs: int = 10) -> BackupJobDetail | None:
+        """One job; None if not this tenant's."""
+        found = (
+            await self.db.execute(
+                select(BackupJob, BackupVault)
+                .join(BackupVault, BackupVault.id == BackupJob.vault_id)
+                .where(BackupJob.tenant_id == tenant_id, BackupJob.id == job_id)
+            )
+        ).first()
+        if found is None:
+            return None
+        job, vault = found
+        item_id = None
+        others: list[BackupJobOut] = []
+        if job.item_name:
+            item_id = (
+                await self.db.execute(
+                    select(BackupItem.id).where(BackupItem.vault_id == vault.id, BackupItem.name == job.item_name).limit(1)
+                )
+            ).scalar()
+            rows = (
+                await self.db.execute(
+                    select(BackupJob)
+                    .where(
+                        BackupJob.tenant_id == tenant_id, BackupJob.vault_id == vault.id,
+                        BackupJob.item_name == job.item_name, BackupJob.id != job.id,
+                    )
+                    .order_by(BackupJob.started_at.desc().nulls_last())
+                    .limit(item_jobs)
+                )
+            ).scalars()
+            others = [_job_out(j, vault.name) for j in rows]
+        return BackupJobDetail(job=_job_out(job, vault.name), provider=vault.provider, item_id=item_id, item_jobs=others)
+
+    async def vault(self, tenant_id: uuid.UUID, vault_id: uuid.UUID) -> BackupVaultOut | None:
+        """One storage location; None if not this tenant's."""
+        rows = await self.vaults(tenant_id, filters=BackupFilters(vault_id=vault_id))
+        return rows[0] if rows else None
+
+    async def policies(self, tenant_id: uuid.UUID, filters: BackupFilters = NO_FILTERS) -> list[BackupPolicyRow]:
+        """Every policy in the selected storage, with the items stored under it."""
+        vaults = {v.id: v for v in await self._scoped_vaults(tenant_id, filters)}
+        if not vaults:
+            return []
+        stmt = select(BackupPolicy).where(BackupPolicy.tenant_id == tenant_id, BackupPolicy.vault_id.in_(list(vaults)))
+        if filters.workload_type:
+            stmt = stmt.where(BackupPolicy.workload_type == filters.workload_type)
+        assigned = dict(
+            ((vault_id, name), n)
+            for vault_id, name, n in (
+                await self.db.execute(
+                    select(BackupItem.vault_id, BackupItem.policy_name, func.count())
+                    .where(BackupItem.tenant_id == tenant_id, BackupItem.vault_id.in_(list(vaults)))
+                    .group_by(BackupItem.vault_id, BackupItem.policy_name)
+                )
+            ).all()
+        )
+        out = []
+        for p in (await self.db.execute(stmt.order_by(BackupPolicy.name))).scalars():
+            v = vaults[p.vault_id]
+            out.append(
+                BackupPolicyRow(
+                    **_policy_out(p).model_dump(), id=p.id, vault_id=v.id, vault_name=v.name, provider=v.provider,
+                    items_assigned=assigned.get((p.vault_id, p.name), 0), observed_at=p.observed_at,
+                )
+            )
+        return out
 
     async def failures(
         self, tenant_id: uuid.UUID, *, days: int = 7, now: datetime | None = None, filters: BackupFilters = NO_FILTERS,
@@ -715,6 +787,19 @@ class BackupService:
                 max(0, int(measured[-1][1] + growth * 30)) if growth is not None else None
             ),
         )
+
+
+def _escape_like(text: str) -> str:
+    """Make LIKE wildcards in user text literal (escape character: backslash)."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _job_out(j: BackupJob, vault_name: str) -> BackupJobOut:
+    return BackupJobOut(
+        id=j.id, vault_id=j.vault_id, vault_name=vault_name, item_name=j.item_name, operation=j.operation,
+        status=j.status, started_at=j.started_at, ended_at=j.ended_at, duration_seconds=j.duration_seconds,
+        error_code=j.error_code, error_message=j.error_message,
+    )
 
 
 def _int(value) -> int | None:

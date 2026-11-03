@@ -6,7 +6,8 @@ import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { DatabaseBackup } from "lucide-react";
 import { ApiError, getBackupItem, type BackupJob, type BackupPolicy } from "@/lib/api";
-import { Banner, DataTable, PageShell, Panel, Pill, StatStrip, StatTile, ago, titleCaseWords, type Column, type Tone } from "@/components/ui/PageKit";
+import { Banner, DataTable, PageShell, Panel, Pill, StatStrip, StatTile, ago, titleCaseWords, type Column } from "@/components/ui/PageKit";
+import { Props, RPO_LABEL, duration, jobTone } from "../../ui";
 
 /**
  * /infrastructure/backup/items/[id] — one protected item: is it inside its
@@ -14,28 +15,6 @@ import { Banner, DataTable, PageShell, Panel, Pill, StatStrip, StatTile, ago, ti
  * policy), and its recent backup jobs. Everything shown is what the provider
  * reported; anything it did not report reads "Not reported".
  */
-
-const RPO_LABEL: Record<string, { text: string; tone: Tone }> = {
-  within: { text: "Within RPO", tone: "good" },
-  breached: { text: "RPO breached", tone: "bad" },
-  never: { text: "Never backed up", tone: "warn" },
-  not_protected: { text: "Not protected", tone: "neutral" },
-};
-
-function jobTone(status: string): Tone {
-  if (status === "completed") return "good";
-  if (status === "completed_with_warnings") return "warn";
-  if (status === "failed") return "bad";
-  if (status === "in_progress") return "info";
-  return "neutral";
-}
-
-function duration(s: number | null): string {
-  if (s === null) return "—";
-  if (s < 60) return `${Math.round(s)} s`;
-  if (s < 3600) return `${Math.round(s / 60)} min`;
-  return `${(s / 3600).toFixed(1)} h`;
-}
 
 const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
 
@@ -53,19 +32,6 @@ function retentionRows(p: BackupPolicy): [string, ReactNode][] {
     ["Monthly restore points", p.monthly_retention_months === null ? null : `Kept ${plural(p.monthly_retention_months, "month")}`],
     ["Yearly restore points", p.yearly_retention_years === null ? null : `Kept ${plural(p.yearly_retention_years, "year")}`],
   ];
-}
-
-function Props({ rows }: { rows: [string, ReactNode][] }) {
-  return (
-    <dl className="hd-props">
-      {rows.map(([k, v]) => (
-        <div key={k}>
-          <dt>{k}</dt>
-          <dd>{v ?? <span className="pk-muted">Not reported</span>}</dd>
-        </div>
-      ))}
-    </dl>
-  );
 }
 
 const jobColumns: Column<BackupJob>[] = [

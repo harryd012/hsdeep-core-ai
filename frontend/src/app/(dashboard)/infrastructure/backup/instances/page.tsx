@@ -1,21 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { DatabaseBackup, X } from "lucide-react";
+import { DatabaseBackup } from "lucide-react";
 import {
   getBackupOverview,
   listBackupItems,
   listBackupVaults,
   type BackupFilters,
   type BackupItem,
-  type BackupRpoState,
   type BackupVault,
 } from "@/lib/api";
 import { downloadCsv, formatBytes, type CsvColumn } from "@/lib/csv";
-import { Banner, DataTable, PageShell, Panel, Pill, SearchBox, ago, titleCaseWords, type Column, type Tone } from "@/components/ui/PageKit";
+import { Banner, DataTable, PageShell, Panel, Pill, SearchBox, ago, titleCaseWords, type Column } from "@/components/ui/PageKit";
+import { PanelHeading, Props, RPO_LABEL, SidePanel, jobTone } from "../ui";
 
 /**
  * /infrastructure/backup/instances — every backup instance (protected item)
@@ -31,20 +31,9 @@ const SERVER_KEYS = ["provider", "subscription_id", "resource_group", "location"
 const PAGE_SIZE = 50;
 const COLUMNS_KEY = "hsdeep.backup.instances.columns";
 
-const RPO: Record<BackupRpoState, { text: string; tone: Tone }> = {
-  within: { text: "Within RPO", tone: "good" },
-  breached: { text: "RPO breached", tone: "bad" },
-  never: { text: "Never backed up", tone: "warn" },
-  not_protected: { text: "Not protected", tone: "neutral" },
-};
+const RPO = RPO_LABEL;
 const ACTIVE = ["protected", "protection_error", "ir_pending"];
-
-function resultTone(status: string | null): Tone {
-  if (status === "completed") return "good";
-  if (status === "completed_with_warnings") return "warn";
-  if (status === "failed") return "bad";
-  return "neutral";
-}
+const resultTone = jobTone;
 
 function age(hours: number | null): string {
   if (hours === null) return "—";
@@ -106,45 +95,12 @@ function readHidden(): string[] {
   }
 }
 
-function Props({ rows }: { rows: [string, ReactNode][] }) {
-  return (
-    <dl className="hd-props">
-      {rows.map(([k, v]) => (
-        <div key={k}>
-          <dt>{k}</dt>
-          <dd>{v ?? <span className="pk-muted">Not reported</span>}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
 function Drawer({ row, onClose }: { row: Row; onClose: () => void }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
   const v = row.vault;
   return (
-    <aside
-      role="dialog"
-      aria-label={`Backup instance ${row.name}`}
-      style={{
-        position: "fixed", top: 0, right: 0, bottom: 0, width: "min(440px, 100vw)", zIndex: 60, overflowY: "auto",
-        background: "var(--ecc-surface, var(--background))", borderLeft: "1px solid var(--ecc-border)",
-        boxShadow: "-8px 0 24px rgba(0,0,0,.18)", padding: 20,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "start", justifyContent: "space-between", gap: 12 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 18 }}>{row.name}</h2>
-          <p className="pk-muted" style={{ margin: "4px 0 0" }}>{[titleCaseWords(v?.provider), row.workload_type].filter(Boolean).join(" · ")}</p>
-        </div>
-        <button type="button" className="pk-button" onClick={onClose} aria-label="Close details"><X size={14} aria-hidden="true" /></button>
-      </div>
+    <SidePanel title={row.name} subtitle={[titleCaseWords(v?.provider), row.workload_type].filter(Boolean).join(" · ")} onClose={onClose}>
       <p style={{ margin: "12px 0" }}><Pill tone={RPO[row.rpo_state].tone}>{RPO[row.rpo_state].text}</Pill></p>
-      <h3 className="pk-help" style={{ marginTop: 16 }}>Protection</h3>
+      <PanelHeading>Protection</PanelHeading>
       <Props rows={[
         ["Protection state", titleCaseWords(row.protection_state) || null],
         ["Health", titleCaseWords(row.health_status) || null],
@@ -156,7 +112,7 @@ function Drawer({ row, onClose }: { row: Row; onClose: () => void }) {
         ["Daily retention", row.retention_days !== null ? `${row.retention_days} days` : null],
         ["Backup size", row.size_bytes !== null ? formatBytes(row.size_bytes) : null],
       ]} />
-      <h3 className="pk-help" style={{ marginTop: 16 }}>Storage</h3>
+      <PanelHeading>Storage</PanelHeading>
       <Props rows={[
         ["Storage", row.vault_name],
         ["Type", v ? titleCaseWords(v.kind) : null],
@@ -168,10 +124,11 @@ function Drawer({ row, onClose }: { row: Row; onClose: () => void }) {
       <p style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 16 }}>
         <Link className="pk-button pk-button--primary" href={`/infrastructure/backup/items/${row.id}`}>Policy, restore points and jobs</Link>
         {row.device_id && <Link className="pk-button" href={`/infrastructure/hosts/${row.device_id}`}>View resource</Link>}
-        {v?.device_id && <Link className="pk-button" href={`/infrastructure/hosts/${v.device_id}`}>View storage</Link>}
+        <Link className="pk-button" href={`/infrastructure/backup/vaults/${row.vault_id}`}>View storage</Link>
+        <Link className="pk-button" href={`/infrastructure/backup/jobs?storage_id=${row.vault_id}&q=${encodeURIComponent(row.name)}`}>View jobs</Link>
       </p>
       <p className="pk-help">On-demand backup, restore and protection changes are not available yet: this platform reads backups with read-only roles.</p>
-    </aside>
+    </SidePanel>
   );
 }
 

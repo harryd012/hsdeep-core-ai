@@ -177,6 +177,29 @@ class BackupPolicyOut(BaseModel):
     protected_items_count: int | None
 
 
+class BackupPolicyRow(BackupPolicyOut):
+    """A policy in the policy inventory, with where it lives and what uses it."""
+
+    id: uuid.UUID
+    vault_id: uuid.UUID
+    vault_name: str
+    provider: str
+    #: Items stored with this policy name in its storage location.
+    items_assigned: int
+    observed_at: datetime | None
+
+
+class BackupJobDetail(BaseModel):
+    """One job with its storage location, the item it ran for and that item's recent jobs."""
+
+    job: BackupJobOut
+    provider: str
+    #: The backup item the job ran for (same storage, same name); None if not found.
+    item_id: uuid.UUID | None
+    #: The item's other recent jobs, newest first (excludes this one).
+    item_jobs: list[BackupJobOut]
+
+
 class BackupItemDetail(BaseModel):
     """One protected item with its policy and recent job history."""
 

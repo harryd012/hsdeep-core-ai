@@ -24,8 +24,10 @@ from app.schemas.backup import (
     BackupFailureAnalysis,
     BackupItemDetail,
     BackupItemOut,
+    BackupJobDetail,
     BackupJobOut,
     BackupOverview,
+    BackupPolicyRow,
     BackupSecurityPosture,
     BackupSettingsOut,
     BackupSettingsUpdate,
@@ -81,6 +83,29 @@ async def backup_vaults(
     return await BackupService(db).vaults(tenant_id, filters=filters)
 
 
+@router.get("/vaults/{vault_id}", response_model=BackupVaultOut, dependencies=_READ)
+async def backup_vault(
+    vault_id: uuid.UUID,
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> BackupVaultOut:
+    """One storage location; 404 for another tenant's."""
+    vault = await BackupService(db).vault(tenant_id, vault_id)
+    if vault is None:
+        raise HTTPException(status_code=404, detail="Backup storage not found")
+    return vault
+
+
+@router.get("/policies", response_model=list[BackupPolicyRow], dependencies=_READ)
+async def backup_policies(
+    filters: BackupFilters = Depends(backup_filters),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> list[BackupPolicyRow]:
+    """Backup policies (schedule, retention per tier) and the items stored under each."""
+    return await BackupService(db).policies(tenant_id, filters=filters)
+
+
 @router.get("/items", response_model=list[BackupItemOut], dependencies=_READ)
 async def backup_items(
     vault_id: uuid.UUID | None = None,
@@ -127,11 +152,28 @@ async def backup_jobs(
     days: int = Query(7, ge=1, le=90),
     status: str | None = Query(None, max_length=30),
     limit: int = Query(200, ge=1, le=1000),
+    operation: str | None = Query(None, max_length=50),
+    q: str | None = Query(None, max_length=200, description="Item name, error code or message contains"),
     filters: BackupFilters = Depends(backup_filters),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> list[BackupJobOut]:
-    return await BackupService(db).jobs(tenant_id, days=days, status=status, limit=limit, filters=filters)
+    return await BackupService(db).jobs(
+        tenant_id, days=days, status=status, limit=limit, filters=filters, operation=operation, q=q,
+    )
+
+
+@router.get("/jobs/{job_id}", response_model=BackupJobDetail, dependencies=_READ)
+async def backup_job_detail(
+    job_id: uuid.UUID,
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> BackupJobDetail:
+    """One job, the item it ran for and that item's recent jobs; 404 for another tenant's."""
+    detail = await BackupService(db).job_detail(tenant_id, job_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Backup job not found")
+    return detail
 
 
 @router.get("/failures", response_model=BackupFailureAnalysis, dependencies=_READ)

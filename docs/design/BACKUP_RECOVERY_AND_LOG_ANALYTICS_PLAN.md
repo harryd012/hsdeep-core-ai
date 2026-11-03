@@ -11,7 +11,8 @@ See section 5 for the brief's phases mapped onto this plan.
 |---|---|
 | 1. Filters on every read; items by workload type; failure analysis by error code; security & compliance checks (MUA, encryption key, cross-region restore, public network access added to the collector); daily storage snapshots with growth estimate | **shipped** (`d4f9b2c6e8a1`) |
 | 2. Protect navigation, overview time range, status by subscription / region, recovery-point age, clickable KPIs, Backup Instances inventory (search, filters in URL, columns, paging, CSV, drawer) | **shipped** |
-| 2b. Recovery points per item on demand (with expiry), policies + retention view and simulation, job detail drawer, vault detail page | next |
+| 3 (brief P2). Backup Jobs page + job detail, Vaults & Storage list + vault detail, Backup Policies + retention simulation | **shipped** |
+| 4. Recovery points per item on demand (with expiry); Azure Data Protection backup vaults; Veeam job schedule/retention | next |
 | 3. Azure Data Protection backup vaults (PostgreSQL flexible, blobs, disks); Reports | after 2 |
 Source brief: "HSDEEP CORE AI — Enterprise Azure Backup, Log Analytics & Observability
 Platform" (received truncated after *Query visualization*; sections after that are not covered).
@@ -110,9 +111,9 @@ documented API shapes; see each engineering doc).
 | 0 Audit, B1 stabilization | P0 | Audit in section 1; B1 + phases 1–3.1 shipped and tested; full backend suite green | done; repeat per phase |
 | 1 Backup Command Center | P1 | **Partial**: KPIs (clickable), job trend over 24 h–90 d, RPO compliance, workloads, subscription / region, recovery-point age, filters, refresh | Missing: restore / replication / alert KPIs (need BR-2 and an alert view), custom date range |
 | 2 Backup Instances | P1 | **Partial**: inventory page with search, filters (in URL), columns, paging, CSV, drawer | Missing: tags (not collected), bulk selection and context actions (need write phase BR-3) |
-| 4 Job Controller | P2 | Job history (7 d), failure analysis by error code | BR-1 slice 3: job detail drawer, date range up to retention (90 d); restore jobs already collected as `operation` |
-| 6 Vault Management | P2 | Storage table with security posture, Security tab | BR-1 slice 3: vault detail page (overview, instances, policies, jobs, storage, security); Data Protection vaults |
-| 7 Policies & retention | P2 | Policies collected (schedule, GFS tiers) shown on item detail | BR-1 slice 3: policy inventory + retention simulation (read-only arithmetic, labelled); edits in BR-3 |
+| 4 Job Controller | P2 | **Partial**: jobs page (24 h–90 d, filters, search, CSV, detail drawer with timeline, error, related jobs) | Missing: progress %, initiated-by, replication / DR jobs (BR-2), retry / cancel (BR-3) |
+| 6 Vault Management | P2 | **Partial**: storage list + detail (overview, instances, policies, jobs, storage, security) | Missing: Data Protection backup vaults, private endpoints, diagnostic settings, activity log, access control |
+| 7 Policies & retention | P2 | **Partial**: policy inventory, items per policy, retention simulation (tested) | Missing: create / edit / delete (BR-3), drift and comparison, governance rules (P4) |
 | 3 Replicated items & DR | P3 | none (`failover_*` is network HA, unrelated) | BR-2 (Site Recovery reader); failover workflows in BR-3 behind approval |
 | 5 Alerts & metrics | P4 | Platform alert engine; backup sensors raise alerts (RPO, result, protection, soft delete, free space) | Backup alert view filtered from the existing engine (no second alert system); metric rules reuse sensor thresholds |
 | 8 Compliance & security | P4 | Security checks per storage location (BR-1 slice 1) | compliance rules + exceptions on top of the same checks |
