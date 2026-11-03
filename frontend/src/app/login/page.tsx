@@ -1,20 +1,44 @@
 "use client";
 
-/* /login — HSDEEP CORE AI enterprise login.
+/* /login — HSDEEP CORE AI enterprise sign-in.
  *
- * Centered enterprise authentication screen:
- * - compact brand header: HSDEEP CORE AI, Autonomous Infrastructure Intelligence
- * - centered glass sign-in card: email and password
- * - no hero video, no split-screen, no decorative imagery
+ * Full-bleed brand scene: the "Digital Sphere" backdrop (globe + particle wave,
+ * public/branding) with the platform's capabilities orbiting the globe, the
+ * brand and operating pillars on the left, and a glass sign-in card on the
+ * right. Every capability named here is a shipped module.
  *
  * Authentication flow is unchanged: POST /api/auth/login via lib/api.ts's
- * loginWithCredentials wrapped by AuthProvider. Redirects honor?next=.
+ * loginWithCredentials wrapped by AuthProvider. Redirects honor ?next=.
+ *
+ * Credential safety: the form is method="post" and its submit button stays
+ * disabled until the page has hydrated, so a click before JavaScript loads can
+ * never fall back to a GET that puts the email and password in the URL. If a
+ * URL still carries them (an old bookmark or history entry), they are removed
+ * from the address bar on load.
  */
 
-import { useState, Suspense, type FormEvent, useEffect } from "react";
+import { useState, Suspense, type FormEvent, useEffect, useSyncExternalStore } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Mail, Lock, Eye, EyeOff, Layers, Sparkles, Workflow, ShieldCheck } from "lucide-react";
+import {
+  Activity,
+  ArrowRight,
+  BarChart3,
+  BrainCircuit,
+  Building2,
+  Crosshair,
+  Eye,
+  EyeOff,
+  Lock,
+  Network,
+  Rocket,
+  Settings,
+  ShieldCheck,
+  Siren,
+  User,
+  Workflow,
+} from "lucide-react";
 import "@/app/styles/login.css";
+import AuthBackdrop from "@/components/auth/AuthBackdrop";
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
@@ -23,25 +47,21 @@ function safeNextPath(raw: string | null): string {
   return "/dashboard";
 }
 
-/** Compact infinity brand mark used in the login brand bar. */
-function BrandMark() {
+/** False on the server and during hydration, true once React runs in the browser. */
+function useHydrated(): boolean {
+  return useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false,
+  );
+}
+
+/** Infinity brand mark. */
+function BrandMark({ className }: { className?: string }) {
   return (
-    <svg
-      viewBox="0 0 48 24"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className="login-brandbar__mark"
-      aria-hidden="true"
-    >
+    <svg viewBox="0 0 48 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className} aria-hidden="true">
       <defs>
-        <linearGradient
-          id="hsdeep-infinity"
-          x1="0"
-          y1="0"
-          x2="48"
-          y2="24"
-          gradientUnits="userSpaceOnUse"
-        >
+        <linearGradient id="hsdeep-infinity" x1="0" y1="0" x2="48" y2="24" gradientUnits="userSpaceOnUse">
           <stop offset="0%" stopColor="#22d3ee" />
           <stop offset="55%" stopColor="#0ea5e9" />
           <stop offset="100%" stopColor="#6366f1" />
@@ -57,40 +77,52 @@ function BrandMark() {
   );
 }
 
-/**
- * Left brand zone — the React-rendered identity that replaces the branding
- * the background video used to carry (baked-in logo, headline, pillar copy).
- */
-function LoginBrandBar() {
+function Brand() {
   return (
-    <header className="login-brandbar">
-      <div className="login-brandbar__identity">
-        <BrandMark />
-        <div>
-          <div className="login-brandbar__name">
-            HSDEEP CORE <span className="accent">AI</span>
-          </div>
-          <div className="login-brandbar__label">Enterprise Operations Platform</div>
+    <div className="lx-brand">
+      <BrandMark className="lx-brand__mark" />
+      <span className="lx-brand__rule" aria-hidden="true" />
+      <div>
+        <div className="lx-brand__name">
+          HSDEEP CORE <span>AI</span>
         </div>
+        <div className="lx-brand__tag">AI-Native IT Operations</div>
       </div>
-      <p className="login-brandbar__subtitle">Autonomous Infrastructure Intelligence</p>
-    </header>
+    </div>
   );
 }
+
+/** The operating loop, left to right. */
+const PILLARS = [
+  { icon: Crosshair, title: "Observe", text: "Unified visibility" },
+  { icon: BarChart3, title: "Analyze", text: "AI-driven insight" },
+  { icon: Settings, title: "Automate", text: "Runbooks & SOPs" },
+  { icon: Siren, title: "Respond", text: "Faster resolution" },
+  { icon: Rocket, title: "Scale", text: "Multi-tenant ready" },
+];
+
+/** Capabilities orbiting the globe (positions are % of the backdrop stage). */
+const ORBIT = [
+  { icon: Activity, label: ["Unified", "observability"], side: "left", x: 37.5, y: 22 },
+  { icon: BrainCircuit, label: ["AI root-cause", "analysis"], side: "left", x: 33.5, y: 46 },
+  { icon: Siren, label: ["Real-time", "alerting"], side: "left", x: 37, y: 70 },
+  { icon: Network, label: ["Topology &", "dependency maps"], side: "right", x: 59.5, y: 22 },
+  { icon: Workflow, label: ["Runbook", "automation"], side: "right", x: 62.5, y: 46 },
+  { icon: ShieldCheck, label: ["Tenant-isolated", "security"], side: "right", x: 59.5, y: 70 },
+] as const;
 
 function LoginForm() {
   const { login, isAuthenticated, isLoading: sessionLoading } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   const next = safeNextPath(searchParams?.get("next") ?? null);
+  const hydrated = useHydrated();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [rememberMe, setRememberMe] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showForgotNotice, setShowForgotNotice] = useState(false);
 
   // Already signed in (e.g. dev bootstrap, or navigated here by mistake)?
   // Bounce straight to the destination rather than showing the form.
@@ -99,6 +131,17 @@ function LoginForm() {
       router.replace(next);
     }
   }, [sessionLoading, isAuthenticated, router, next]);
+
+  // Credentials must never live in the URL: strip them if a GET submit or an
+  // old link put them there (keeps ?next=).
+  useEffect(() => {
+    if (!searchParams?.has("password") && !searchParams?.has("email")) return;
+    const clean = new URLSearchParams(searchParams.toString());
+    clean.delete("password");
+    clean.delete("email");
+    const qs = clean.toString();
+    window.history.replaceState(null, "", qs ? `/login?${qs}` : "/login");
+  }, [searchParams]);
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -116,10 +159,7 @@ function LoginForm() {
       await login({ email: trimmedEmail, password });
       router.replace(next);
     } catch (err) {
-      // Surface the REAL cause. The original code collapsed every non-ApiError
-      // failure (network TypeError, timeout AbortError, malformed response)
-      // into one generic "Unexpected error. Please try again.", which made a
-      // diagnosable failure look like an unexplained one.
+      // Surface the real cause rather than one generic message.
       if (err instanceof ApiError) {
         if (err.status === 0) {
           setError("Can't reach the server. Check your connection and try again.");
@@ -138,11 +178,7 @@ function LoginForm() {
       } else if (err instanceof DOMException && err.name === "AbortError") {
         setError("The sign-in request timed out. Please try again.");
       } else {
-        setError(
-          err instanceof Error && err.message
-            ? `Sign-in failed: ${err.message}`
-            : "Unexpected error. Please try again.",
-        );
+        setError(err instanceof Error && err.message ? `Sign-in failed: ${err.message}` : "Unexpected error. Please try again.");
       }
     } finally {
       setSubmitting(false);
@@ -150,170 +186,166 @@ function LoginForm() {
   }
 
   return (
-        <div className="login-card">
-          <div className="login-card__header">
-            <p className="login-card__welcome">Welcome back</p>
-            <h2 className="login-card__title">Sign in to your workspace</h2>
-          </div>
+    <section className="lx-card" aria-labelledby="lx-card-title">
+      <p className="lx-card__eyebrow">Welcome to</p>
+      <h2 id="lx-card-title" className="lx-card__title">
+        HSDEEP CORE <span>AI</span>
+      </h2>
+      <p className="lx-card__lead">Sign in to your enterprise workspace</p>
 
-          {error && (
-            <div role="alert" className="login-card__error">
-              {error}
-            </div>
-          )}
-
-          <form onSubmit={handleSubmit} noValidate className="login-form">
-            <div className="login-card__field">
-              <label htmlFor="email" className="login-card__label">
-                EMAIL
-              </label>
-              <div className="login-card__input-wrap">
-                <Mail className="login-card__input-icon" size={18} />
-                <input
-                  id="email"
-                  name="email"
-                  type="email"
-                  autoComplete="username"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  disabled={submitting}
-                  required
-                  className="login-card__input"
-                  placeholder="Enter your email"
-                />
-              </div>
-            </div>
-
-            <div className="login-card__field">
-              <label htmlFor="password" className="login-card__label">
-                PASSWORD
-              </label>
-              <div className="login-card__input-wrap">
-                <Lock className="login-card__input-icon" size={18} />
-                <input
-                  id="password"
-                  name="password"
-                  type={showPassword ? "text" : "password"}
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  disabled={submitting}
-                  required
-                  className="login-card__input"
-                  placeholder="Enter your password"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="login-card__toggle"
-                  aria-label={showPassword ? "Hide password" : "Show password"}
-                >
-                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                </button>
-              </div>
-            </div>
-
-            <div className="login-card__options">
-              <label className="login-card__checkbox">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                />
-                <span>Remember me</span>
-              </label>
-              <button
-                type="button"
-                className="login-card__link"
-                onClick={() => setShowForgotNotice((v) => !v)}
-              >
-                Forgot password?
-              </button>
-            </div>
-            {showForgotNotice && (
-              <p role="status" className="login-card__notice">
-                Self-service password reset is not available yet. Please contact
-                your administrator to reset your password.
-              </p>
-            )}
-
-            <button type="submit" disabled={submitting} className="login-card__submit">
-              {submitting ? "Signing in…" : "Sign in"}
-            </button>
-
-            <p className="login-card__enterprise">
-              <a href="/forgot-password">Forgot password?</a>
-              {" · "}
-              <a href="/signup">Create an account</a>
-            </p>
-
-            <div className="login-card__divider">
-              <span className="login-card__divider-text">or</span>
-            </div>
-
-            <button type="button" className="login-card__sso" disabled>
-              <span>Sign in with SSO</span>
-            </button>
-
-            <p className="login-card__enterprise">
-              Contact your administrator for SSO access
-            </p>
-          </form>
+      {error && (
+        <div role="alert" className="lx-card__error">
+          {error}
         </div>
+      )}
+
+      <form method="post" action="/login" onSubmit={handleSubmit} noValidate className="lx-form">
+        <div className="lx-field">
+          <label htmlFor="email" className="lx-sr-only">
+            Email address
+          </label>
+          <User className="lx-field__icon" size={18} aria-hidden="true" />
+          <input
+            id="email"
+            name="email"
+            type="email"
+            inputMode="email"
+            autoComplete="username"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            disabled={submitting}
+            required
+            className="lx-input"
+            placeholder="Email address"
+          />
+        </div>
+
+        <div className="lx-field">
+          <label htmlFor="password" className="lx-sr-only">
+            Password
+          </label>
+          <Lock className="lx-field__icon" size={18} aria-hidden="true" />
+          <input
+            id="password"
+            name="password"
+            type={showPassword ? "text" : "password"}
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            disabled={submitting}
+            required
+            className="lx-input"
+            placeholder="Password"
+          />
+          <button
+            type="button"
+            onClick={() => setShowPassword((v) => !v)}
+            className="lx-field__toggle"
+            aria-label={showPassword ? "Hide password" : "Show password"}
+            aria-pressed={showPassword}
+          >
+            {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+          </button>
+        </div>
+
+        <div className="lx-form__row">
+          <a className="lx-link" href="/forgot-password">
+            Forgot password?
+          </a>
+        </div>
+
+        <button type="submit" disabled={!hydrated || submitting} className="lx-submit">
+          {submitting ? "Signing in…" : hydrated ? "Sign In" : "Loading…"}
+          {!submitting && hydrated && <ArrowRight size={17} aria-hidden="true" />}
+        </button>
+
+        <div className="lx-divider">
+          <span>or</span>
+        </div>
+
+        <button type="button" className="lx-sso" disabled title="Single sign-on is set up per organization by your administrator">
+          <Building2 size={18} aria-hidden="true" />
+          Sign in with SSO
+        </button>
+        <p className="lx-card__hint">SSO is enabled per organization by your administrator.</p>
+      </form>
+
+      <p className="lx-card__foot">
+        New to HSDEEP CORE AI? <a href="/signup">Create an account</a>
+      </p>
+    </section>
   );
 }
 
 /** Suspense fallback shown while the login form hydrates / fetches session. */
 function LoginFallback() {
-  return <div className="login-card login-card--loading" />;
-}
-
-/** What the platform does — each line describes a shipped capability. */
-const PILLARS = [
-  { icon: Layers, title: "One view of the estate", text: "Devices, sensors, network and cloud from every connected source." },
-  { icon: Sparkles, title: "AI-assisted incidents", text: "Correlates related alerts into incidents with root-cause evidence." },
-  { icon: Workflow, title: "Guided remediation", text: "SOP-driven response with approvals and a full audit trail." },
-  { icon: ShieldCheck, title: "Built for MSPs", text: "Multi-tenant isolation with role-based access for every team." },
-];
-
-function LoginShowcase() {
-  return (
-    <aside className="lg-show" aria-label="About HSDEEP CORE AI">
-      <LoginBrandBar />
-      <div>
-        <h2>Autonomous infrastructure intelligence for operations teams.</h2>
-        <p className="lg-lead">
-          See what is failing, why it is failing and what to do next, across every site and tenant you run.
-        </p>
-        <ul className="lg-pillars">
-          {PILLARS.map(({ icon: Icon, title, text }) => (
-            <li key={title}>
-              <i aria-hidden="true"><Icon size={17} /></i>
-              <div>
-                <b>{title}</b>
-                <span>{text}</span>
-              </div>
-            </li>
-          ))}
-        </ul>
-      </div>
-      <footer>© {new Date().getFullYear()} HSDEEP CORE AI · Enterprise Operations Platform</footer>
-    </aside>
-  );
+  return <section className="lx-card lx-card--loading" aria-busy="true" />;
 }
 
 function LoginPage() {
   return (
-    <div className="login-page lg">
-      <h1 className="sr-only">HSDEEP CORE AI — Autonomous Infrastructure Intelligence — Sign in</h1>
-      <div className="login-page__layout">
-        <LoginShowcase />
-        <main className="lg-form">
-          <div className="lg-form__brand"><LoginBrandBar /></div>
+    <div className="lx">
+      <h1 className="lx-sr-only">HSDEEP CORE AI — AI-Native IT Operations — Sign in</h1>
+
+      {/* Backdrop stage: sized like object-fit: cover, so the orbit nodes stay on the globe at any window size. */}
+      <div className="lx-stage" aria-hidden="true">
+        <AuthBackdrop />
+        <ul className="lx-orbit">
+          {ORBIT.map(({ icon: Icon, label, side, x, y }) => (
+            <li key={label.join(" ")} className={`lx-node lx-node--${side}`} style={{ left: `${x}%`, top: `${y}%` }}>
+              <span className="lx-node__ring">
+                <Icon size={22} />
+              </span>
+              <span className="lx-node__label">
+                {label[0]}
+                <br />
+                {label[1]}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="lx-scrim" aria-hidden="true" />
+
+      <div className="lx-layout">
+        <header className="lx-top">
+          <Brand />
+          <p className="lx-top__claims">
+            Secure <i>|</i> Scalable <i>|</i> Intelligent
+          </p>
+        </header>
+
+        <div className="lx-hero">
+          <h2 className="lx-hero__title">
+            Intelligence.
+            <br />
+            Automation.
+            <br />
+            <span>Resilient Operations.</span>
+          </h2>
+          <span className="lx-hero__rule" aria-hidden="true" />
+          <ul className="lx-pillars">
+            {PILLARS.map(({ icon: Icon, title, text }) => (
+              <li key={title}>
+                <Icon size={24} aria-hidden="true" />
+                <b>{title}</b>
+                <span>{text}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <main className="lx-main">
           <Suspense fallback={<LoginFallback />}>
             <LoginForm />
           </Suspense>
         </main>
+
+        <footer className="lx-foot">
+          <span className="lx-foot__built">Built for what&apos;s next</span>
+          <span className="lx-foot__tagline">Enterprise IT. Intelligently operated.</span>
+          <span className="lx-foot__copy">© {new Date().getFullYear()} HSDEEP CORE AI</span>
+        </footer>
       </div>
     </div>
   );
