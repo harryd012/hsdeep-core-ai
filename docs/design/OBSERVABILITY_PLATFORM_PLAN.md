@@ -41,7 +41,7 @@ Earlier audits: `docs/REPOSITORY_AUDIT.md`, `docs/PLATFORM_LEDGER.md` (batches 1
 | P0 Audit, stabilization | This document; full backend suite green on the branch | **Done** |
 | P1 Unified sensor model | Sensor lifecycle (active / paused / disabled), user thresholds with direction, sensor detail with channels, bucketed channel history API, sensor detail page with time-series chart, PRTG channel names kept, every sensor reading kept as history, metric retention job (off by default) | **Slice 1 implemented and tested** (`tests/test_sensor_lifecycle.py`) |
 | P2 Inventory & discovery | Saved views and bulk actions on hosts; discovery schedules, exclusions and approval of recommended sensors (on the existing discovery engine) | **Slices 1–2 implemented and tested**: scheduled discovery + scopes UI (`tests/test_discovery_schedule.py`); host saved views, bulk classification / monitoring pause and a tag facet (`tests/test_host_views_bulk.py`, UI not verified in a signed-in browser); sensor recommendations wait for P3's library |
-| P3 Sensor library | Sensor templates (catalogue from the collectors' real metric types), recommendation from discovery profiles, bulk add for collectors that support configuration (SNMP, connectivity) | **Slice 1 implemented and tested**: catalogue of 29 templates with tenant usage, bulk thresholds through the P1 lifecycle, per-host coverage rules, sensors linked to their host (`tests/test_sensor_library.py`); bulk creation of checks is slice 2 |
+| P3 Sensor library | Sensor templates (catalogue from the collectors' real metric types), recommendation from discovery profiles, bulk add for collectors that support configuration (SNMP, connectivity) | **Slice 1 implemented and tested**: catalogue of 29 templates with tenant usage, bulk thresholds through the P1 lifecycle, per-host coverage rules, sensors linked to their host; **slice 2**: bulk reachability checks tied to their hosts, a reachability sensor that alerts when a host stops answering (`tests/test_sensor_library.py`) |
 | P4 Network Monitoring Center | Interface traffic / errors / utilization pages from `interfaces` + metrics, top-N bandwidth, VPN tunnels (FortiGate / Palo Alto data already collected) | planned |
 | P5 Infrastructure monitoring | Windows / Linux / VMware host views from existing collectors | planned |
 | P6 Dashboards & topology | Widget registry over aggregated APIs, saved dashboards per tenant / role; topology already exists, add drill-down to sensors | planned |
@@ -202,4 +202,46 @@ view of hosts that miss a kind of monitoring.
   `sensors` table is still owned by `postgres` (section 3). Recommendations from discovery
   profiles wait for profiles that describe devices (today's profiles are scan presets). Bulk
   creation of checks (reachability for many hosts) is slice 2: it creates monitoring sources and
-  counts against plan limits. Applying to hosts chosen in the UI is API-only for now.
+  counts against plan limits (done in slice 2, section 7). Applying thresholds to hosts chosen in the UI is
+  API-only for now.
+
+## 7. P3 slice 2: bulk reachability checks
+
+The Coverage tab could name unmonitored hosts but not cover them. Two gaps stood in the way of
+simply creating connectivity sources for them:
+
+- **Duplicate hosts**: a connectivity source reports its target as a device of its own, and the
+  saver matches devices only by (source, external id) or hardware serial, so every check would
+  have created a second device for the host it watches.
+- **Silent outages**: the collector emitted latency and packet-loss sensors only while ICMP
+  answered; a host that stopped answering changed its device status and raised no sensor alert.
+
+What this slice adds:
+
+- **Reachability sensor** (`app/collectors/connectivity.py`): every run reports one
+  `reachability` sensor, up (1) or down (0) over all checks that ran, so an unreachable host
+  raises an alert through the normal sensor path. The catalogue gains a `reachability` state
+  template. Existing connectivity sources get the sensor from their next collection.
+- **Checks tied to a host**: `config.connectivity.device_id` names the existing host a
+  connectivity source watches. `BundleSaver` then maps the check's device to that host (tenant
+  checked) and neither creates nor changes a device row: the host's own sources keep its name,
+  type and status. The check's sensors land on the host (slice 1 linking), and the canonical
+  telemetry uses the host's real type.
+- **Bulk endpoint**: `POST /api/monitoring/sensor-library/reachability` (`monitoring.create`,
+  active subscription): up to 200 hosts, ICMP or a TCP port, poll interval 1 minute to 1 day.
+  Hosts already watched by a tied connectivity source, hosts without an address and ids outside
+  the tenant are skipped and listed. `dry_run` sorts the hosts and reports the plan's remaining
+  Sources. Each check is one monitoring source, so the request needs room for **all** of them
+  in the plan's Sources limit, or it is refused whole with 402 (nothing half-created). Source
+  names are unique per tenant (`Reachability: <host> [<id prefix>]`). Every created source is an
+  audit event `monitoring_source.reachability_added`.
+- **UI** (Coverage tab): users with `monitoring.create` select hosts that have an address (per
+  page), choose ICMP or a TCP port and an interval, preview (what will be added, what is skipped,
+  plan room) and confirm. Verified live on the dev tenant up to the preview: it is on the Starter
+  plan with 5 of 5 sources used, so the page correctly offers no "Add" and says the plan allows
+  0 more. Creation itself is covered by the API test, not exercised on dev data.
+- **Where checks run**: connectivity sources are polled by the platform's collection service
+  (edge collectors only push telemetry through `/api/v1/ingest`; they do not run sources), so a
+  host must be reachable from that service. Stated in the UI.
+- **Plan cost**: one source per host, so the Starter plan (5 sources) covers few hosts. A single
+  source probing many targets would need a multi-target connectivity collector; not built.

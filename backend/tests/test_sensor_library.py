@@ -207,3 +207,115 @@ async def test_recommendations_per_host(db, monitoring_source_factory):
 
     async with _client(uuid.uuid4()) as client:
         assert (await client.get("/api/monitoring/sensor-library/recommendations")).json()["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# P3 slice 2: tied reachability checks
+# ---------------------------------------------------------------------------
+
+
+def test_reachability_rules_and_connectivity_output():
+    from app.collectors.connectivity import ConnectivityCollector, bound_device_id
+    from app.services.monitoring.sensor_library import check_reachability_request, check_source_name
+
+    check_reachability_request("icmp", None, 300)
+    check_reachability_request("tcp", 443, 60)
+    for args in (("udp", None, 300), ("tcp", None, 300), ("icmp", 22, 300), ("icmp", None, 30), ("tcp", 70000, 300)):
+        with pytest.raises(ValueError):
+            check_reachability_request(*args)
+
+    host = uuid.uuid4()
+    assert bound_device_id("connectivity", {"connectivity": {"device_id": str(host)}}) == host
+    assert bound_device_id("prtg", {"connectivity": {"device_id": str(host)}}) is None
+    assert bound_device_id("connectivity", {"connectivity": {"device_id": "not-a-uuid"}}) is None
+
+    class _Dev:
+        name, id = "web", uuid.UUID(int=0xABCDEF12 << 96)
+    taken = {"Reachability: web [abcdef12]"}
+    assert check_source_name(_Dev(), taken) == "Reachability: web [abcdef12-2]"
+
+    class _Src:
+        hostname, ip_address, port, config = "10.0.0.9", None, None, {}
+    collector = ConnectivityCollector.__new__(ConnectivityCollector)
+    collector.source = _Src()
+    down = collector.normalize({"icmp": {"ok": False, "latency_ms": None, "packet_loss_pct": 100.0}})
+    assert [(s.metric_type, s.status, s.value) for s in down.sensors] == [("reachability", "down", 0.0)]
+    up = collector.normalize({"icmp": {"ok": True, "latency_ms": 2.0, "packet_loss_pct": 0.0}})
+    assert [s.metric_type for s in up.sensors] == ["reachability", "latency", "packet_loss"]
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_bulk_reachability_ties_checks_to_hosts(db, monitoring_source_factory, seeded_subscription):
+    from app.models.knowledge_audit import AuditEvent
+    from app.models.monitoring_source import MonitoringSource
+    from app.models.plan import Plan
+
+    source = await monitoring_source_factory(source_type="windows_winrm")
+    await _saver(db).save(source, _bundle())
+    await db.commit()
+    tenant_id = source.tenant_id
+    hosts = {d.name: d for d in (await db.execute(select(Device).where(Device.tenant_id == tenant_id))).scalars()}
+    srv_a, mystery = hosts["srv-a"], hosts["mystery"]
+    url = "/api/monitoring/sensor-library/reachability"
+    creator = frozenset({"monitoring.read", "monitoring.create"})
+
+    async with _client(tenant_id, WRITER) as client:  # monitoring.update is not monitoring.create
+        assert (await client.post(url, json={"device_ids": [str(srv_a.id)]})).status_code == 403
+
+    foreign = uuid.uuid4()
+    async with _client(tenant_id, creator) as client:
+        assert (await client.post(url, json={"device_ids": [str(srv_a.id)], "check": "tcp"})).status_code == 422
+        dry = (await client.post(url, json={"device_ids": [str(srv_a.id), str(mystery.id), str(foreign)], "dry_run": True})).json()
+        assert (dry["to_create"], dry["no_address"], dry["not_found"], dry["created"]) == (
+            [str(srv_a.id)], [str(mystery.id)], [str(foreign)], [])
+        assert dry["sources_available"] == 99  # the plan allows 100 sources; the winrm source uses one
+
+        done = (await client.post(url, json={"device_ids": [str(srv_a.id)], "poll_interval_seconds": 120})).json()
+        assert [c["device_id"] for c in done["created"]] == [str(srv_a.id)] and done["sources_available"] == 98
+        again = (await client.post(url, json={"device_ids": [str(srv_a.id)]})).json()
+        assert (again["created"], again["already_checked"]) == ([], [str(srv_a.id)])
+
+    check = (await db.execute(select(MonitoringSource).where(MonitoringSource.id == uuid.UUID(done["created"][0]["source_id"])))).scalar_one()
+    assert (check.source_type, check.hostname, check.poll_interval_seconds) == ("connectivity", "10.0.0.1", 120)
+    assert check.config == {"connectivity": {"checks": ["icmp"], "device_id": str(srv_a.id)}}
+    event = (await db.execute(select(AuditEvent).where(
+        AuditEvent.tenant_id == tenant_id, AuditEvent.action == "monitoring_source.reachability_added"))).scalar_one()
+    assert event.new_values["device_id"] == str(srv_a.id)
+
+    # The check's readings land on srv-a: no new device, host fields untouched.
+    devices_before = len(hosts)
+    await _saver(db).save(check, NormalizedBundle(
+        devices=[NormalizedDevice(external_id="10.0.0.1", name="10.0.0.1", device_type="other", status="down")],
+        sensors=[NormalizedSensorReading(external_id="reachability", name="Reachability", metric_type="reachability",
+                                         value=0.0, status="down", device_external_id="10.0.0.1")],
+    ))
+    await db.commit()
+    after = (await db.execute(select(Device).where(Device.tenant_id == tenant_id))).scalars().all()
+    assert len(after) == devices_before
+    await db.refresh(srv_a)
+    assert (srv_a.device_type, srv_a.name) == ("server", "srv-a")
+    reach = (await db.execute(select(Sensor).where(Sensor.monitoring_source_id == check.id))).scalar_one()
+    assert (reach.device_id, reach.status) == (srv_a.id, "down")
+
+    # Plan limit: the winrm source and srv-a's check use 2 of 4, so exactly 2 more fit.
+    plan = (await db.execute(select(Plan).where(Plan.id == seeded_subscription.plan_id))).scalar_one()
+    plan.collector_limit = 4
+    await db.commit()
+    sw, srv_b = hosts["sw-1"], hosts["srv-b"]
+    async with _client(tenant_id, creator) as client:
+        # mystery has no address, so only 2 are created.
+        r = await client.post(url, json={"device_ids": [str(sw.id), str(srv_b.id), str(mystery.id)]})
+        assert r.status_code == 200 and len(r.json()["created"]) == 2 and r.json()["sources_available"] == 0
+    # One more allowed, two asked: refused whole, nothing created.
+    plan.collector_limit = 5
+    await db.commit()
+    other = NormalizedDevice(external_id="db-1", name="db-1", device_type="server", ip_address="10.0.0.7")
+    other2 = NormalizedDevice(external_id="db-2", name="db-2", device_type="server", ip_address="10.0.0.8")
+    await _saver(db).save(source, NormalizedBundle(devices=[other, other2]))
+    await db.commit()
+    new = [d.id for d in (await db.execute(select(Device).where(Device.tenant_id == tenant_id, Device.name.in_(["db-1", "db-2"])))).scalars()]
+    async with _client(tenant_id, creator) as client:
+        r = await client.post(url, json={"device_ids": [str(i) for i in new]})
+        assert r.status_code == 402 and "allows 1 more" in r.json()["detail"]["message"]
+    left = (await db.execute(select(MonitoringSource).where(MonitoringSource.tenant_id == tenant_id))).scalars().all()
+    assert len(left) == 4

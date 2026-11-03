@@ -4,9 +4,12 @@ Sensor library routes (docs/design/OBSERVABILITY_PLATFORM_PLAN.md, P3 slice 1).
   GET  /api/monitoring/sensor-library                         templates + tenant usage
   POST /api/monitoring/sensor-library/templates/{key}/apply   set / reset user thresholds in bulk
   GET  /api/monitoring/sensor-library/recommendations         coverage rules per host (read-only)
+  POST /api/monitoring/sensor-library/reachability            add tied reachability checks (P3 slice 2)
 
 Reads need `monitoring.read`; applying needs `monitoring.update` and an active
 subscription. Every changed sensor is one audit event with old and new values.
+Adding checks needs `monitoring.create`, an active subscription and room in the
+plan's Sources limit for all of them; every created source is audited.
 """
 from __future__ import annotations
 
@@ -18,11 +21,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Principal, get_tenant_id, require_permission
 from app.core.db import get_db
-from app.core.entitlements import require_active_subscription
+from app.core.entitlements import evaluate_resource_limit, get_billing_service, require_active_subscription
 from app.repositories.alert_repository import AlertRepository
 from app.schemas.sensor_library import (
     ApplyTemplateIn,
     ApplyTemplateResult,
+    ReachabilityCreated,
+    ReachabilityIn,
+    ReachabilityResult,
     RecommendationRuleOut,
     RecommendationsOut,
     RecommendedHostOut,
@@ -32,6 +38,7 @@ from app.schemas.sensor_library import (
 )
 from app.services.alert_service import AlertService
 from app.services.audit_service import AuditService
+from app.services.billing_service import BillingService
 from app.services.monitoring.sensor_library import (
     MAX_APPLY_SENSORS,
     MAX_RECOMMENDATION_HOSTS,
@@ -40,6 +47,7 @@ from app.services.monitoring.sensor_library import (
     SensorLibraryService,
     TemplateNotFound,
     TooManySensors,
+    check_reachability_request,
     default_thresholds,
 )
 
@@ -148,4 +156,83 @@ async def get_recommendations(
         hosts=[RecommendedHostOut(**h) for h in page],
         total=len(selected),
         truncated=offset + limit < len(selected),
+    )
+
+
+async def _sources_available(billing: BillingService, tenant_id: uuid.UUID) -> int | None:
+    """Sources the tenant's plan still allows (None: no limit on the plan)."""
+    entitlements = await billing.get_entitlements(tenant_id)
+    for limit in entitlements["limits"]:
+        if limit["resource"] == "collectors":
+            return max(0, limit["limit"] - limit["used"])
+    return None
+
+
+@router.post(
+    "/reachability", response_model=ReachabilityResult,
+    dependencies=[Depends(require_active_subscription)],
+)
+async def add_reachability(
+    body: ReachabilityIn,
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    principal: Principal = Depends(require_permission("monitoring.create")),
+    db: AsyncSession = Depends(get_db),
+    billing: BillingService = Depends(get_billing_service),
+) -> ReachabilityResult:
+    """One ICMP or TCP check per host, tied to the host so its readings land on
+    it (no duplicate device). Hosts already checked, without an address or not
+    in the tenant are skipped and listed. The checks run from the platform's
+    collection service, so the hosts must be reachable from it."""
+    try:
+        check_reachability_request(body.check, body.port, body.poll_interval_seconds)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    service = SensorLibraryService(db)
+    plan = await service.plan_reachability(tenant_id, body.device_ids)
+    available = await _sources_available(billing, tenant_id)
+
+    created = []
+    if not body.dry_run and plan.to_create:
+        denial = await evaluate_resource_limit(billing, tenant_id, "collectors")
+        if denial is not None or (available is not None and len(plan.to_create) > available):
+            payload = denial[1] if denial is not None else {
+                "error": "plan_limit_exceeded",
+                "resource": "collectors",
+                "message": (
+                    f"{len(plan.to_create)} checks need {len(plan.to_create)} sources; "
+                    f"your plan allows {available} more. Choose fewer hosts or upgrade."
+                ),
+                "upgrade_url": "/usage",
+            }
+            raise HTTPException(status_code=402, detail=payload)
+        sources = await service.create_reachability(
+            tenant_id, plan.to_create, check=body.check, port=body.port,
+            poll_interval_seconds=body.poll_interval_seconds,
+        )
+        audit = AuditService(db)
+        for device, source in zip(plan.to_create, sources):
+            await audit.record_entity(
+                tenant_id=tenant_id, action="monitoring_source.reachability_added", entity_type="monitoring_source",
+                entity_id=source.id, actor_id=principal.user_id, actor_email=principal.email,
+                description=f"Reachability check ({body.check.upper()}) added for host {device.name}",
+                new_values={
+                    "name": source.name, "source_type": "connectivity", "hostname": source.hostname,
+                    "device_id": str(device.id), "check": body.check, "port": body.port,
+                    "poll_interval_seconds": body.poll_interval_seconds,
+                },
+            )
+            created.append(ReachabilityCreated(device_id=device.id, source_id=source.id, name=source.name))
+        await db.commit()
+        if available is not None:
+            available -= len(created)
+
+    return ReachabilityResult(
+        requested=len(dict.fromkeys(body.device_ids)),
+        to_create=[d.id for d in plan.to_create],
+        created=created,
+        already_checked=plan.already_checked,
+        no_address=plan.no_address,
+        not_found=plan.not_found,
+        sources_available=available,
+        dry_run=body.dry_run,
     )

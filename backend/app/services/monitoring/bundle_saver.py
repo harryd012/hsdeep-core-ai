@@ -62,6 +62,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from app.collectors.base import NormalizedAlertSignal, NormalizedBundle
+from app.collectors.connectivity import bound_device_id
 from app.models.monitoring_source import MonitoringSource
 from app.services.monitoring.interface_rates import compute_interface_rate
 from app.services.monitoring.sensor_policy import PRIMARY_CHANNEL, effective_status, user_thresholds_of
@@ -417,8 +418,20 @@ class BundleSaver:
         # Device.id -> Device.site_id, so canonical telemetry rows can carry the
         # site they belong to without a second lookup.
         site_id_by_device: dict[object, object] = {}
+        # A connectivity check tied to an existing host (sensor library bulk
+        # reachability): its readings belong to that host. The host row is
+        # neither created nor changed here - its own sources own its fields -
+        # so the check never duplicates the host it watches.
+        bound_id = bound_device_id(getattr(source, "source_type", None), getattr(source, "config", None))
+        bound_device = await self.device_repo.get(bound_id, source.tenant_id) if bound_id else None
+        device_type_by_bound_id: dict[object, str] = {}
 
         for nd in bundle.devices:
+            if bound_device is not None:
+                device_id_by_external[nd.external_id] = bound_device.id
+                site_id_by_device[bound_device.id] = bound_device.site_id
+                device_type_by_bound_id[bound_device.id] = bound_device.device_type
+                continue
             existing_device = await self.device_repo.get_by_external_id(source.id, nd.external_id)
             if existing_device is None and device_allowance is not None and device_allowance <= 0:
                 result.devices_blocked += 1
@@ -844,7 +857,9 @@ class BundleSaver:
         ).save(
             canonical,
             device_type_by_id={
-                device_id_by_external[nd.external_id]: nd.device_type
+                device_id_by_external[nd.external_id]: device_type_by_bound_id.get(
+                    device_id_by_external[nd.external_id], nd.device_type
+                )
                 for nd in bundle.devices
                 if nd.external_id in device_id_by_external
             },

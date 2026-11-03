@@ -6,10 +6,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Library } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import {
+  addReachabilityChecks,
   applySensorTemplate,
   getSensorLibrary,
   getSensorRecommendations,
   type ApplyTemplateResult,
+  type ReachabilityResult,
   type RecommendedHost,
   type SensorTemplate,
 } from "@/lib/sensorLibrary";
@@ -20,10 +22,96 @@ import { Banner, DataTable, PageShell, Panel, Pill, StatStrip, StatTile, Tabs, t
  * measurement the collectors really report, how many of the organization's
  * sensors each covers, and (with monitoring.update) applying a template's
  * thresholds to all of its sensors at once. The Coverage tab lists hosts that
- * miss a kind of monitoring; it suggests, it never creates a check.
+ * miss a kind of monitoring and (with monitoring.create) adds reachability
+ * checks for chosen hosts, each tied to its host.
  */
 
 const PAGE = 100;
+
+const INTERVALS = [
+  { seconds: 60, label: "Every minute" },
+  { seconds: 300, label: "Every 5 minutes" },
+  { seconds: 900, label: "Every 15 minutes" },
+  { seconds: 3600, label: "Every hour" },
+];
+
+function ReachabilityBar({ ids, onDone }: { ids: string[]; onDone: (text: string, tone: "good" | "bad") => void }) {
+  const [check, setCheck] = useState<"icmp" | "tcp">("icmp");
+  const [port, setPort] = useState("443");
+  const [interval, setIntervalSeconds] = useState(300);
+  const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<ReachabilityResult | null>(null);
+  const portNum = Number(port);
+  const valid = check === "icmp" || (Number.isInteger(portNum) && portNum >= 1 && portNum <= 65535);
+  const body = { device_ids: ids, check, port: check === "tcp" ? portNum : null, poll_interval_seconds: interval };
+
+  async function run(dryRun: boolean) {
+    setBusy(true);
+    try {
+      const r = await addReachabilityChecks({ ...body, dry_run: dryRun });
+      if (dryRun) setPreview(r);
+      else {
+        setPreview(null);
+        onDone(`Added ${r.created.length} reachability check${r.created.length === 1 ? "" : "s"}; results arrive with the first collection.`, "good");
+      }
+    } catch (err) {
+      onDone(err instanceof Error ? err.message : "The checks could not be added.", "bad");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const skipped = preview ? preview.already_checked.length + preview.no_address.length + preview.not_found.length : 0;
+  const tooMany = !!preview && preview.sources_available !== null && preview.to_create.length > preview.sources_available;
+  return (
+    <div className="pk-form" style={{ display: "grid", gap: 8, marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "end", flexWrap: "wrap" }}>
+        <strong style={{ alignSelf: "center" }}>{ids.length} selected</strong>
+        <div className="pk-field"><label htmlFor="rc-check">Check</label>
+          <select id="rc-check" className="pk-input" value={check} onChange={(e) => { setCheck(e.target.value as "icmp" | "tcp"); setPreview(null); }}>
+            <option value="icmp">Ping (ICMP)</option>
+            <option value="tcp">TCP port</option>
+          </select>
+        </div>
+        {check === "tcp" && (
+          <div className="pk-field"><label htmlFor="rc-port">Port</label>
+            <input id="rc-port" className="pk-input" type="number" min={1} max={65535} value={port} style={{ width: 100 }}
+              onChange={(e) => { setPort(e.target.value); setPreview(null); }} /></div>
+        )}
+        <div className="pk-field"><label htmlFor="rc-int">Interval</label>
+          <select id="rc-int" className="pk-input" value={interval} onChange={(e) => { setIntervalSeconds(Number(e.target.value)); setPreview(null); }}>
+            {INTERVALS.map((i) => <option key={i.seconds} value={i.seconds}>{i.label}</option>)}
+          </select>
+        </div>
+        <button type="button" className="pk-button" disabled={!valid || busy} onClick={() => void run(true)}>Check</button>
+      </div>
+      {preview && (
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <span>
+            {preview.to_create.length} check{preview.to_create.length === 1 ? "" : "s"} to add
+            {skipped > 0 && ` · skipped: ${[
+              preview.already_checked.length && `${preview.already_checked.length} already checked`,
+              preview.no_address.length && `${preview.no_address.length} without an address`,
+              preview.not_found.length && `${preview.not_found.length} not found`,
+            ].filter(Boolean).join(", ")}`}
+            {preview.sources_available !== null && ` · your plan allows ${preview.sources_available} more source${preview.sources_available === 1 ? "" : "s"}`}
+          </span>
+          {preview.to_create.length > 0 && !tooMany && (
+            <button type="button" className="pk-button pk-button--primary" disabled={busy}
+              onClick={() => { if (window.confirm(`Add ${preview.to_create.length} reachability check${preview.to_create.length === 1 ? "" : "s"}? Each is a monitoring source polled from the platform.`)) void run(false); }}>
+              Add {preview.to_create.length} check{preview.to_create.length === 1 ? "" : "s"}
+            </button>
+          )}
+          {tooMany && <span className="pk-muted">Select fewer hosts or upgrade the plan.</span>}
+        </div>
+      )}
+      <p className="pk-muted" style={{ margin: 0 }}>
+        Each check is a monitoring source tied to its host: its reachability, response time and packet loss appear on the host,
+        and an unreachable host raises an alert. Checks run from the platform&apos;s collection service, so the host must be reachable from it.
+      </p>
+    </div>
+  );
+}
 
 function fmt(v: number | null, unit: string | null): string {
   if (v === null) return "—";
@@ -211,15 +299,35 @@ function TemplatesTab({ canEdit }: { canEdit: boolean }) {
   );
 }
 
-function CoverageTab() {
+function CoverageTab({ canCreate }: { canCreate: boolean }) {
+  const qc = useQueryClient();
   const [rule, setRule] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [message, setMessage] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
   const rec = useQuery({ queryKey: ["sensor-recommendations", rule, offset], queryFn: () => getSensorRecommendations(rule, PAGE, offset) });
   const rules = rec.data?.rules ?? [];
   const titles = Object.fromEntries(rules.map((r) => [r.key, r.title]));
   const active = rules.find((r) => r.key === rule);
+  const selectable = (rec.data?.hosts ?? []).filter((h) => h.address);
+  const allSelected = selectable.length > 0 && selectable.every((h) => selected.has(h.device_id));
+  const toggle = (id: string) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const resetPage = () => { setOffset(0); setSelected(new Set()); };
 
+  const selectColumn: Column<RecommendedHost> = {
+    key: "select",
+    header: <input type="checkbox" aria-label="Select hosts on this page" checked={allSelected} disabled={selectable.length === 0}
+      onChange={() => setSelected(allSelected ? new Set() : new Set(selectable.map((h) => h.device_id)))} />,
+    render: (h) => <input type="checkbox" aria-label={`Select ${h.name}`} disabled={!h.address} checked={selected.has(h.device_id)}
+      onChange={() => toggle(h.device_id)} onClick={(e) => e.stopPropagation()} />,
+    width: 36,
+  };
   const columns: Column<RecommendedHost>[] = [
+    ...(canCreate ? [selectColumn] : []),
     { key: "name", header: "Host", sortValue: (h) => h.name, render: (h) => <Link className="ecc-link" href={`/infrastructure/hosts/${h.device_id}`}>{h.name}</Link> },
     { key: "type", header: "Type", sortValue: (h) => h.device_type, render: (h) => titleCaseWords(h.device_type) },
     { key: "address", header: "Address", render: (h) => h.address ?? <span className="pk-muted">—</span> },
@@ -240,24 +348,34 @@ function CoverageTab() {
       {rules.length > 0 && (
         <Tabs<string>
           value={rule ?? "all"}
-          onChange={(k) => { setRule(k === "all" ? null : k); setOffset(0); }}
+          onChange={(k) => { setRule(k === "all" ? null : k); resetPage(); }}
           label="Filter hosts by gap"
           tabs={[{ key: "all", label: "All gaps" }, ...rules.map((r) => ({ key: r.key, label: `${r.title} (${r.hosts})` }))]}
         />
       )}
       {active && <Banner tone="info">{active.title}: {active.action}</Banner>}
+      {message && <Banner tone={message.tone}>{message.text}</Banner>}
       <Panel
         title={active ? `${active.title} (${rec.data?.total ?? 0})` : `Hosts with a gap (${rec.data?.total ?? 0})`}
         info="Computed from the sensors and polled interfaces each host has now. Nothing is added automatically: covering a host needs a monitoring source and, for most collectors, credentials."
         state={rec.isLoading ? "loading" : "ready"}
       >
+        {canCreate && selected.size > 0 && (
+          <ReachabilityBar ids={[...selected]} onDone={(text, tone) => {
+            setMessage({ text, tone });
+            if (tone === "good") {
+              setSelected(new Set());
+              void qc.invalidateQueries({ queryKey: ["sensor-recommendations"] });
+            }
+          }} />
+        )}
         <DataTable caption="Hosts with a monitoring gap" columns={columns} rows={rec.data?.hosts ?? []} rowKey={(h) => h.device_id}
           emptyText="Every host has the monitoring its type calls for." maxHeight={560} />
         {rec.data && (offset > 0 || rec.data.truncated) && (
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
-            <button type="button" className="pk-button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>Previous</button>
+            <button type="button" className="pk-button" disabled={offset === 0} onClick={() => { setOffset(Math.max(0, offset - PAGE)); setSelected(new Set()); }}>Previous</button>
             <span className="pk-muted">{offset + 1}–{offset + rec.data.hosts.length} of {rec.data.total}</span>
-            <button type="button" className="pk-button" disabled={!rec.data.truncated} onClick={() => setOffset(offset + PAGE)}>Next</button>
+            <button type="button" className="pk-button" disabled={!rec.data.truncated} onClick={() => { setOffset(offset + PAGE); setSelected(new Set()); }}>Next</button>
           </div>
         )}
       </Panel>
@@ -268,6 +386,7 @@ function CoverageTab() {
 export default function SensorLibraryPage() {
   const { user } = useAuth();
   const canEdit = !!user && (user.is_superuser || user.permissions.includes("monitoring.update"));
+  const canCreate = !!user && (user.is_superuser || user.permissions.includes("monitoring.create"));
   const [tab, setTab] = useState<"templates" | "coverage">("templates");
   return (
     <PageShell
@@ -277,7 +396,7 @@ export default function SensorLibraryPage() {
       subtitle="What your collectors measure, the thresholds they are judged by, and where monitoring is missing"
       actions={<Tabs<"templates" | "coverage"> value={tab} onChange={setTab} label="Sensor library view" tabs={[{ key: "templates", label: "Templates" }, { key: "coverage", label: "Coverage" }]} />}
     >
-      {tab === "templates" ? <TemplatesTab canEdit={canEdit} /> : <CoverageTab />}
+      {tab === "templates" ? <TemplatesTab canEdit={canEdit} /> : <CoverageTab canCreate={canCreate} />}
     </PageShell>
   );
 }

@@ -86,3 +86,34 @@ class RecommendationsOut(BaseModel):
     total: int
     #: True when `hosts` was cut to the page size.
     truncated: bool
+
+
+class ReachabilityIn(BaseModel):
+    """Add one tied reachability check (a connectivity source) per host."""
+
+    device_ids: list[uuid.UUID] = Field(..., min_length=1, max_length=200)
+    check: str = Field("icmp", pattern="^(icmp|tcp)$")
+    #: Required for a TCP check, refused for ICMP.
+    port: int | None = None
+    poll_interval_seconds: int = 300
+    #: Sort the hosts and report the plan headroom without creating anything.
+    dry_run: bool = False
+
+
+class ReachabilityCreated(BaseModel):
+    device_id: uuid.UUID
+    source_id: uuid.UUID
+    name: str
+
+
+class ReachabilityResult(BaseModel):
+    requested: int
+    #: Hosts a check is (or would be, on a dry run) created for.
+    to_create: list[uuid.UUID]
+    created: list[ReachabilityCreated]
+    already_checked: list[uuid.UUID]
+    no_address: list[uuid.UUID]
+    not_found: list[uuid.UUID]
+    #: Sources the plan still allows; None when the plan sets no limit.
+    sources_available: int | None
+    dry_run: bool

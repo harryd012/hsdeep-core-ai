@@ -88,3 +88,31 @@ export function getSensorRecommendations(rule: string | null, limit = 100, offse
   if (rule) qs.set("rule", rule);
   return apiFetch<Recommendations>(`/api/monitoring/sensor-library/recommendations?${qs.toString()}`);
 }
+
+export interface ReachabilityRequest {
+  device_ids: string[];
+  check: "icmp" | "tcp";
+  port?: number | null;
+  poll_interval_seconds: number;
+  dry_run?: boolean;
+}
+
+export interface ReachabilityResult {
+  requested: number;
+  to_create: string[];
+  created: { device_id: string; source_id: string; name: string }[];
+  already_checked: string[];
+  no_address: string[];
+  not_found: string[];
+  /** Sources the plan still allows; null when the plan sets no limit. */
+  sources_available: number | null;
+  dry_run: boolean;
+}
+
+/** One reachability check (a connectivity source tied to the host) per host. */
+export function addReachabilityChecks(body: ReachabilityRequest): Promise<ReachabilityResult> {
+  return apiFetch<ReachabilityResult>("/api/monitoring/sensor-library/reachability", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}

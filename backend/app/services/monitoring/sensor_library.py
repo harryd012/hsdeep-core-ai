@@ -34,6 +34,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.actions.health_thresholds import DEFAULT_THRESHOLDS
+from app.collectors.connectivity import BOUND_DEVICE_KEY, bound_device_id
 from app.core.config import get_settings
 from app.models.device import Device
 from app.models.interface import Interface
@@ -45,6 +46,10 @@ from app.services.monitoring.sensor_service import SensorService
 MAX_APPLY_SENSORS = 1000
 MAX_APPLY_HOSTS = 200
 MAX_RECOMMENDATION_HOSTS = 500
+MAX_REACHABILITY_HOSTS = 200
+REACHABILITY_CHECKS = ("icmp", "tcp")
+MIN_POLL_SECONDS = 60
+MAX_POLL_SECONDS = 86400
 
 #: Collectors that measure a host's operating system.
 OS_SOURCE_TYPES = frozenset({"linux_ssh", "windows_winrm", "wmi", "vmware", "zabbix", "datadog", "prtg"})
@@ -81,6 +86,8 @@ TEMPLATES: tuple[SensorTemplate, ...] = (
        ["connectivity"], ["latency"], "ms", "above"),
     _t("packet_loss", "Packet loss", "availability", "Share of ICMP probes with no reply.",
        ["connectivity"], ["packet_loss"], "%", "above"),
+    _t("reachability", "Reachability", "availability", "Host answers its ICMP / TCP / DNS checks (1) or not (0).",
+       ["connectivity"], ["reachability"], None, None),
     _t("cpu_utilization", "CPU utilization", "system", "Processor busy time, per socket on Windows.",
        ["windows_winrm", "wmi", "zabbix"], ["cpu_usage", "cpu_utilization"], "%", "above"),
     _t("cpu_load", "CPU load average", "system", "Run-queue load average (1 minute).",
@@ -193,7 +200,7 @@ RULES: dict[str, Rule] = {
     for r in (
         Rule("unmonitored", "Not monitored",
              "No sensor and no polled interface reports for this host.",
-             "Add a reachability check (ICMP / TCP) for its address, or cover it from a monitoring source."),
+             "Add a reachability check (ICMP / TCP) for its address here, or cover it from a monitoring source."),
         Rule("server_without_os", "Server without OS metrics",
              "A server with no sensor from an operating-system collector (SSH, WinRM / WMI, VMware, Zabbix, Datadog, PRTG).",
              "Add a Linux (SSH) or Windows (WinRM) source with credentials for this host."),
@@ -228,6 +235,40 @@ def rules_for(device_type: str | None, sensor_sources: set[str], sensor_count: i
 
 class TemplateNotFound(Exception):
     pass
+
+
+@dataclass
+class ReachabilityPlan:
+    """What a bulk reachability request would do, host by host."""
+
+    to_create: list[Device]
+    already_checked: list[uuid.UUID]
+    no_address: list[uuid.UUID]
+    not_found: list[uuid.UUID]
+
+
+def check_reachability_request(check: str, port: int | None, poll_interval_seconds: int) -> None:
+    """ValueError unless the check, port and interval are usable (pure)."""
+    if check not in REACHABILITY_CHECKS:
+        raise ValueError(f"check must be one of {', '.join(REACHABILITY_CHECKS)}")
+    if check == "tcp" and not (port and 1 <= port <= 65535):
+        raise ValueError("A TCP check needs a port between 1 and 65535")
+    if check == "icmp" and port is not None:
+        raise ValueError("An ICMP check takes no port")
+    if not MIN_POLL_SECONDS <= poll_interval_seconds <= MAX_POLL_SECONDS:
+        raise ValueError(f"poll interval must be between {MIN_POLL_SECONDS} and {MAX_POLL_SECONDS} seconds")
+
+
+def check_source_name(device: Device, taken: set[str]) -> str:
+    """A tenant-unique source name for the host's check (names are unique per tenant, deleted rows included)."""
+    base = f"Reachability: {device.name}"[:200]
+    name = f"{base} [{device.id.hex[:8]}]"
+    n = 2
+    while name in taken:
+        name = f"{base} [{device.id.hex[:8]}-{n}]"
+        n += 1
+    taken.add(name)
+    return name
 
 
 class TooManySensors(Exception):
@@ -314,6 +355,69 @@ class SensorLibraryService:
                 changed.append((sensor, old, new))
         return changed, len(sensors), not_found
 
+    async def plan_reachability(self, tenant_id: uuid.UUID, device_ids: list[uuid.UUID]) -> ReachabilityPlan:
+        """Sort the hosts: to check, already checked by a tied connectivity source, no address, not in the tenant."""
+        wanted = list(dict.fromkeys(device_ids))
+        devices = {
+            d.id: d
+            for d in (
+                await self.db.execute(
+                    select(Device).where(Device.tenant_id == tenant_id, Device.id.in_(wanted), Device.is_deleted.is_(False))
+                )
+            ).scalars()
+        }
+        checked = {
+            bound_device_id(source_type, config)
+            for source_type, config in (
+                await self.db.execute(
+                    select(MonitoringSource.source_type, MonitoringSource.config).where(
+                        MonitoringSource.tenant_id == tenant_id,
+                        MonitoringSource.source_type == "connectivity",
+                        MonitoringSource.is_deleted.is_(False),
+                    )
+                )
+            ).all()
+        }
+        plan = ReachabilityPlan([], [], [], [])
+        for device_id in wanted:
+            device = devices.get(device_id)
+            if device is None:
+                plan.not_found.append(device_id)
+            elif device_id in checked:
+                plan.already_checked.append(device_id)
+            elif not (device.ip_address or device.hostname):
+                plan.no_address.append(device_id)
+            else:
+                plan.to_create.append(device)
+        return plan
+
+    async def create_reachability(
+        self, tenant_id: uuid.UUID, devices: list[Device], *, check: str, port: int | None, poll_interval_seconds: int,
+    ) -> list[MonitoringSource]:
+        """One connectivity source per host, tied to it; collected from the next scheduler pass."""
+        from app.services.monitoring.monitoring_service import MonitoringService
+        from app.repositories.monitoring_source_repository import MonitoringSourceRepository
+        from app.repositories.sensor_repository import SensorRepository
+
+        service = MonitoringService(source_repo=MonitoringSourceRepository(self.db), sensor_repo=SensorRepository(self.db))
+        taken = set(
+            (await self.db.execute(select(MonitoringSource.name).where(MonitoringSource.tenant_id == tenant_id))).scalars()
+        )
+        created = []
+        for device in devices:
+            created.append(await service.create_source(
+                tenant_id=tenant_id,
+                name=check_source_name(device, taken),
+                source_type="connectivity",
+                hostname=device.ip_address or device.hostname,
+                port=port if check == "tcp" else None,
+                site_id=device.site_id,
+                is_active=True,
+                poll_interval_seconds=poll_interval_seconds,
+                config={"connectivity": {"checks": [check], BOUND_DEVICE_KEY: str(device.id)}},
+            ))
+        return created
+
     async def recommendations(self, tenant_id: uuid.UUID) -> list[dict]:
         """One entry per host with at least one rule, rules in RULES order."""
         sensor_rows = (
@@ -360,7 +464,8 @@ class SensorLibraryService:
 
 
 __all__ = [
-    "MAX_APPLY_HOSTS", "MAX_APPLY_SENSORS", "MAX_RECOMMENDATION_HOSTS", "RULES", "SensorLibraryService",
+    "MAX_APPLY_HOSTS", "MAX_APPLY_SENSORS", "MAX_REACHABILITY_HOSTS", "MAX_RECOMMENDATION_HOSTS", "REACHABILITY_CHECKS",
+    "RULES", "ReachabilityPlan", "SensorLibraryService", "check_reachability_request", "check_source_name",
     "SensorTemplate", "TEMPLATES", "TEMPLATES_BY_KEY", "TemplateNotFound", "TooManySensors", "check_thresholds",
     "default_thresholds", "rules_for",
 ]
