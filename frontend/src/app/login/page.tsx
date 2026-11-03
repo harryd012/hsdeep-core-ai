@@ -17,8 +17,9 @@ import { useState, Suspense, type FormEvent, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowRight, Building2, User } from "lucide-react";
 import AuthScene, { useHydrated } from "@/components/auth/AuthScene";
+import MfaCodeStep from "@/components/auth/MfaCodeStep";
 import PasswordField from "@/components/auth/PasswordField";
-import { ApiError } from "@/lib/api";
+import { ApiError, MfaRequiredError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
 function safeNextPath(raw: string | null): string {
@@ -39,6 +40,8 @@ function LoginForm() {
   const [error, setError] = useState<string | null>(null);
   /** Fields to mark invalid after a failed attempt. */
   const [invalid, setInvalid] = useState<{ email?: boolean; password?: boolean }>({});
+  /** Set when the password was accepted and the account has MFA (code step). */
+  const [challenge, setChallenge] = useState<string | null>(null);
 
   // Already signed in (e.g. dev bootstrap, or navigated here by mistake)?
   // Bounce straight to the destination rather than showing the form.
@@ -78,6 +81,11 @@ function LoginForm() {
       await login({ email: trimmedEmail, password });
       router.replace(next);
     } catch (err) {
+      if (err instanceof MfaRequiredError) {
+        setChallenge(err.mfaToken);
+        setPassword("");
+        return;
+      }
       // Surface the real cause rather than one generic message.
       if (err instanceof ApiError) {
         if (err.status === 0) {
@@ -103,6 +111,16 @@ function LoginForm() {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (challenge) {
+    return (
+      <MfaCodeStep
+        challenge={challenge}
+        onDone={() => router.replace(next)}
+        onCancel={() => { setChallenge(null); setError(null); }}
+      />
+    );
   }
 
   return (

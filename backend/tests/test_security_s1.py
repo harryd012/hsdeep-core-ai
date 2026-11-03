@@ -191,8 +191,7 @@ async def test_security_settings_permission_validation_and_audit(tenant, people,
         current = (await c.get("/api/settings/security")).json()
         assert current["is_default"] is True and current["require_uppercase"] is False
         assert current["session_timeout_minutes"] == 480
-        for bad in ({"session_timeout_minutes": 5}, {"max_login_attempts": 1}, {"min_password_length": 6},
-                    {"mfa_enabled": True}):
+        for bad in ({"session_timeout_minutes": 5}, {"max_login_attempts": 1}, {"min_password_length": 6}):
             assert (await c.put("/api/settings/security", json=bad)).status_code == 422, bad
         r = await c.put("/api/settings/security", json={"min_password_length": 12, "require_numbers": True})
         assert r.status_code == 200, r.text

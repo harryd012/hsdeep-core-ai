@@ -99,18 +99,12 @@ class SecuritySettingUpdate(BaseModel):
     require_uppercase: bool | None = None
     require_numbers: bool | None = None
     require_special_chars: bool | None = None
-    #: Multi-factor authentication arrives in security programme S2; until then
-    #: it cannot be switched on, so the page never claims protection it lacks.
+    #: Require multi-factor authentication for every user (S2). Users without it
+    #: must set it up before anything else at their next sign-in or refresh.
     mfa_enabled: bool | None = None
     session_timeout_minutes: int | None = Field(None, ge=MIN_SESSION_TIMEOUT_MINUTES, le=MAX_SESSION_TIMEOUT_MINUTES)
     max_login_attempts: int | None = Field(None, ge=MAX_LOGIN_ATTEMPTS_RANGE[0], le=MAX_LOGIN_ATTEMPTS_RANGE[1])
 
-    @field_validator("mfa_enabled")
-    @classmethod
-    def _mfa_not_available(cls, v: bool | None) -> bool | None:
-        if v:
-            raise ValueError("Multi-factor authentication is not available yet")
-        return v
 
 
 _MASK = "••••"

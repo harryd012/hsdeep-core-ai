@@ -145,3 +145,54 @@ export async function downloadAuditCsv(filters: AuditFilters): Promise<void> {
   a.remove();
   URL.revokeObjectURL(url);
 }
+
+// ---------------------------------------------------------------------------
+// Multi-factor authentication (security programme S2)
+// ---------------------------------------------------------------------------
+
+export interface MfaStatus {
+  enabled: boolean;
+  confirmed_at: string | null;
+  recovery_codes_remaining: number;
+  setup_pending: boolean;
+  /** The organization requires MFA for everyone. */
+  required_by_policy: boolean;
+}
+
+export interface MfaSetup {
+  secret: string;
+  otpauth_uri: string;
+  /** Server-rendered QR code (SVG markup) for the otpauth URI. */
+  qr_svg: string;
+}
+
+export function getMfaStatus(): Promise<MfaStatus> {
+  return apiFetch<MfaStatus>("/api/auth/mfa");
+}
+
+export function startMfaSetup(): Promise<MfaSetup> {
+  return apiFetch<MfaSetup>("/api/auth/mfa/setup", { method: "POST" });
+}
+
+/** Turns MFA on; returns the recovery codes (shown once). */
+export function confirmMfa(code: string): Promise<{ codes: string[] }> {
+  return apiFetch<{ codes: string[] }>("/api/auth/mfa/confirm", { method: "POST", body: JSON.stringify({ code }) });
+}
+
+export function regenerateRecoveryCodes(code: string): Promise<{ codes: string[] }> {
+  return apiFetch<{ codes: string[] }>("/api/auth/mfa/recovery-codes", { method: "POST", body: JSON.stringify({ code }) });
+}
+
+export function disableMfa(code: string): Promise<void> {
+  return apiFetch<void>("/api/auth/mfa/disable", { method: "POST", body: JSON.stringify({ code }) });
+}
+
+/** Admin (security.manage): remove a user's MFA and end their sessions. */
+export function resetUserMfa(userId: string): Promise<{ mfa_removed: boolean; sessions_ended: number }> {
+  return apiFetch(`/api/auth/users/${encodeURIComponent(userId)}/mfa/reset`, { method: "POST" });
+}
+
+/** "ABCD EFGH ..." for typing a secret into an app by hand. */
+export function groupSecret(secret: string): string {
+  return secret.replace(/(.{4})/g, "$1 ").trim();
+}

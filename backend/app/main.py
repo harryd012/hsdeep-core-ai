@@ -28,6 +28,7 @@ from app.api.routes import command_center
 from app.api.routes import discovery_scopes
 from app.api.routes import host_inventory
 from app.api.routes import audit_log
+from app.api.routes import mfa as mfa_routes
 from app.api.routes import sensor_library
 from app.api.routes import network as network_center
 from app.api.routes import admin_tenants
@@ -610,6 +611,7 @@ app.include_router(discovery_probe_jobs.router, prefix="/api")
 app.include_router(discovery_scopes.router, prefix="/api")
 app.include_router(host_inventory.router, prefix="/api")
 app.include_router(audit_log.router, prefix="/api")
+app.include_router(mfa_routes.router, prefix="/api")
 app.include_router(sensor_library.router, prefix="/api")
 app.include_router(network_center.router, prefix="/api")
 app.include_router(admin_tenants.router, prefix="/api")

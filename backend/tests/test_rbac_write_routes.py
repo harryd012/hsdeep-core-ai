@@ -33,6 +33,13 @@ PUBLIC_WRITE_ROUTES = {
     ("POST", "/api/auth/logout-all"),
     ("POST", "/api/auth/sessions/end-others"),
     ("DELETE", "/api/auth/sessions/{session_id}"),
+    # MFA: the code step is authorised by the short-lived challenge token
+    # (rate limited); the rest change only the signed-in user's own MFA.
+    ("POST", "/api/auth/login/mfa"),
+    ("POST", "/api/auth/mfa/setup"),
+    ("POST", "/api/auth/mfa/confirm"),
+    ("POST", "/api/auth/mfa/recovery-codes"),
+    ("POST", "/api/auth/mfa/disable"),
     # Break-glass support grants: opening needs a superuser; revoking needs the
     # grant holder or the customer tenant's users.update. Checked in the
     # handler and covered by tests/test_support_access.py.

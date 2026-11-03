@@ -1,6 +1,6 @@
 # Enterprise security, privacy and compliance programme
 
-Status: **S1 implemented and tested** (2026-11-03). S2–S6 approved as the plan, not built.
+Status: **S1 and S2 implemented and tested** (2026-11-03 / 04). S3–S6 approved as the plan, not built.
 
 Every item is labelled by its real state. Nothing here claims a certification: HSDEEP CORE AI
 holds no SOC 2, ISO 27001 or similar attestation.
@@ -78,11 +78,51 @@ self-service session routes. Full backend suite green (2770 passed).
 `audit_events` table is owned by `postgres` (see the test-database note in
 `docs/design/OBSERVABILITY_PLATFORM_PLAN.md`); `tenant_id` is already indexed.
 
+## S2: multi-factor authentication (implemented)
+
+- **Authenticator apps (TOTP)** (`app/services/mfa/totp.py`): RFC 6238, HMAC-SHA1, 30-second
+  steps, 6 digits, ±1 step for clock drift; checked against the RFC test vectors. No new
+  dependency for TOTP; QR codes are rendered server-side as SVG with `segno` (pure Python).
+- **Enrolment** (`user_mfa`, migration `e5a3c9d1f7b2`): set-up stores a new secret, encrypted with
+  the platform key, unconfirmed; it becomes MFA only after the first valid code (confirm). The
+  secret is never returned after set-up.
+- **Recovery codes** (`mfa_recovery_codes`): 10 one-time codes shown once at confirm or
+  regenerate, stored as SHA-256 hashes; regenerating replaces the set. Using one at sign-in is an
+  audit event with the number left.
+- **Sign-in** becomes two steps for a user with MFA: `POST /api/auth/login` answers
+  `{mfa_required, mfa_token}` (a 5-minute challenge token that is rejected as a bearer token);
+  `POST /api/auth/login/mfa` takes the token and a code. A TOTP step is accepted once (replay
+  protection) and wrong codes count towards the account lockout like wrong passwords. The
+  password step alone neither issues tokens nor clears the failure count.
+- **Tenant policy "Require two-step verification"** (the existing `mfa_enabled` column): a user
+  without MFA still signs in with the password, but their access token carries `mfa_enroll`; until
+  they set MFA up every API answers 403 `MFA_ENROLLMENT_REQUIRED` except MFA set-up, `/auth/me`,
+  sign-out, sessions and reading the security policy. The frontend sends them to set-up. After
+  confirming, the session refreshes without the restriction. Existing access tokens pick the
+  policy up at their next refresh (at most 15 minutes).
+- **Turning MFA off** needs a current code and is refused while the policy requires MFA.
+- **Admin reset** (`POST /api/auth/users/{id}/mfa/reset`, `security.manage`): removes the user's
+  MFA and ends their sessions (lost device). Also on Settings > Users & Roles, with "sign out of
+  every session".
+- **Audit:** `mfa.enabled`, `mfa.disabled`, `mfa.recovery_codes_regenerated`,
+  `mfa.recovery_code_used`, `mfa.reset_by_admin`.
+- **UI:** login code step (app code or recovery code), Two-step verification panel on
+  Settings > Security (QR, key, confirm, recovery codes to copy or download, replace, turn off),
+  the policy switch, and the admin actions.
+
+Tests: `tests/test_mfa_totp.py`, `tests/test_security_s2_mfa.py`. Full backend suite green
+(2781 passed).
+
+**Known limits:**
+- The dev auto-login (`NEXT_PUBLIC_AUTH_DEV_BOOTSTRAP`) signs in with a password only, so the
+  bootstrap account must not have MFA (or the tenant must not require it).
+- WebAuthn / passkeys and SMS are not offered.
+- The login code step was type-checked and tested through the API, not clicked through in a browser.
+
 ## Approved plan, not built yet
 
 | Phase | Scope |
 |---|---|
-| S2 MFA | TOTP authenticator apps with recovery codes, tenant "require MFA", admin MFA reset |
 | S3 Network & API | Per-tenant IP allowlist, API key scopes validated against the catalog, shared (DB/Redis) login rate limit |
 | S4 Encryption & integrity | Versioned keys with rotation (MultiFernet) and a re-encryption job, tamper-evident audit hash chain, per-tenant key design (for customer-managed keys later) |
 | S5 Privacy & compliance | Per-tenant retention, tenant data export, offboarding with a grace period, secret / PII redaction in logs and AI prompts, AI data-use control, an honest Trust page |

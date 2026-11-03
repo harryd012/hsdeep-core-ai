@@ -272,6 +272,18 @@ a.pk-tile:hover { border-color: var(--ecc-accent); }
 }
 .sec-sessions__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .sec-sessions__main b { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+.sec-stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.mfa-setup__steps { margin: 0 0 12px; padding-left: 18px; font-size: 13px; line-height: 1.7; }
+.mfa-setup__qr { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+.mfa-setup__qr img { border-radius: 8px; border: 1px solid var(--ecc-border); background: #fff; }
+.mfa-setup__secret { display: block; margin-top: 4px; font-size: 13.5px; letter-spacing: 0.06em; word-break: break-all; }
+.mfa-code { display: flex; flex-direction: column; gap: 6px; }
+.mfa-code__row { display: flex; flex-wrap: wrap; gap: 8px; }
+.mfa-code__input { width: 160px; height: 32px; font-variant-numeric: tabular-nums; letter-spacing: 0.08em; }
+.mfa-codes__list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 16px; margin: 10px 0; padding-left: 22px; font-size: 14px; }
+.mfa-codes__list code { letter-spacing: 0.06em; }
+.mfa-off, .mfa-on { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.mfa-low { color: var(--ecc-warn); font-weight: 600; }
 .sec-more { display: block; margin: -4px 0 10px; padding: 0; border: 0; background: none; cursor: pointer; font: inherit; font-size: 12.5px; }
 .sec-sessions__main small { font-size: 12px; color: var(--ecc-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .al-toolbar { margin-bottom: 10px; }

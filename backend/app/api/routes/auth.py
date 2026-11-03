@@ -19,7 +19,7 @@ from collections import deque
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import Principal, get_current_user, require_permission
+from app.core.auth import MFA_CHALLENGE_MINUTES, Principal, get_current_user, require_permission
 from app.core.db import get_db
 from app.core.entitlements import require_active_subscription, require_entitlement
 from app.models.role import Role
@@ -37,6 +37,7 @@ from app.schemas.auth import (
     VerifyEmailRequest,
     LoginRequest,
     LogoutRequest,
+    MfaChallengeResponse,
     MeResponse,
     PermissionOut,
     RefreshRequest,
@@ -55,6 +56,7 @@ from app.services.auth_service import (
     AuthService,
     Conflict,
     EmailNotVerified,
+    MfaRequired,
     NotFound,
 )
 from app.services.audit_service import AuditService
@@ -155,7 +157,7 @@ def _role_out(role: Role) -> RoleOut:
 
 # ---- Authentication flow -------------------------------------------------
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=TokenResponse | MfaChallengeResponse)
 async def login(
     payload: LoginRequest,
     request: Request,
@@ -171,6 +173,10 @@ async def login(
         )
     except EmailNotVerified as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except MfaRequired as exc:
+        # Password accepted; the code step follows at /auth/login/mfa.
+        await db.commit()
+        return MfaChallengeResponse(mfa_token=exc.challenge_token, expires_in=MFA_CHALLENGE_MINUTES * 60)
     except AuthError as exc:
         # Security audit: every failed login attempt is recorded (best-effort
         # - auditing must never change the 401 response). AuditEvent rows are

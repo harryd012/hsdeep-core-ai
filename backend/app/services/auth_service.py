@@ -34,6 +34,7 @@ from app.repositories.permission_repository import PermissionRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.role_repository import RoleRepository
 from app.repositories.user_repository import UserRepository
+from app.services.mfa.service import MfaService
 from app.services.security_policy import load_policy
 
 settings = get_settings()
@@ -49,6 +50,19 @@ class InvalidCredentials(AuthError):
 
 class EmailNotVerified(AuthError):
     """Correct password, but a self-service sign-up has not confirmed its email."""
+
+
+class MfaRequired(AuthError):
+    """The password was right and the user has MFA: a code is needed next.
+    Carries the short-lived challenge token for POST /auth/login/mfa."""
+
+    def __init__(self, challenge_token: str) -> None:
+        super().__init__("Enter the code from your authenticator app")
+        self.challenge_token = challenge_token
+
+
+class InvalidMfaCode(AuthError):
+    """The challenge expired, or the code (or recovery code) was wrong."""
 
 
 class SessionIdleTimeout(AuthError):
@@ -81,6 +95,7 @@ class AuthService:
         self.permissions = permissions
         self.refresh_tokens = refresh_tokens
         self.sessions = AuthSessionRepository(users.db)
+        self.mfa = MfaService(users.db)
 
     # -- Token minting ----------------------------------------------------
 
@@ -98,6 +113,10 @@ class AuthService:
         session's device details and last use are recorded for "Your sessions"."""
         session_id = session_id or uuid.uuid4()
         perms = UserRepository.resolved_permissions(user)
+        # Tenant requires MFA and this user has not set it up: the token only
+        # reaches MFA set-up until they do (core.auth MFA_ENROLLMENT_REQUIRED).
+        policy = await load_policy(self.users.db, user.tenant_id)
+        mfa_enroll = policy.require_mfa and not await self.mfa.is_enabled(user.id)
         access = auth.create_access_token(
             user_id=user.id,
             tenant_id=user.tenant_id,
@@ -105,6 +124,7 @@ class AuthService:
             is_superuser=user.is_superuser,
             permissions=perms,
             session_id=session_id,
+            mfa_enroll=mfa_enroll,
         )
         refresh_plain = auth.generate_refresh_token()
         await self.refresh_tokens.create(
@@ -184,9 +204,46 @@ class AuthService:
         # Only reached with the right password, so this reveals nothing new.
         if user.requires_email_verification and user.email_verified_at is None:
             raise EmailNotVerified("Confirm your email address before signing in. Check your inbox for the link.")
+        if await self.mfa.is_enabled(user.id):
+            # Second step: nothing is issued (and the failure count is not
+            # cleared) until a valid code arrives at complete_mfa_login.
+            raise MfaRequired(auth.create_mfa_challenge_token(user_id=user.id, tenant_id=user.tenant_id))
         await self.users.touch_last_login(user)
         access, refresh, expires_in = await self._issue_tokens(user, ip_address=ip_address, user_agent=user_agent)
         return access, refresh, expires_in, user.tenant_id
+
+    async def complete_mfa_login(
+        self,
+        *,
+        challenge_token: str,
+        code: str,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> tuple[str, str, int, User, str]:
+        """Second sign-in step. Returns (access, refresh, expires_in, user,
+        method) where method is "totp" or "recovery". A wrong code counts
+        towards the account lockout like a wrong password."""
+        claim = auth.decode_mfa_challenge_token(challenge_token)
+        if claim is None:
+            raise InvalidMfaCode("This sign-in has expired. Enter your email and password again.")
+        user_id, tenant_id = claim
+        user = await self.users.get_by_id(user_id, tenant_id)
+        locked = user is not None and user.locked_until is not None and user.locked_until > datetime.now(timezone.utc)
+        if user is None or not user.is_active or locked:
+            raise InvalidMfaCode("This sign-in has expired. Enter your email and password again.")
+        method = await self.mfa.verify(user.id, code)
+        if method is None:
+            cfg = get_settings()
+            policy = await load_policy(self.users.db, user.tenant_id)
+            await self.users.record_failed_login(
+                user,
+                max_attempts=policy.max_login_attempts if policy.saved else cfg.login_max_failed_attempts,
+                lockout_minutes=cfg.login_lockout_minutes,
+            )
+            raise InvalidMfaCode("That code didn't work. Use the newest code from your app, or a recovery code.")
+        await self.users.touch_last_login(user)
+        access, refresh, expires_in = await self._issue_tokens(user, ip_address=ip_address, user_agent=user_agent)
+        return access, refresh, expires_in, user, method
 
     async def refresh(
         self, *, refresh_token: str, ip_address: str | None = None, user_agent: str | None = None

@@ -294,3 +294,9 @@ a.lx-submit { text-decoration: none; }
   .lx-brand__rule { height: 40px; }
   .lx-layout { padding: 20px 16px; }
 }
+
+/* Two-step verification (MFA) step. */
+.lx-mfa__eyebrow { display: inline-flex; align-items: center; gap: 8px; color: #67e8f9; font-size: 15px; font-weight: 600; }
+.lx-input--code { padding-left: 46px; font-size: 22px; font-weight: 600; letter-spacing: 0.45em; font-variant-numeric: tabular-nums; }
+.lx-mfa__switch { align-self: center; padding: 0; border: 0; background: none; cursor: pointer; font: inherit; font-size: 13.5px; }
+.lx-mfa__back { padding: 0; border: 0; background: none; cursor: pointer; font: inherit; font-size: 14px; }

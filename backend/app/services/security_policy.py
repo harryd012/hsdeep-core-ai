@@ -65,6 +65,8 @@ class SecurityPolicy:
     require_special_chars: bool
     session_timeout_minutes: int
     max_login_attempts: int
+    #: Every user must sign in with MFA; those not enrolled must set it up first.
+    require_mfa: bool = False
     #: False when the tenant never saved a policy (deployment defaults apply).
     saved: bool = False
 
@@ -118,6 +120,7 @@ async def load_policy(db: AsyncSession, tenant_id: uuid.UUID) -> SecurityPolicy:
         require_special_chars=row.require_special_chars,
         session_timeout_minutes=min(max(row.session_timeout_minutes, MIN_SESSION_TIMEOUT_MINUTES), MAX_SESSION_TIMEOUT_MINUTES),
         max_login_attempts=row.max_login_attempts,
+        require_mfa=row.mfa_enabled,
         saved=True,
     )
 

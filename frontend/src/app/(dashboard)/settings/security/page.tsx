@@ -8,13 +8,16 @@
  * (services/security_policy.py): password rules wherever a password is set,
  * the lockout threshold at sign-in, the idle timeout when a session refreshes.
  * Changing it needs security.manage and is recorded in the audit log.
- * Multi-factor authentication is not available yet and the page says so.
+ * "Require two-step verification" makes users without MFA set it up before
+ * they can do anything else (S2); the Two-step verification panel is where
+ * each user sets up their own.
  */
 
 import { useCallback, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { History, LaptopMinimal, LogOut, ShieldCheck, Smartphone } from "lucide-react";
+import MfaPanel from "@/components/settings/MfaPanel";
 import { Banner, PageShell, Panel, Pill, ago } from "@/components/ui/PageKit";
 import { useAuth } from "@/lib/auth-context";
 import { getSecuritySettings, updateSecuritySettings, type SecuritySettings, type SecuritySettingsUpdate } from "@/lib/api";
@@ -38,7 +41,7 @@ const TIMEOUTS = [
   { value: 43200, label: "30 days" },
 ];
 
-type Policy = Required<Omit<SecuritySettingsUpdate, "mfa_enabled">>;
+type Policy = Required<SecuritySettingsUpdate>;
 
 function toPolicy(s: SecuritySettings): Policy {
   return {
@@ -48,6 +51,7 @@ function toPolicy(s: SecuritySettings): Policy {
     require_special_chars: s.require_special_chars,
     session_timeout_minutes: s.session_timeout_minutes,
     max_login_attempts: s.max_login_attempts,
+    mfa_enabled: s.mfa_enabled,
   };
 }
 
@@ -145,13 +149,13 @@ function PolicyPanel({ canManage }: { canManage: boolean }) {
                   {timeoutChoices.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
               </label>
-              <div className="sec-row sec-row--muted">
+              <label className="sec-row">
                 <span>
-                  <b>Multi-factor authentication</b>
-                  <small>Authenticator-app codes and recovery codes are the next security release. Until then this cannot be switched on.</small>
+                  <b>Require two-step verification</b>
+                  <small>Everyone signs in with an authenticator-app code. Users who haven&apos;t set it up must do so before anything else at their next sign-in.</small>
                 </span>
-                <Pill tone="neutral">Not available yet</Pill>
-              </div>
+                <input type="checkbox" className="sec-check" checked={draft.mfa_enabled} onChange={(e) => set("mfa_enabled", e.target.checked)} />
+              </label>
             </section>
           </fieldset>
           {canManage && (
@@ -273,7 +277,10 @@ export default function SecuritySettingsPage() {
     >
       <div className="sec-grid">
         <PolicyPanel canManage={has("security.manage")} />
-        <SessionsPanel />
+        <div className="sec-stack">
+          <MfaPanel />
+          <SessionsPanel />
+        </div>
       </div>
     </PageShell>
   );

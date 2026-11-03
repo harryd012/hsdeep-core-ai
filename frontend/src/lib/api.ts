@@ -184,6 +184,44 @@ export interface LoginResponse {
   expires_in: number;
 }
 
+/** /api/auth/login answer for a user with MFA: a code step follows. */
+interface MfaChallenge {
+  mfa_required: true;
+  mfa_token: string;
+  expires_in: number;
+}
+
+/**
+ * Thrown by loginWithCredentials when the password was right and the account
+ * has multi-factor authentication: finish with completeMfaLogin(mfaToken, code).
+ */
+export class MfaRequiredError extends Error {
+  constructor(public readonly mfaToken: string, public readonly expiresIn: number) {
+    super("Enter the code from your authenticator app.");
+    this.name = "MfaRequiredError";
+  }
+}
+
+/** Second sign-in step: the challenge from MfaRequiredError plus an app or recovery code. */
+export async function completeMfaLogin(mfaToken: string, code: string): Promise<LoginResponse> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}/api/auth/login/mfa`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mfa_token: mfaToken, code }),
+      cache: "no-store",
+    });
+  } catch (err) {
+    throw new ApiError("/api/auth/login/mfa", 0, err instanceof Error ? `Can't reach the server (${err.message}).` : "Can't reach the server.");
+  }
+  if (!res.ok) throw new ApiError("/api/auth/login/mfa", res.status, await readErrorDetail(res));
+  const data = (await res.json()) as LoginResponse;
+  setAuthSession(data);
+  clearActiveTenantOverride();
+  return data;
+}
+
 export interface LoginCredentials {
   tenantId?: string;
   email?: string;
@@ -251,15 +289,18 @@ export async function loginWithCredentials(creds: LoginCredentials = {}): Promis
   if (!res.ok) {
     throw new ApiError("/api/auth/login", res.status, await readErrorDetail(res));
   }
-  let data: LoginResponse;
+  let data: LoginResponse | MfaChallenge;
   try {
-    data = (await res.json()) as LoginResponse;
+    data = (await res.json()) as LoginResponse | MfaChallenge;
   } catch {
     throw new ApiError(
       "/api/auth/login",
       res.status,
       "The server returned a malformed login response.",
     );
+  }
+  if (data && "mfa_required" in data) {
+    throw new MfaRequiredError(data.mfa_token, data.expires_in);
   }
   if (!data?.access_token) {
     throw new ApiError(
@@ -959,6 +1000,9 @@ export function clearActiveTenantOverride(): void {
 
 /** Server detail when a superuser's X-Tenant-Id has no live support grant. */
 const SUPPORT_GRANT_REQUIRED = "break-glass grant";
+/** Backend detail prefix: the tenant requires MFA and this user has not set it up. */
+export const MFA_ENROLLMENT_REQUIRED = "MFA_ENROLLMENT_REQUIRED";
+export const MFA_ENROLL_ROUTE = "/settings/security?mfa=setup";
 
 /**
  * Open break-glass support access to another tenant (R1.2). Grants are
@@ -1317,6 +1361,15 @@ async function apiFetchWithRetry<T>(
       if (getAuthToken() === token) await refreshAuthToken();
       if (!getAuthToken()) throw new ApiError(path, 401, "Please log in again.");
       return apiFetchWithRetry<T>(path, init, attempt + 1, timeoutMs);
+    }
+
+    // The organization requires MFA and this user has not set it up: every
+    // other request is refused until they do, so take them to set-up.
+    if (res.status === 403 && message.startsWith(MFA_ENROLLMENT_REQUIRED)) {
+      if (typeof window !== "undefined" && window.location.pathname !== "/settings/security") {
+        window.location.assign(MFA_ENROLL_ROUTE);
+      }
+      throw new ApiError(path, 403, "Your organization requires multi-factor authentication. Set it up to continue.");
     }
 
     // A support grant expired or was revoked by the customer: return to the
