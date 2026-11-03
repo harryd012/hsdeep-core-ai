@@ -131,3 +131,31 @@ def _utilization(
     if percentage > _MAX_UTILIZATION_PCT:
         return None
     return round(percentage, 4)
+
+def compute_error_rates(
+    *,
+    previous_in: float | None,
+    previous_out: float | None,
+    previous_at: datetime | None,
+    current_in: float | None,
+    current_out: float | None,
+    observed_at: datetime,
+) -> tuple[float | None, float | None]:
+    """(in, out) errors per second from two cumulative error-counter samples.
+
+    Same honesty rules as traffic: no previous sample, a counter that went
+    backwards or a non-positive interval gives None for that direction, never 0
+    or a negative rate. A real 0 (no new errors) is returned as 0.0.
+    """
+    if previous_at is None or previous_at.tzinfo is None or observed_at.tzinfo is None:
+        return None, None
+    elapsed = (observed_at - previous_at).total_seconds()
+    if elapsed <= 0:
+        return None, None
+
+    def rate(previous: float | None, current: float | None) -> float | None:
+        if previous is None or current is None or current < previous:
+            return None
+        return (current - previous) / elapsed
+
+    return rate(previous_in, current_in), rate(previous_out, current_out)

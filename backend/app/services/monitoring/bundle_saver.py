@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from app.collectors.base import NormalizedAlertSignal, NormalizedBundle
 from app.collectors.connectivity import bound_device_id
 from app.models.monitoring_source import MonitoringSource
-from app.services.monitoring.interface_rates import compute_interface_rate
+from app.services.monitoring.interface_rates import compute_error_rates, compute_interface_rate
 from app.services.monitoring.sensor_policy import PRIMARY_CHANNEL, effective_status, user_thresholds_of
 from app.models.sensor import Sensor
 from app.repositories.device_repository import DeviceRepository
@@ -510,6 +510,15 @@ class BundleSaver:
                 observed_at=collected_at,
                 speed_mbps=ni.speed_mbps,
             )
+            # Before the upsert: `previous` is the row the upsert updates in place.
+            errors_in, errors_out = compute_error_rates(
+                previous_in=previous.in_errors if previous is not None else None,
+                previous_out=previous.out_errors if previous is not None else None,
+                previous_at=previous.last_telemetry_at if previous is not None else None,
+                current_in=ni.in_errors,
+                current_out=ni.out_errors,
+                observed_at=collected_at,
+            )
 
             interface, _created = await self.interface_repo.upsert(
                 tenant_id=source.tenant_id,
@@ -536,6 +545,34 @@ class BundleSaver:
             )
             if rate.measured:
                 result.rates_measured += 1
+            # Interface history (observability plan P4): every derived value is
+            # kept per interface, so traffic, utilisation and errors can be
+            # charted over time. Only values two real samples produced are
+            # recorded; a first poll or a counter reset records nothing.
+            for channel, value, unit, capability in (
+                ("rx_bps", rate.rx_bps, "bps", "bandwidth"),
+                ("tx_bps", rate.tx_bps, "bps", "bandwidth"),
+                ("interface_utilization_pct", rate.utilization_pct, "%", "interfaces"),
+                ("errors_in", errors_in, "errors/s", "errors"),
+                ("errors_out", errors_out, "errors/s", "errors"),
+            ):
+                if value is None:
+                    continue
+                await self.metric_repo.record(
+                    tenant_id=source.tenant_id,
+                    metric_type=f"interface_{channel}" if not channel.startswith("interface_") else channel,
+                    value=value,
+                    recorded_at=collected_at,
+                    monitoring_source_id=source.id,
+                    device_id=device_id,
+                    interface_id=interface.id,
+                    unit=unit,
+                    metric_name=channel,
+                    capability=capability,
+                    provider=provider_token,
+                    dimensions={"channel": channel},
+                )
+                result.metrics_recorded += 1
             interface_id_by_key[(ni.device_external_id, ni.external_id)] = interface.id
             interface_id_by_name[(ni.device_external_id, ni.name)] = interface.id
             result.interfaces_upserted += 1

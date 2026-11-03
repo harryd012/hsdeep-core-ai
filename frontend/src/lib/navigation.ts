@@ -1,6 +1,6 @@
 import {
   Activity, ArrowLeftRight, Bell, BookOpen, Bot, Building2, CreditCard, Database, DatabaseBackup, LayoutDashboard,
-  LayoutGrid, LifeBuoy, Server, Settings, Shield, Ticket, TriangleAlert, Workflow, type LucideIcon,
+  LayoutGrid, LifeBuoy, Network, Server, Settings, Shield, Ticket, TriangleAlert, Workflow, type LucideIcon,
 } from "lucide-react";
 
 /**
@@ -54,6 +54,8 @@ export const NAV_CONFIG: NavGroup[] = [
       { label: "Sources & Sensors", route: "/monitoring" },
       { label: "Sensor Library", route: "/monitoring/library", keywords: "templates thresholds coverage recommendations" },
     ] },
+  { id: "network", label: "Network", icon: Network, route: "/network", section: "Observe", permission: "monitoring.read",
+    description: "Interface health and load, errors and VPN tunnels" },
   { id: "alerts", label: "Alerts", icon: Bell, route: "/alerts", section: "Observe", permission: "alerts.read",
     description: "Alerts from every connected source" },
   { id: "reports", label: "Reports", icon: Database, route: "/reports", section: "Observe", permission: "dashboard.read",

@@ -42,7 +42,7 @@ Earlier audits: `docs/REPOSITORY_AUDIT.md`, `docs/PLATFORM_LEDGER.md` (batches 1
 | P1 Unified sensor model | Sensor lifecycle (active / paused / disabled), user thresholds with direction, sensor detail with channels, bucketed channel history API, sensor detail page with time-series chart, PRTG channel names kept, every sensor reading kept as history, metric retention job (off by default) | **Slice 1 implemented and tested** (`tests/test_sensor_lifecycle.py`) |
 | P2 Inventory & discovery | Saved views and bulk actions on hosts; discovery schedules, exclusions and approval of recommended sensors (on the existing discovery engine) | **Slices 1–2 implemented and tested**: scheduled discovery + scopes UI (`tests/test_discovery_schedule.py`); host saved views, bulk classification / monitoring pause and a tag facet (`tests/test_host_views_bulk.py`, UI not verified in a signed-in browser); sensor recommendations wait for P3's library |
 | P3 Sensor library | Sensor templates (catalogue from the collectors' real metric types), recommendation from discovery profiles, bulk add for collectors that support configuration (SNMP, connectivity) | **Slice 1 implemented and tested**: catalogue of 29 templates with tenant usage, bulk thresholds through the P1 lifecycle, per-host coverage rules, sensors linked to their host; **slice 2**: bulk reachability checks tied to their hosts, a reachability sensor that alerts when a host stops answering (`tests/test_sensor_library.py`) |
-| P4 Network Monitoring Center | Interface traffic / errors / utilization pages from `interfaces` + metrics, top-N bandwidth, VPN tunnels (FortiGate / Palo Alto data already collected) | planned |
+| P4 Network Monitoring Center | Interface traffic / errors / utilization pages from `interfaces` + metrics, top-N bandwidth, VPN tunnels (FortiGate / Palo Alto data already collected) | **Slice 1 implemented and tested**: per-interface history (traffic, utilisation, error rates), network overview / interface list / interface history API, Network Monitoring and interface pages (`tests/test_network_center.py`) |
 | P5 Infrastructure monitoring | Windows / Linux / VMware host views from existing collectors | planned |
 | P6 Dashboards & topology | Widget registry over aggregated APIs, saved dashboards per tenant / role; topology already exists, add drill-down to sensors | planned |
 | P7 Metrics / logs | Syslog receiver on the edge agent → normalized events, Logs Explorer over events | planned (needs agent work) |
@@ -245,3 +245,39 @@ What this slice adds:
   host must be reachable from that service. Stated in the UI.
 - **Plan cost**: one source per host, so the Starter plan (5 sources) covers few hosts. A single
   source probing many targets would need a multi-target connectivity collector; not built.
+
+## 8. P4 slice 1: Network Monitoring Center
+
+Before this slice interfaces kept only their latest state: the saver derived rx / tx bits per
+second and utilisation from two counter samples (`interface_rates.py`) and wrote them onto the
+interface row, so every poll overwrote the last and nothing could be charted. No page showed
+interfaces across devices, and VPN tunnels appeared only per firewall.
+
+- **Interface history** (`BundleSaver`, step 2): each poll that derives a value records it in
+  `metrics` with `interface_id`, `metric_name` and `dimensions.channel`: `rx_bps`, `tx_bps`
+  (capability `bandwidth`), `interface_utilization_pct` (`interfaces`) and `errors_in` /
+  `errors_out` in errors per second (`errors`). Error rates come from the cumulative error
+  counters with the same rules as traffic (`compute_error_rates`): no previous sample, a counter
+  that went backwards or a non-positive interval records nothing, never 0 or a negative rate. A
+  first poll records nothing. The canonical pipeline only asserts interface capabilities, so no
+  series is stored twice; the metric retention job (P1) applies.
+- **API** (`/api/network`, `monitoring.read`, tenant-scoped, 404 across tenants):
+  `GET /overview` (interface totals, enabled-but-down, disabled, fresh and measured counts,
+  top 10 by utilisation and by throughput from samples of the last 30 minutes, enabled-but-down
+  list, top 10 by error rate over the last hour from history, VPN tunnels down first);
+  `GET /interfaces` (status filter, search over interface, description and device, sort by
+  problems / utilisation / throughput / name, paged); `GET /interfaces/{id}` (with the
+  recorded history channels); `GET /interfaces/{id}/history` (every channel bucketed, avg and
+  max, 1 h to 30 d). The existing `/api/network/status` (dashboard site and device counts) is
+  unchanged.
+- **Freshness**: a rate whose last sample is older than 30 minutes is `fresh: false`; the
+  overview and pages never present it as current load.
+- **UI**: "Network" under Observe. `/network`: Overview (tiles, busiest links, top throughput,
+  enabled-but-down, errors, VPN tunnels) and Interfaces (filters, search, sort, paging).
+  `/network/interfaces/[id]`: state, current load, inbound / outbound traffic, utilisation and
+  error history charts, details. Verified on the dev tenant: 5 interfaces on 2 devices, one
+  enabled but down (`hsdeep-lab-sw-b Gi1/2`), no current rates (last counter sample 38 days
+  ago, stated on the page), no VPN tunnels.
+- **Not in this slice**: per-interface alert thresholds (utilisation, errors) and top-talkers
+  by flow need NetFlow / sFlow (not collected); WAN / SD-WAN path quality; interface charts on
+  the host page.
