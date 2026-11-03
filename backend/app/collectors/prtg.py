@@ -432,6 +432,7 @@ class PRTGCollector(BaseCollector):
                         recorded_at=recorded_at,
                         unit=row.get("unit"),
                         sensor_external_id=str(sensor_id),
+                        channel=row.get("name") or None,
                     )
                 )
         return metrics
@@ -454,6 +455,7 @@ class PRTGCollector(BaseCollector):
                             value=value,
                             recorded_at=recorded_at,
                             sensor_external_id=str(sensor_id),
+                            channel=key,
                         )
                     )
         return metrics

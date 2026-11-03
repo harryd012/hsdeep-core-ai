@@ -151,6 +151,8 @@ class Settings(BaseSettings):
     backup_job_lookback_hours: int = 72
     # Stored backup job history older than this is purged after each save.
     backup_job_retention_days: int = 90
+    #: Days of metric / sensor history kept; 0 keeps everything (no purge).
+    metric_retention_days: int = 0
     #: Days of daily storage snapshots kept (storage growth history).
     backup_snapshot_retention_days: int = 400
     #: A replicated item counts as DR-ready only with a successful test failover

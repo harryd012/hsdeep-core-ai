@@ -534,6 +534,62 @@ export interface SensorOut {
   last_value_at: string | null;
   created_at: string;
   updated_at: string;
+  /** active | paused | disabled (user lifecycle). */
+  admin_state?: string;
+  /** provider | user */
+  threshold_source?: string;
+}
+
+export interface SensorChannel {
+  /** "primary" = the sensor's own reading; else the provider's channel name. */
+  key: string;
+  unit: string | null;
+  last_value: number | null;
+  last_recorded_at: string | null;
+  samples_24h: number;
+}
+
+export interface SensorDetail extends SensorOut {
+  admin_state: string;
+  threshold_source: string;
+  description: string | null;
+  /** above | below (user thresholds) */
+  threshold_direction: string | null;
+  device: { id: string; name: string } | null;
+  interface: { id: string; name: string } | null;
+  source: { id: string; name: string };
+  source_type: string;
+  channels: SensorChannel[];
+  open_alert: { id: string; title: string; severity: string; status: string } | null;
+}
+
+export interface SensorHistory {
+  channel: string;
+  unit: string | null;
+  hours: number;
+  bucket_seconds: number;
+  points: { t: string; avg: number | null; min: number | null; max: number | null; count: number }[];
+}
+
+export interface SensorUpdate {
+  admin_state?: "active" | "paused" | "disabled";
+  description?: string;
+  thresholds?: { warning: number | null; critical: number | null; direction: "above" | "below" };
+  reset_thresholds?: boolean;
+}
+
+export function getSensor(id: string): Promise<SensorDetail> {
+  return apiFetch<SensorDetail>(`/api/monitoring/sensors/${encodeURIComponent(id)}`);
+}
+
+export function getSensorHistory(id: string, channel: string, hours: number): Promise<SensorHistory> {
+  const qs = new URLSearchParams({ channel, hours: String(hours) });
+  return apiFetch<SensorHistory>(`/api/monitoring/sensors/${encodeURIComponent(id)}/history?${qs.toString()}`);
+}
+
+/** Pause / disable / resume, describe, or set / reset thresholds. Needs monitoring.update; audited. */
+export function updateSensor(id: string, change: SensorUpdate): Promise<SensorDetail> {
+  return apiFetch<SensorDetail>(`/api/monitoring/sensors/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(change) });
 }
 
 export function listMonitoringSources(tenantId: string = DEFAULT_TENANT_ID): Promise<MonitoringSourceOut[]> {

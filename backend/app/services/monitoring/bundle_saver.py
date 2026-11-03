@@ -64,6 +64,7 @@ from datetime import datetime, timezone
 from app.collectors.base import NormalizedAlertSignal, NormalizedBundle
 from app.models.monitoring_source import MonitoringSource
 from app.services.monitoring.interface_rates import compute_interface_rate
+from app.services.monitoring.sensor_policy import PRIMARY_CHANNEL, effective_status, user_thresholds_of
 from app.models.sensor import Sensor
 from app.repositories.device_repository import DeviceRepository
 from app.repositories.event_repository import EventRepository
@@ -158,6 +159,17 @@ class SaveResult:
     #: The full normalization summary, so a caller/job log can see exactly what
     #: the universal layer derived from this bundle.
     canonical: dict = field(default_factory=dict)
+
+
+def _channel_dimension(m) -> dict:
+    """The metric's channel for `metrics.dimensions`: its named channel, or the
+    primary channel for a channel-less metric tied to a sensor (that sensor's
+    single-value series); nothing for a metric with no sensor."""
+    if m.channel:
+        return {"channel": m.channel}
+    if m.sensor_external_id is not None:
+        return {"channel": PRIMARY_CHANNEL}
+    return {}
 
 
 class BundleSaver:
@@ -567,6 +579,13 @@ class BundleSaver:
         # -- 3. Sensors ------------------------------------------------------
         # external_id -> Sensor.id, for metric sensor_id resolution in step 4.
         sensor_id_by_external: dict[str, object] = {}
+        # Sensors a user disabled: their readings and channel values are ignored.
+        disabled_external_ids: set[str] = set()
+        # Sensors whose collector already sends their single-value series as
+        # channel-less metrics (step 4 records those as the primary channel).
+        primary_from_metrics = {
+            m.sensor_external_id for m in bundle.metrics if m.sensor_external_id is not None and not m.channel
+        }
 
         for reading in [*bundle.sensors, *firewall_readings, *backup_readings]:
             interface_id = None
@@ -582,6 +601,12 @@ class BundleSaver:
             # "changed" this save.
             prior = await self.sensor_repo.get_by_external_id(source.id, reading.external_id)
             prior_status = prior.status if prior is not None else None
+            if prior is not None and prior.admin_state == "disabled":
+                disabled_external_ids.add(reading.external_id)
+                continue
+            # User thresholds survive the sync (the upsert below would take the
+            # collector's when it sends any).
+            user_thresholds = user_thresholds_of(prior) if prior is not None else None
 
             if prior is None and sensor_allowance is not None and sensor_allowance <= 0:
                 result.sensors_blocked += 1
@@ -609,7 +634,28 @@ class BundleSaver:
                 critical_threshold=reading.critical_threshold,
                 interface_id=interface_id,
             )
+            if user_thresholds is not None:
+                sensor.warning_threshold = user_thresholds.warning
+                sensor.critical_threshold = user_thresholds.critical
+            sensor.status = effective_status(reading.status, reading.value, sensor.admin_state, user_thresholds)
             sensor_id_by_external[reading.external_id] = sensor.id
+            # The sensor's own reading is its primary channel's history.
+            if reading.value is not None and reading.external_id not in primary_from_metrics:
+                await self.metric_repo.record(
+                    tenant_id=source.tenant_id,
+                    metric_type=reading.metric_type,
+                    value=reading.value,
+                    recorded_at=collected_at,
+                    monitoring_source_id=source.id,
+                    sensor_id=sensor.id,
+                    interface_id=interface_id,
+                    unit=reading.unit,
+                    metric_name=canonical_telemetry.canonical_metric_name(reading.metric_type),
+                    capability=capability_of_metric(reading.metric_type) or None,
+                    provider=provider_token,
+                    dimensions={"provider_metric_type": reading.metric_type, "channel": PRIMARY_CHANNEL},
+                )
+                result.metrics_recorded += 1
             # Firewall readings always name their device, so their alerts
             # carry it for correlation and health (KNOWN GAP #2 is about the
             # repository signature; the link is set on the row directly).
@@ -628,6 +674,8 @@ class BundleSaver:
 
         # -- 4. Metrics (append-only) -----------------------------------------
         for m in bundle.metrics:
+            if m.sensor_external_id is not None and m.sensor_external_id in disabled_external_ids:
+                continue
             device_id = (
                 device_id_by_external.get(m.device_external_id)
                 if m.device_external_id is not None
@@ -654,7 +702,7 @@ class BundleSaver:
                 metric_name=canonical_telemetry.canonical_metric_name(m.metric_type),
                 capability=capability_of_metric(m.metric_type) or None,
                 provider=provider_token,
-                dimensions={"provider_metric_type": m.metric_type},
+                dimensions={"provider_metric_type": m.metric_type, **_channel_dimension(m)},
             )
             result.metrics_recorded += 1
 

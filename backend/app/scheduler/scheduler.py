@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.core.db import AsyncSessionLocal
 from app.repositories.collector_run_repository import CollectorRunRepository
 from app.scheduler.email_jobs import EMAIL_DELIVERY_INTERVAL_SECONDS, deliver_email_outbox_job
+from app.scheduler.metric_jobs import METRIC_RETENTION_INTERVAL_SECONDS, metric_retention_job
 from app.scheduler.incident_lifecycle import close_stale_incidents_job
 from app.scheduler.notification_jobs import NOTIFICATION_INTERVAL_SECONDS, dispatch_incident_notifications_job
 from app.scheduler.jobs import tick
@@ -116,6 +117,15 @@ def start_scheduler(app: "FastAPI") -> AsyncIOScheduler:
         "interval",
         seconds=NOTIFICATION_INTERVAL_SECONDS,
         id="incident_notifications",
+        max_instances=1,
+        coalesce=True,
+    )
+    # Metric / sensor history retention (off unless metric_retention_days > 0).
+    scheduler.add_job(
+        metric_retention_job,
+        "interval",
+        seconds=METRIC_RETENTION_INTERVAL_SECONDS,
+        id="metric_retention",
         max_instances=1,
         coalesce=True,
     )

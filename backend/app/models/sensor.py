@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, UniqueConstraint
+from sqlalchemy import DateTime, Float, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -85,6 +85,19 @@ class Sensor(Base, UUIDPKMixin, TimestampMixin, SoftDeleteMixin):
         String(20), nullable=False, default="unknown", server_default="unknown", index=True
     )
     last_value_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Lifecycle set by a user: active | paused | disabled
+    # (app/services/monitoring/sensor_policy.py). Paused / disabled sensors
+    # show that as their status and raise no alerts.
+    admin_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active", server_default="active", index=True
+    )
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # provider: thresholds come from the collector; user: set here and kept
+    # across syncs, judged in `threshold_direction` (above | below).
+    threshold_source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="provider", server_default="provider"
+    )
+    threshold_direction: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
     tenant: Mapped["Tenant"] = relationship()
     monitoring_source: Mapped["MonitoringSource"] = relationship(back_populates="sensors")

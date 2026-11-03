@@ -230,6 +230,7 @@ export default function MonitoringPage() {
             columns={columns}
             rows={visible}
             rowKey={(r) => r.sensor.id}
+            rowHref={(r) => `/monitoring/sensors/${r.sensor.id}`}
             emptyText={rows.length === 0 ? "No sensor rows have been collected for these sources yet." : "No sensors match the current filter."}
             maxHeight="max(480px, calc(100vh - 300px))"
           />
