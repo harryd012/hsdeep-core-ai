@@ -38,7 +38,8 @@ DIMENSION_COLUMNS = {
     "criticality": Device.criticality,
     "environment": Device.environment,
 }
-FACET_DIMENSIONS = ("health", *DIMENSION_COLUMNS.keys())
+#: ``tags`` is a facet over the JSONB tag list (one count per tag value).
+FACET_DIMENSIONS = ("health", *DIMENSION_COLUMNS.keys(), "tags")
 HEALTH_ORDER = ("critical", "warning", "no_alerts")
 
 
@@ -51,6 +52,7 @@ class HostFilters:
     vendor: str | None = None
     criticality: str | None = None
     environment: str | None = None
+    tag: str | None = None
     site_id: uuid.UUID | None = None
 
 
@@ -134,6 +136,9 @@ class ExplorerHostsRepository:
             value = getattr(f, dim)
             if value and exclude != dim:
                 conds.append(column == value)
+        if f.tag and exclude != "tags":
+            # JSONB containment (tags @> '["tag"]'); the value is a bound parameter.
+            conds.append(Device.tags.contains([f.tag]))
         return conds
 
     # -- queries -----------------------------------------------------------
@@ -157,6 +162,8 @@ class ExplorerHostsRepository:
             raise ValueError(f"unknown facet dimension: {dimension}")
         aa = self._alerts_subquery(tenant_id)
         health = self._health_expr(aa)
+        if dimension == "tags":
+            return await self._tag_counts(tenant_id, f, aa, health, limit)
         column = health if dimension == "health" else DIMENSION_COLUMNS[dimension]
         stmt = (
             select(column.label("v"), func.count().label("n"))
@@ -166,6 +173,25 @@ class ExplorerHostsRepository:
             .where(column.is_not(None))
             .group_by(column)
             .order_by(func.count().desc(), column.asc())
+            .limit(limit)
+        )
+        rows = (await self.db.execute(stmt)).all()
+        return [(str(r.v), int(r.n)) for r in rows]
+
+    async def _tag_counts(self, tenant_id: uuid.UUID, f: HostFilters, aa, health, limit: int) -> list[tuple[str, int]]:
+        """One count per tag value: the tag arrays of the matching hosts unnested in SQL."""
+        tags = (
+            select(func.jsonb_array_elements_text(Device.tags).label("v"))
+            .select_from(Device)
+            .outerjoin(aa, aa.c.device_id == Device.id)
+            .where(*self._conditions(tenant_id, f, health, exclude="tags"))
+            .where(func.jsonb_typeof(Device.tags) == "array")
+            .subquery()
+        )
+        stmt = (
+            select(tags.c.v, func.count().label("n"))
+            .group_by(tags.c.v)
+            .order_by(func.count().desc(), tags.c.v.asc())
             .limit(limit)
         )
         rows = (await self.db.execute(stmt)).all()
@@ -190,6 +216,7 @@ class ExplorerHostsRepository:
                 Device.criticality,
                 Device.environment,
                 Device.lifecycle_state,
+                Device.tags,
                 Device.site_id,
                 Site.name.label("site_name"),
                 Device.last_seen_at,

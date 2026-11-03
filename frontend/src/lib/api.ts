@@ -3459,6 +3459,8 @@ export interface HostExplorerRow {
   criticality: string | null;
   environment: string | null;
   lifecycle_state: string;
+  /** Operator tags (set with the bulk actions below). */
+  tags: string[];
   site_id: string | null;
   site_name: string | null;
   health: HostHealth;
@@ -3478,7 +3480,8 @@ export type HostFacetDimension =
   | "device_type"
   | "vendor"
   | "criticality"
-  | "environment";
+  | "environment"
+  | "tags";
 
 export interface HostsExplorer {
   generated_at: string;
@@ -3498,6 +3501,8 @@ export interface HostsExplorerParams {
   vendor?: string;
   criticality?: string;
   environment?: string;
+  /** One operator tag (the explorer's `tags` facet). */
+  tag?: string;
   site_id?: string;
   limit?: number;
   offset?: number;
@@ -3511,6 +3516,95 @@ export async function getExplorerHosts(params: HostsExplorerParams = {}): Promis
   }
   const query = qs.toString();
   return apiFetch<HostsExplorer>(`/api/explorer/hosts${query ? `?${query}` : ""}`);
+}
+
+// ---------------------------------------------------------------------------
+// Hosts explorer: saved views and bulk actions (/api/explorer/hosts/views, /bulk).
+// Mirrors backend/app/schemas/host_inventory.py.
+// ---------------------------------------------------------------------------
+
+export type HostViewFilters = Omit<HostsExplorerParams, "limit" | "offset">;
+export type HostViewLayout = "health" | "inventory";
+
+export interface HostSavedView {
+  id: string;
+  name: string;
+  filters: HostViewFilters;
+  layout: HostViewLayout;
+  /** Listed for the whole tenant; only the owner can change it. */
+  shared: boolean;
+  /** True when the caller owns the view. */
+  owned: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HostViewInput {
+  name?: string;
+  filters?: HostViewFilters;
+  layout?: HostViewLayout;
+  shared?: boolean;
+}
+
+const HOST_VIEWS = "/api/explorer/hosts/views";
+
+export function listHostViews(): Promise<HostSavedView[]> {
+  return apiFetch<HostSavedView[]>(HOST_VIEWS);
+}
+
+export function createHostView(body: HostViewInput & { name: string }): Promise<HostSavedView> {
+  return apiFetch<HostSavedView>(HOST_VIEWS, { method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateHostView(id: string, body: HostViewInput): Promise<HostSavedView> {
+  return apiFetch<HostSavedView>(`${HOST_VIEWS}/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function deleteHostView(id: string): Promise<void> {
+  return apiFetch<void>(`${HOST_VIEWS}/${id}`, { method: "DELETE" });
+}
+
+export type HostBulkAction =
+  | "set_criticality"
+  | "set_environment"
+  | "add_tags"
+  | "remove_tags"
+  | "pause_monitoring"
+  | "resume_monitoring";
+
+export interface HostBulkRequest {
+  device_ids: string[];
+  action: HostBulkAction;
+  /** set_criticality / set_environment; null clears the field. */
+  value?: string | null;
+  /** add_tags / remove_tags. */
+  tags?: string[];
+}
+
+export interface HostBulkResult {
+  action: HostBulkAction;
+  requested: number;
+  matched: number;
+  changed: number;
+  not_found: string[];
+  sensors_changed: number;
+  tag_limit_hit: number;
+}
+
+export interface HostVocabulary {
+  criticality: string[];
+  environment: string[];
+  max_bulk_hosts: number;
+}
+
+export function getHostVocabulary(): Promise<HostVocabulary> {
+  return apiFetch<HostVocabulary>("/api/explorer/hosts/vocabulary");
+}
+
+/** Classification goes to /bulk (devices.write); pause / resume to /bulk/monitoring (monitoring.update). */
+export function bulkHostAction(body: HostBulkRequest): Promise<HostBulkResult> {
+  const monitoring = body.action === "pause_monitoring" || body.action === "resume_monitoring";
+  return apiFetch<HostBulkResult>(`/api/explorer/hosts/bulk${monitoring ? "/monitoring" : ""}`, { method: "POST", body: JSON.stringify(body) });
 }
 
 // ---------------------------------------------------------------------------

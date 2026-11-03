@@ -40,7 +40,7 @@ Earlier audits: `docs/REPOSITORY_AUDIT.md`, `docs/PLATFORM_LEDGER.md` (batches 1
 |---|---|---|
 | P0 Audit, stabilization | This document; full backend suite green on the branch | **Done** |
 | P1 Unified sensor model | Sensor lifecycle (active / paused / disabled), user thresholds with direction, sensor detail with channels, bucketed channel history API, sensor detail page with time-series chart, PRTG channel names kept, every sensor reading kept as history, metric retention job (off by default) | **Slice 1 implemented and tested** (`tests/test_sensor_lifecycle.py`) |
-| P2 Inventory & discovery | Saved views and bulk actions on hosts; discovery schedules, exclusions and approval of recommended sensors (on the existing discovery engine) | **Slice 1 implemented and tested** (scheduled discovery + scopes UI, `tests/test_discovery_schedule.py`); saved views / bulk actions next; sensor recommendations wait for P3's library |
+| P2 Inventory & discovery | Saved views and bulk actions on hosts; discovery schedules, exclusions and approval of recommended sensors (on the existing discovery engine) | **Slices 1–2 implemented and tested**: scheduled discovery + scopes UI (`tests/test_discovery_schedule.py`); host saved views, bulk classification / monitoring pause and a tag facet (`tests/test_host_views_bulk.py`, UI not verified in a signed-in browser); sensor recommendations wait for P3's library |
 | P3 Sensor library | Sensor templates (catalogue from the collectors' real metric types), recommendation from discovery profiles, bulk add for collectors that support configuration (SNMP, connectivity) | planned |
 | P4 Network Monitoring Center | Interface traffic / errors / utilization pages from `interfaces` + metrics, top-N bandwidth, VPN tunnels (FortiGate / Palo Alto data already collected) | planned |
 | P5 Infrastructure monitoring | Windows / Linux / VMware host views from existing collectors | planned |
@@ -114,3 +114,46 @@ into devices. Missing: `schedule` was a stored, never-executed string, and scope
   next run; create / edit (type, target, exclusions, host limit, protocols, schedule); run now,
   enable / disable, delete, for users with `devices.write`. Scheduled probe jobs are marked in
   the probe review list.
+
+## 5. P2 slice 2: host saved views and bulk actions
+
+Before this slice the Hosts explorer (`GET /api/explorer/hosts`) could filter but not keep a
+filter set, and no API could change a host's criticality, environment or tags: all 671 hosts in
+the dev database had them unset, so the priority engine treated every host as `medium`.
+
+- **Tags in the explorer**: a `tag` filter (`devices.tags @> '["tag"]'`), a `tags` facet (tag
+  arrays unnested in SQL, one count per tag) and `tags` on each row. The query budget is now 9
+  statements per read.
+- **Saved views** (`host_saved_views`, migration `c3e9a1f7d2b5`): name, filters (only the
+  explorer's own filter keys, `extra=forbid`), layout (`health` | `inventory`) and `shared`.
+  Listed: the caller's own views, then views shared in the tenant. A reader (`devices.read`)
+  may keep views: they are personal settings, listed as such in `tests/test_rbac_write_routes.py`. Only the owner changes or
+  deletes a view; another user's or tenant's view is a 404. Sharing needs `devices.write`.
+  At most 50 per user; names unique per user. `owner_id` has no foreign key (users are
+  soft-deleted). Create / update / delete are audit events (`host_view.*`).
+  `GET|POST /api/explorer/hosts/views`, `PATCH|DELETE /api/explorer/hosts/views/{id}`.
+- **Bulk actions** (`POST /api/explorer/hosts/bulk` for classification, `POST
+  /api/explorer/hosts/bulk/monitoring` for pause / resume; each route carries its own write
+  permission and the subscription gate): up to 200 hosts of the
+  caller's tenant; ids from another tenant come back in `not_found` and are never touched.
+  - `set_criticality` (`critical | high | medium | low`, the priority engine's weight keys) and
+    `set_environment` (`production | staging | development | test | dr | lab`, new vocabulary),
+    or `null` to clear; `add_tags` / `remove_tags` (1–50 characters, at most 50 tags per host).
+    Need `devices.write`. No collector writes these fields, so a sync does not overwrite them.
+  - `pause_monitoring` / `resume_monitoring`: every active (resp. paused) sensor of the hosts
+    goes through the P1 lifecycle (`SensorService.apply`, alerts re-evaluated, an open alert
+    resolves on pause). Disabled sensors are never touched. Need `monitoring.update`; at most
+    5,000 sensors per request. The vendor's own check keeps running (stated in the UI).
+  - Each changed host is one audit event (`device.bulk.<action>`) with old and new values;
+    unchanged hosts are not audited. `GET /api/explorer/hosts/vocabulary` serves the allowed
+    values so the UI does not hard-code them.
+- **UI** (`/infrastructure/hosts`): saved views at the top of the facet rail (apply, save the
+  current filters, update an edited view, share, delete); the layout and the applied view are
+  in the URL. Row checkboxes and select-page appear for users who may run at least one action;
+  the bulk bar asks for confirmation before pausing or resuming. A Tags facet and a Tags column
+  in the Inventory layout. Selection is per page (no "select every match" across pages yet).
+- **Refactor**: `SensorService.update` now loads the sensor and calls `apply(sensor, change)`,
+  which the bulk path reuses; `Column.header` in the page kit accepts a node (for the
+  select-all checkbox).
+- **Not verified**: the UI was type-checked, linted and served, but not exercised in a
+  signed-in browser session.

@@ -152,7 +152,8 @@ export function Tabs<K extends string>({
 
 export interface Column<T> {
   key: string;
-  header: string;
+  /** Usually text; a control (e.g. a select-all checkbox) on unsortable columns. */
+  header: ReactNode;
   render: (row: T) => ReactNode;
   /** Value used for sorting; omit to make the column unsortable. */
   sortValue?: (row: T) => string | number | null;

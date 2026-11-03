@@ -173,6 +173,11 @@ class SensorService:
     async def update(self, tenant_id: uuid.UUID, sensor_id: uuid.UUID, change: SensorUpdate) -> tuple[Sensor, dict, dict]:
         """Apply the change; returns (sensor, old values, new values) of what changed."""
         sensor = await self._get(tenant_id, sensor_id)
+        old, new = await self.apply(sensor, change)
+        return sensor, old, new
+
+    async def apply(self, sensor: Sensor, change: SensorUpdate) -> tuple[dict, dict]:
+        """Apply the change to an already tenant-checked sensor; returns (old, new) of what changed."""
         old: dict = {}
         new: dict = {}
 
@@ -204,7 +209,7 @@ class SensorService:
             thresholds: UserThresholds | None = user_thresholds_of(sensor)
             put("status", effective_status(collector_status, sensor.current_value, sensor.admin_state, thresholds))
             await self.db.flush()
-        return sensor, old, new
+        return old, new
 
 
 __all__ = ["PRIMARY_CHANNEL", "SensorNotFound", "SensorService", "bucket_seconds", "channel_key"]

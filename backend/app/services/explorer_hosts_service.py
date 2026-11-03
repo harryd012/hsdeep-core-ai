@@ -6,9 +6,9 @@ facet counts for every filterable dimension (the Dynatrace-Hosts interaction
 model: a facet sidebar with counts next to a health-sorted table).
 
 Query budget is fixed and independent of estate size:
-    1x count   1x page   6x facets (health, status, device_type, vendor,
-                                    criticality, environment)
-= 8 statements, run sequentially (one AsyncSession cannot run concurrently).
+    1x count   1x page   7x facets (health, status, device_type, vendor,
+                                    criticality, environment, tags)
+= 9 statements, run sequentially (one AsyncSession cannot run concurrently).
 Nothing is estimated; no device rows beyond the requested page cross the wire.
 """
 from __future__ import annotations
@@ -87,6 +87,7 @@ class ExplorerHostsService:
             criticality=r.get("criticality"),
             environment=r.get("environment"),
             lifecycle_state=r["lifecycle_state"],
+            tags=[str(t) for t in (r.get("tags") or []) if isinstance(t, str)],
             site_id=r.get("site_id"),
             site_name=r.get("site_name"),
             health=r["health"],
