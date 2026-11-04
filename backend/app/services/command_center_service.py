@@ -17,6 +17,8 @@ tasks happen who ever through this path.
 
 from __future__ import annotations
 
+import asyncio
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -86,6 +88,32 @@ def _pick_department(command: str) -> tuple[str, str]:
             return dept, _TYPE_BY_DEPT.get(dept, "general_investigation")
     # Default: NOC - deterministic fallback matching the existing convention..
     return "noc", "network_investigation"
+
+
+# Redis/Ollama reachability for the overview, shared for a short window. The
+# overview is polled every few seconds by every open dashboard; probing both
+# dependencies on each request made it wait on their connect timeouts whenever
+# one was down (seconds per request). /health endpoints probe fresh.
+_dependency_cache: tuple[float, tuple[str, str]] | None = None
+_dependency_lock = asyncio.Lock()
+
+
+async def dependency_states() -> tuple[str, str]:
+    """(redis_state, ollama_status), probed concurrently and cached for
+    DEPENDENCY_PROBE_CACHE_SECONDS (0 = always probe)."""
+    global _dependency_cache
+    from app.api.routes.health import _check_ollama
+
+    ttl = get_settings().dependency_probe_cache_seconds
+    if ttl > 0 and _dependency_cache and time.monotonic() - _dependency_cache[0] < ttl:
+        return _dependency_cache[1]
+    async with _dependency_lock:
+        # Another request may have refreshed it while this one waited.
+        if ttl > 0 and _dependency_cache and time.monotonic() - _dependency_cache[0] < ttl:
+            return _dependency_cache[1]
+        redis_state, ollama_status = await asyncio.gather(redis_health(), _check_ollama())
+        _dependency_cache = (time.monotonic(), (redis_state, ollama_status))
+        return redis_state, ollama_status
 
 
 class CommandCenterService:
@@ -172,12 +200,9 @@ class CommandCenterService:
         # ONLINE / DEGRADED / OFFLINE state from real dependency reachability.
         # Never hardcode system_online — if any check fails the platform reports
         # the honest state rather than faking "online".
-        from app.api.routes.health import _check_ollama
-
         db_ok = await check_db_connection()
-        redis_state = await redis_health()
+        redis_state, ollama_status = await dependency_states()
         redis_ok = redis_state == "up"
-        ollama_status = await _check_ollama()
 
         deps: dict[str, str] = {
             "database": "up" if db_ok else "down",
