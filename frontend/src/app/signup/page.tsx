@@ -2,7 +2,7 @@
 
 /**
  * /signup — self-service account creation (PRODUCTION_READINESS.md: SaaS
- * subscription gap fix).
+ * subscription gap fix), on the shared sign-in scene (components/auth/AuthScene).
  *
  * Calls the pre-existing backend endpoint POST /api/billing/signup, which
  * already does everything correctly server-side: creates a Tenant, seeds
@@ -10,16 +10,23 @@
  * subscription, and returns tokens (auto-login). This page just gives that
  * endpoint a real front door — previously there was no way for a brand-new
  * customer (MSP or enterprise IT team) to create an account at all.
+ *
+ * Credential safety, as on /login: the form is method="post", the submit
+ * button waits for hydration, and a password or email that reached the URL
+ * is removed from the address bar on load.
  */
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import { ArrowRight, Building2, Mail, User } from "lucide-react";
+import AuthScene, { useHydrated } from "@/components/auth/AuthScene";
+import PasswordField, { MIN_PASSWORD_LENGTH } from "@/components/auth/PasswordField";
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import AuthBackdrop from "@/components/auth/AuthBackdrop";
 
 export default function SignupPage() {
   const { signup } = useAuth();
   const router = useRouter();
+  const hydrated = useHydrated();
 
   const [orgName, setOrgName] = useState("");
   const [fullName, setFullName] = useState("");
@@ -27,6 +34,17 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** After a rejected submit, required fields that are still empty are marked invalid. */
+  const [tried, setTried] = useState(false);
+
+  // Credentials must never live in the URL.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const leaked = ["password", "email", "orgName", "fullName"].filter((k) => url.searchParams.has(k));
+    if (!leaked.length) return;
+    leaked.forEach((k) => url.searchParams.delete(k));
+    window.history.replaceState(null, "", url.pathname + url.search);
+  }, []);
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -34,12 +52,14 @@ export default function SignupPage() {
 
     const trimmedOrg = orgName.trim();
     const trimmedEmail = email.trim();
-    if (!trimmedOrg || !trimmedEmail || password.length < 8) {
+    if (!trimmedOrg || !trimmedEmail || password.length < MIN_PASSWORD_LENGTH) {
       setError(
-        password.length > 0 && password.length < 8
-          ? "Password must be at least 8 characters."
+        password.length > 0 && password.length < MIN_PASSWORD_LENGTH
+          ? `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`
           : "Enter your organization name, email, and a password."
       );
+      setTried(true);
+      document.getElementById(!trimmedOrg ? "orgName" : !trimmedEmail ? "email" : "password")?.focus();
       return;
     }
 
@@ -77,111 +97,100 @@ export default function SignupPage() {
   }
 
   return (
-    <div className="login-page">
-      <AuthBackdrop />
-      <h1 className="sr-only">HSDEEP CORE AI — Start your free trial</h1>
-      <div className="login-page__panel login-page__panel--center">
-        <form onSubmit={handleSubmit} className="login-card" noValidate>
-          <div className="login-card__header">
-            <p className="login-card__welcome">HSDEEP CORE AI</p>
-            <h2 className="login-card__title">Start your 14-day free trial</h2>
-            <p className="login-card__subtitle">
-              No payment required now — you start on the Starter plan.
-            </p>
-          </div>
+    <AuthScene title="HSDEEP CORE AI — Start your free trial">
+      <section className="lx-card" aria-labelledby="lx-card-title">
+        <p className="lx-card__eyebrow">Get started with</p>
+        <h2 id="lx-card-title" className="lx-card__title">
+          HSDEEP CORE <span>AI</span>
+        </h2>
+        <p className="lx-card__lead">Start your 14-day free trial. No payment required now.</p>
 
         {error && (
-          <div
-            role="alert"
-            className="mb-4 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300"
-          >
+          <div role="alert" className="lx-card__error">
             {error}
           </div>
         )}
 
-        <label htmlFor="orgName" className="mb-1 block text-xs uppercase tracking-wide text-white/60">
-          Organization name
-        </label>
-        <input
-          id="orgName"
-          name="orgName"
-          type="text"
-          autoComplete="organization"
-          value={orgName}
-          onChange={(e) => setOrgName(e.target.value)}
-          disabled={submitting}
-          required
-          className="mb-4 w-full rounded border border-white/15 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/40"
-          placeholder="Acme MSP Inc."
-        />
+        <form method="post" action="/signup" onSubmit={handleSubmit} noValidate className="lx-form">
+          <div className="lx-field">
+            <label htmlFor="orgName" className="lx-sr-only">Organization name</label>
+            <Building2 className="lx-field__icon" size={18} aria-hidden="true" />
+            <input
+              id="orgName"
+              name="orgName"
+              type="text"
+              autoComplete="organization"
+              value={orgName}
+              onChange={(e) => setOrgName(e.target.value)}
+              disabled={submitting}
+              required
+              aria-invalid={(tried && !orgName.trim()) || undefined}
+              className="lx-input"
+              placeholder="Organization name"
+            />
+          </div>
 
-        <label htmlFor="fullName" className="mb-1 block text-xs uppercase tracking-wide text-white/60">
-          Your name (optional)
-        </label>
-        <input
-          id="fullName"
-          name="fullName"
-          type="text"
-          autoComplete="name"
-          value={fullName}
-          onChange={(e) => setFullName(e.target.value)}
-          disabled={submitting}
-          className="mb-4 w-full rounded border border-white/15 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/40"
-          placeholder="Jane Doe"
-        />
+          <div className="lx-field">
+            <label htmlFor="fullName" className="lx-sr-only">Your name (optional)</label>
+            <User className="lx-field__icon" size={18} aria-hidden="true" />
+            <input
+              id="fullName"
+              name="fullName"
+              type="text"
+              autoComplete="name"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              disabled={submitting}
+              className="lx-input"
+              placeholder="Your name (optional)"
+            />
+          </div>
 
-        <label htmlFor="email" className="mb-1 block text-xs uppercase tracking-wide text-white/60">
-          Work email
-        </label>
-        <input
-          id="email"
-          name="email"
-          type="email"
-          autoComplete="username"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          disabled={submitting}
-          required
-          className="mb-4 w-full rounded border border-white/15 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/40"
-          placeholder="you@company.com"
-        />
+          <div className="lx-field">
+            <label htmlFor="email" className="lx-sr-only">Work email</label>
+            <Mail className="lx-field__icon" size={18} aria-hidden="true" />
+            <input
+              id="email"
+              name="email"
+              type="email"
+              inputMode="email"
+              autoComplete="username"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              disabled={submitting}
+              required
+              aria-invalid={(tried && !email.trim()) || undefined}
+              className="lx-input"
+              placeholder="Work email"
+            />
+          </div>
 
-        <label htmlFor="password" className="mb-1 block text-xs uppercase tracking-wide text-white/60">
-          Password
-        </label>
-        <input
-          id="password"
-          name="password"
-          type="password"
-          autoComplete="new-password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          disabled={submitting}
-          required
-          minLength={8}
-          className="mb-2 w-full rounded border border-white/15 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/40"
-          placeholder="At least 8 characters"
-        />
-        <p className="mb-6 text-[11px] text-white/40">
-          You&apos;ll start on the Starter plan with a 14-day trial — no payment required now.
-        </p>
+          <PasswordField
+            id="password"
+            name="password"
+            value={password}
+            onChange={setPassword}
+            placeholder="Password (8+ characters)"
+            autoComplete="new-password"
+            disabled={submitting}
+            invalid={tried && password.length < MIN_PASSWORD_LENGTH}
+            describedBy="signup-password-hint"
+            meter
+          />
+          <p id="signup-password-hint" className="lx-card__hint lx-card__hint--left">
+            You&apos;ll start on the Starter plan as the workspace owner.
+          </p>
 
-        <button
-          type="submit"
-          disabled={submitting}
-          className="w-full rounded bg-white/90 px-3 py-2 text-sm font-medium text-black transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {submitting ? "Creating your workspace…" : "Start free trial"}
-        </button>
-
-        <p className="mt-4 text-center text-xs text-white/50">
-          Already have an account?{" "}
-          <a href="/login" className="login-card__link">
-            Sign in
-          </a>
-        </p>
+          <button type="submit" disabled={!hydrated || submitting} className="lx-submit">
+            {submitting ? "Creating your workspace…" : hydrated ? "Start free trial" : "Loading…"}
+            {!submitting && hydrated && <ArrowRight size={17} aria-hidden="true" />}
+          </button>
         </form>
-      </div>
-    </div>
+
+        <p className="lx-card__foot">
+          Already have an account? <a href="/login">Sign in</a>
+        </p>
+      </section>
+    </AuthScene>
   );
 }

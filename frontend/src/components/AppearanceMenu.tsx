@@ -8,20 +8,27 @@ import "@/app/styles/page-kit.css";
 import {
   ACCENTS,
   APPEARANCE_STORAGE_KEY,
+  CANVASES,
   DEFAULT_APPEARANCE,
   LEGACY_THEME_KEY,
   THEMES,
   parseStoredAppearance,
   resolveTheme,
   type Appearance,
-  type ThemeId,
+  type ThemeOption,
 } from "@/lib/theme";
 
 /**
- * Appearance picker — theme preset, accent colour and density, applied live
- * to <html> and remembered per browser. Opens from the sidebar and from the
- * Executive Command Center header.
+ * Appearance picker — theme preset, accent colour, page background and
+ * density, applied live to <html> and remembered per browser. Opens from the
+ * sidebar and from the Executive Command Center header.
  */
+
+const THEME_GROUPS: { key: ThemeOption["group"]; label: string }[] = [
+  { key: "light", label: "Light" },
+  { key: "dark", label: "Dark" },
+  { key: "auto", label: "Automatic" },
+];
 
 // ---------------------------------------------------------------------------
 // store
@@ -46,7 +53,12 @@ function prefersDark(): boolean {
 
 function apply(a: Appearance) {
   const root = document.documentElement;
-  root.setAttribute("data-theme", resolveTheme(a.theme, prefersDark()));
+  const { base, palette } = resolveTheme(a.theme, prefersDark());
+  root.setAttribute("data-theme", base);
+  if (palette) root.setAttribute("data-palette", palette);
+  else root.removeAttribute("data-palette");
+  if (a.canvas !== "theme") root.setAttribute("data-canvas", a.canvas);
+  else root.removeAttribute("data-canvas");
   root.setAttribute("data-density", a.density);
   if (a.accent) {
     root.style.setProperty("--ecc-accent", a.accent);
@@ -92,14 +104,15 @@ export function useAppearance(): Appearance {
 // UI
 // ---------------------------------------------------------------------------
 
-function ThemeCard({ id, label, hint, swatch, selected }: (typeof THEMES)[number] & { selected: boolean }) {
+function ThemeCard({ id, label, hint, swatch, selected }: ThemeOption & { selected: boolean }) {
   const [bg, card, accent] = swatch;
   return (
     <button
       type="button"
       className={`apx-theme${selected ? " apx-theme--on" : ""}`}
       aria-pressed={selected}
-      onClick={() => setAppearance({ theme: id as ThemeId })}
+      title={hint}
+      onClick={() => setAppearance({ theme: id })}
     >
       <span className="apx-theme__preview" style={{ background: id === "system" ? `linear-gradient(135deg, ${bg} 50%, ${card} 50%)` : bg }} aria-hidden="true">
         {id !== "system" && (
@@ -175,11 +188,16 @@ export default function AppearanceMenu({ variant = "sidebar" }: { variant?: "sid
 
           <section aria-label="Theme">
             <h3>Theme</h3>
-            <div className="apx-themes">
-              {THEMES.map((t) => (
-                <ThemeCard key={t.id} {...t} selected={appearance.theme === t.id} />
-              ))}
-            </div>
+            {THEME_GROUPS.map((g) => (
+              <div key={g.key} className="apx-group">
+                <h4>{g.label}</h4>
+                <div className="apx-themes">
+                  {THEMES.filter((t) => t.group === g.key).map((t) => (
+                    <ThemeCard key={t.id} {...t} selected={appearance.theme === t.id} />
+                  ))}
+                </div>
+              </div>
+            ))}
           </section>
 
           <section aria-label="Accent colour">
@@ -211,6 +229,29 @@ export default function AppearanceMenu({ variant = "sidebar" }: { variant?: "sid
                 />
                 {!custom && <span aria-hidden="true">+</span>}
               </label>
+            </div>
+          </section>
+
+          <section aria-label="Background">
+            <h3>Background</h3>
+            <div className="apx-canvases" role="radiogroup" aria-label="Background">
+              {CANVASES.map((c) => {
+                const on = appearance.canvas === c.id;
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={on}
+                    title={c.hint}
+                    className={`apx-canvas${on ? " apx-canvas--on" : ""}`}
+                    onClick={() => setAppearance({ canvas: c.id })}
+                  >
+                    <span className={`apx-canvas__preview apx-canvas__preview--${c.id}`} aria-hidden="true" />
+                    <span className="apx-canvas__label">{c.label}</span>
+                  </button>
+                );
+              })}
             </div>
           </section>
 

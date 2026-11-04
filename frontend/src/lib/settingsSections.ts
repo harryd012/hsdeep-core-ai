@@ -13,7 +13,7 @@
  */
 
 import type { LucideIcon } from "lucide-react";
-import { Settings, ShieldCheck, Bell, Users, Key } from "lucide-react";
+import { Settings, ShieldCheck, Bell, Users, Key, History, Lock, Fingerprint } from "lucide-react";
 
 export interface SettingsSection {
   /** Stable key for React rendering and analytics. */
@@ -64,9 +64,32 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: "security",
     title: "Security",
-    description: "Password policy, MFA, session timeout",
+    description: "Password policy, sign-in protection, your sessions",
     icon: ShieldCheck,
     href: "/settings/security",
+  },
+  {
+    id: "audit-log",
+    title: "Audit Log",
+    description: "Who changed what, with CSV export",
+    icon: History,
+    href: "/settings/audit-log",
+    permission: "audit.read",
+  },
+  {
+    id: "privacy",
+    title: "Privacy & Data",
+    description: "AI data use, retention, export, deleting your organization",
+    icon: Lock,
+    href: "/settings/privacy",
+  },
+  {
+    id: "sso",
+    title: "Single Sign-On",
+    description: "Identity provider, verified domains, SCIM provisioning",
+    icon: Fingerprint,
+    href: "/settings/sso",
+    permission: "security.manage",
   },
   {
     id: "notifications",

@@ -10,6 +10,7 @@ import {
   runDiscovery,
 } from "@/lib/infrastructureIntelligence";
 import DiscoveryProbeReview from "@/components/infrastructure/DiscoveryProbeReview";
+import DiscoveryScopes from "@/components/infrastructure/DiscoveryScopes";
 
 /**
  * /infrastructure/discovery — Universal Discovery console.
@@ -380,6 +381,8 @@ export default function DiscoveryPage() {
           ]}
         />
       </Panel>
+
+      <DiscoveryScopes />
 
       <DiscoveryProbeReview />
     </PageShell>

@@ -94,6 +94,9 @@ class NormalizedMetric:
     unit: str | None = None
     device_external_id: str | None = None
     sensor_external_id: str | None = None
+    #: The sensor channel this value belongs to (PRTG channel name ...);
+    #: None for a single-value metric.
+    channel: str | None = None
 
 
 @dataclass

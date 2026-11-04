@@ -93,6 +93,15 @@ from app.models.collector_credential import CollectorCredential
 from app.models.collector_enrollment_token import CollectorEnrollmentToken
 from app.models.discovery_probe import DiscoveryProbeJob, DiscoveryProbeHost
 from app.models.discovery_scope import DiscoveryScope
+from app.models.host_saved_view import HostSavedView
+from app.models.saved_dashboard import SavedDashboard
+from app.models.auth_session import AuthSession
+from app.models.user_mfa import MfaRecoveryCode, UserMfa
+from app.models.tenant_ip_rule import TenantIpRule
+from app.models.audit_chain import AuditChainLink
+from app.models.tenant_privacy import TenantPrivacySetting
+from app.models.tenant_export import TenantExport
+from app.models.identity import SsoHandoff, SsoLoginState, TenantDomain, TenantSsoConfig, UserIdentity
 from app.models.tenant_custom_property import TenantCustomProperty
 
 ___all__ = [
@@ -174,5 +183,19 @@ ___all__ = [
     "DiscoveryProbeJob",
     "DiscoveryProbeHost",
     "DiscoveryScope",
+    "HostSavedView",
+    "SavedDashboard",
+    "AuthSession",
+    "UserMfa",
+    "MfaRecoveryCode",
+    "TenantIpRule",
+    "AuditChainLink",
+    "TenantPrivacySetting",
+    "TenantExport",
+    "TenantDomain",
+    "TenantSsoConfig",
+    "UserIdentity",
+    "SsoLoginState",
+    "SsoHandoff",
     "TenantCustomProperty",
 ]

@@ -100,6 +100,10 @@ class DiscoveryProbeJob(Base, UUIDPKMixin, TimestampMixin):
         Boolean, nullable=False, default=False, server_default="false"
     )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # scheduler | manual (what started the probe)
+    trigger: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="manual", server_default="manual"
+    )
 
     materialization_state: Mapped[str] = mapped_column(
         String(20), nullable=False, default=MATERIALIZATION_PENDING,

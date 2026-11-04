@@ -31,6 +31,24 @@ PUBLIC_WRITE_ROUTES = {
     ("POST", "/api/auth/logout"),
     # Signed-in self-service: ends only the caller's own sessions.
     ("POST", "/api/auth/logout-all"),
+    ("POST", "/api/auth/sessions/end-others"),
+    ("DELETE", "/api/auth/sessions/{session_id}"),
+    # MFA: the code step is authorised by the short-lived challenge token
+    # (rate limited); the rest change only the signed-in user's own MFA.
+    ("POST", "/api/auth/login/mfa"),
+    ("POST", "/api/auth/mfa/setup"),
+    ("POST", "/api/auth/mfa/confirm"),
+    ("POST", "/api/auth/mfa/recovery-codes"),
+    ("POST", "/api/auth/mfa/disable"),
+    # SSO sign-in (S6): public, rate limited; authorised by the verified domain
+    # and a one-time handoff code.
+    ("POST", "/api/auth/sso/start"),
+    ("POST", "/api/auth/sso/exchange"),
+    # SCIM (S6): authorised by the tenant's SCIM bearer token (scim_tenant).
+    ("POST", "/api/scim/v2/Users"),
+    ("PUT", "/api/scim/v2/Users/{user_id}"),
+    ("PATCH", "/api/scim/v2/Users/{user_id}"),
+    ("DELETE", "/api/scim/v2/Users/{user_id}"),
     # Break-glass support grants: opening needs a superuser; revoking needs the
     # grant holder or the customer tenant's users.update. Checked in the
     # handler and covered by tests/test_support_access.py.
@@ -116,9 +134,17 @@ def test_viewer_cannot_reach_any_guarded_write_route():
         if (codes := _required_permissions(route.dependant)) and codes <= VIEWER
     )
     # Read-only computations that are POSTs by shape (a request body, no
-    # writes). Everything else must be closed to Viewer.
+    # writes), and a reader's own saved Hosts-explorer views and dashboards
+    # (personal settings, owner-only writes; sharing needs devices.write).
+    # Everything else must be closed to Viewer.
     assert reachable == [
+        "DELETE /api/dashboards/{dashboard_id}",
+        "DELETE /api/explorer/hosts/views/{view_id}",
+        "PATCH /api/dashboards/{dashboard_id}",
+        "PATCH /api/explorer/hosts/views/{view_id}",
         "POST /api/copilot/chat",
+        "POST /api/dashboards",
+        "POST /api/explorer/hosts/views",
         "POST /api/failover/evaluate",
         "POST /api/failover/simulate",
         "POST /api/infrastructure/intelligence/correlation/context",

@@ -14,6 +14,8 @@ python-multipart==0.0.9
 httpx==0.27.2
 apscheduler==3.10.4
 cryptography==43.0.1
+segno==1.6.1
+dnspython==2.8.0
 pysnmp==6.2.5
 # pysnmp 6.2.5 declares `pyasn1>=0.4.8,!=0.5.0` with NO upper bound, but its
 # `pysnmp/debug.py` still does `from pyasn1.compat.octets import octs2ints` —

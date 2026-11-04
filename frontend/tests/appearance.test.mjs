@@ -4,6 +4,7 @@ import vm from "node:vm";
 
 import {
   ACCENTS,
+  CANVASES,
   DEFAULT_APPEARANCE,
   THEMES,
   THEME_BOOT_SCRIPT,
@@ -12,18 +13,22 @@ import {
   resolveTheme,
 } from "../src/lib/theme.ts";
 
-test("defaults to light, comfortable, theme accent", () => {
-  assert.deepEqual(DEFAULT_APPEARANCE, { theme: "light", accent: null, density: "comfortable" });
+test("defaults to light, comfortable, theme accent and background", () => {
+  assert.deepEqual(DEFAULT_APPEARANCE, { theme: "light", accent: null, canvas: "theme", density: "comfortable" });
   assert.deepEqual(parseStoredAppearance(null), DEFAULT_APPEARANCE);
 });
 
 test("stored values are validated, unknown ones fall back", () => {
-  assert.deepEqual(normalizeAppearance({ theme: "midnight", accent: "#0D9488", density: "compact" }), {
+  assert.deepEqual(normalizeAppearance({ theme: "midnight", accent: "#0D9488", canvas: "grid", density: "compact" }), {
     theme: "midnight",
     accent: "#0d9488",
+    canvas: "grid",
     density: "compact",
   });
-  assert.deepEqual(normalizeAppearance({ theme: "neon", accent: "red; background:url(x)", density: "tiny" }), DEFAULT_APPEARANCE);
+  assert.deepEqual(
+    normalizeAppearance({ theme: "neon", accent: "red; background:url(x)", canvas: "url(x)", density: "tiny" }),
+    DEFAULT_APPEARANCE,
+  );
   assert.deepEqual(parseStoredAppearance("{not json"), DEFAULT_APPEARANCE);
 });
 
@@ -35,14 +40,20 @@ test("the first theme switch's saved value still applies", () => {
 });
 
 test("match-system resolves from the OS preference", () => {
-  assert.equal(resolveTheme("system", true), "dark");
-  assert.equal(resolveTheme("system", false), "light");
-  assert.equal(resolveTheme("contrast", true), "contrast");
+  assert.deepEqual(resolveTheme("system", true), { base: "dark", palette: null });
+  assert.deepEqual(resolveTheme("system", false), { base: "light", palette: null });
+  assert.deepEqual(resolveTheme("contrast", true), { base: "contrast", palette: null });
+});
+
+test("a palette sits on its light or dark base", () => {
+  assert.deepEqual(resolveTheme("sage", true), { base: "light", palette: "sage" });
+  assert.deepEqual(resolveTheme("ember", false), { base: "dark", palette: "ember" });
 });
 
 test("every theme and accent offered is one the parser accepts", () => {
   for (const t of THEMES) assert.equal(normalizeAppearance({ theme: t.id }).theme, t.id);
   for (const a of ACCENTS) assert.equal(normalizeAppearance({ accent: a.value }).accent, a.value);
+  for (const c of CANVASES) assert.equal(normalizeAppearance({ canvas: c.id }).canvas, c.id);
 });
 
 function runBoot(store, prefersDark = false) {
@@ -65,6 +76,13 @@ test("boot script applies the saved appearance before paint", () => {
   const out = runBoot({ "hsdeep-appearance": JSON.stringify({ theme: "midnight", accent: "#7c3aed", density: "compact" }) });
   assert.deepEqual(out.attrs, { "data-theme": "midnight", "data-density": "compact" });
   assert.deepEqual(out.props, { "--ecc-accent": "#7c3aed", "--cyan": "#7c3aed" });
+});
+
+test("boot script applies a palette over its base and a page background", () => {
+  const out = runBoot({ "hsdeep-appearance": JSON.stringify({ theme: "ocean", canvas: "glow" }) });
+  assert.deepEqual(out.attrs, { "data-palette": "ocean", "data-theme": "dark", "data-canvas": "glow", "data-density": "comfortable" });
+  // The theme's own background sets no attribute.
+  assert.equal(runBoot({ "hsdeep-appearance": JSON.stringify({ theme: "light" }) }).attrs["data-canvas"], undefined);
 });
 
 test("boot script: defaults, legacy key, system theme and bad input", () => {

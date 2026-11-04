@@ -112,7 +112,7 @@ async def test_zero_attempts_disables_lockout(tenant, db, monkeypatch):
 async def test_login_route_persists_failed_attempts(tenant, db, monkeypatch):
     """The route must commit the counter on a 401, or the lockout never builds up."""
     _limits(monkeypatch, attempts=5)
-    monkeypatch.setattr(auth_routes._auth_limiter, "acquire", lambda key: True)
+    monkeypatch.setattr(auth_routes._auth_limiter, "limit", 10**9)
     user = await _user(db, tenant)
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:

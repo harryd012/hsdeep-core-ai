@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     # account for login_lockout_minutes (0 attempts disables the lockout).
     login_max_failed_attempts: int = 5
     login_lockout_minutes: int = 15
+    # Reverse proxies in front of the API that append to X-Forwarded-For
+    # (load balancer, ingress). 0 = the TCP peer is the client. Used for IP
+    # allowlists and per-IP limits (app/core/client_ip.py); never trust the
+    # header from more hops than you actually run.
+    trusted_proxy_hops: int = 0
     # Automated remediation is only "resolved" after fresh telemetry confirms
     # recovery (app/services/events/recovery_validator.py): this many
     # consecutive recovered checks, re-checked every interval, at most
@@ -77,6 +82,9 @@ class Settings(BaseSettings):
     email_from: str = ""
     # Public web origin used to build links in emails (never the request Host).
     app_public_url: str = "http://localhost:3000"
+    # Public base URL of this API, for callbacks that identity providers
+    # redirect to (OIDC single sign-on: {api_public_url}/api/auth/sso/oidc/callback).
+    api_public_url: str = "http://localhost:8000"
 
     # Server
     host: str = "0.0.0.0"
@@ -100,6 +108,10 @@ class Settings(BaseSettings):
 
     # Security
     secret_encryption_key: str
+    # Earlier encryption keys, comma-separated, newest first. Secrets written
+    # with them still decrypt; scripts/rotate_encryption_keys.py re-encrypts
+    # them with SECRET_ENCRYPTION_KEY, after which they can be removed here.
+    secret_encryption_keys_previous: str = ""
 
     # Billing / Stripe webhooks. Empty means "webhook endpoint disabled"
     # (POST /api/stripe/webhook returns 501) - see stripe_webhook.py.
@@ -154,6 +166,8 @@ class Settings(BaseSettings):
     backup_job_lookback_hours: int = 72
     # Stored backup job history older than this is purged after each save.
     backup_job_retention_days: int = 90
+    #: Days of metric / sensor history kept; 0 keeps everything (no purge).
+    metric_retention_days: int = 0
     #: Days of daily storage snapshots kept (storage growth history).
     backup_snapshot_retention_days: int = 400
     #: A replicated item counts as DR-ready only with a successful test failover

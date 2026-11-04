@@ -62,8 +62,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from app.collectors.base import NormalizedAlertSignal, NormalizedBundle
+from app.collectors.connectivity import bound_device_id
 from app.models.monitoring_source import MonitoringSource
-from app.services.monitoring.interface_rates import compute_interface_rate
+from app.services.monitoring.interface_rates import compute_error_rates, compute_interface_rate
+from app.services.monitoring.sensor_policy import PRIMARY_CHANNEL, effective_status, user_thresholds_of
 from app.models.sensor import Sensor
 from app.repositories.device_repository import DeviceRepository
 from app.repositories.event_repository import EventRepository
@@ -158,6 +160,17 @@ class SaveResult:
     #: The full normalization summary, so a caller/job log can see exactly what
     #: the universal layer derived from this bundle.
     canonical: dict = field(default_factory=dict)
+
+
+def _channel_dimension(m) -> dict:
+    """The metric's channel for `metrics.dimensions`: its named channel, or the
+    primary channel for a channel-less metric tied to a sensor (that sensor's
+    single-value series); nothing for a metric with no sensor."""
+    if m.channel:
+        return {"channel": m.channel}
+    if m.sensor_external_id is not None:
+        return {"channel": PRIMARY_CHANNEL}
+    return {}
 
 
 class BundleSaver:
@@ -405,8 +418,20 @@ class BundleSaver:
         # Device.id -> Device.site_id, so canonical telemetry rows can carry the
         # site they belong to without a second lookup.
         site_id_by_device: dict[object, object] = {}
+        # A connectivity check tied to an existing host (sensor library bulk
+        # reachability): its readings belong to that host. The host row is
+        # neither created nor changed here - its own sources own its fields -
+        # so the check never duplicates the host it watches.
+        bound_id = bound_device_id(getattr(source, "source_type", None), getattr(source, "config", None))
+        bound_device = await self.device_repo.get(bound_id, source.tenant_id) if bound_id else None
+        device_type_by_bound_id: dict[object, str] = {}
 
         for nd in bundle.devices:
+            if bound_device is not None:
+                device_id_by_external[nd.external_id] = bound_device.id
+                site_id_by_device[bound_device.id] = bound_device.site_id
+                device_type_by_bound_id[bound_device.id] = bound_device.device_type
+                continue
             existing_device = await self.device_repo.get_by_external_id(source.id, nd.external_id)
             if existing_device is None and device_allowance is not None and device_allowance <= 0:
                 result.devices_blocked += 1
@@ -485,6 +510,15 @@ class BundleSaver:
                 observed_at=collected_at,
                 speed_mbps=ni.speed_mbps,
             )
+            # Before the upsert: `previous` is the row the upsert updates in place.
+            errors_in, errors_out = compute_error_rates(
+                previous_in=previous.in_errors if previous is not None else None,
+                previous_out=previous.out_errors if previous is not None else None,
+                previous_at=previous.last_telemetry_at if previous is not None else None,
+                current_in=ni.in_errors,
+                current_out=ni.out_errors,
+                observed_at=collected_at,
+            )
 
             interface, _created = await self.interface_repo.upsert(
                 tenant_id=source.tenant_id,
@@ -511,6 +545,34 @@ class BundleSaver:
             )
             if rate.measured:
                 result.rates_measured += 1
+            # Interface history (observability plan P4): every derived value is
+            # kept per interface, so traffic, utilisation and errors can be
+            # charted over time. Only values two real samples produced are
+            # recorded; a first poll or a counter reset records nothing.
+            for channel, value, unit, capability in (
+                ("rx_bps", rate.rx_bps, "bps", "bandwidth"),
+                ("tx_bps", rate.tx_bps, "bps", "bandwidth"),
+                ("interface_utilization_pct", rate.utilization_pct, "%", "interfaces"),
+                ("errors_in", errors_in, "errors/s", "errors"),
+                ("errors_out", errors_out, "errors/s", "errors"),
+            ):
+                if value is None:
+                    continue
+                await self.metric_repo.record(
+                    tenant_id=source.tenant_id,
+                    metric_type=f"interface_{channel}" if not channel.startswith("interface_") else channel,
+                    value=value,
+                    recorded_at=collected_at,
+                    monitoring_source_id=source.id,
+                    device_id=device_id,
+                    interface_id=interface.id,
+                    unit=unit,
+                    metric_name=channel,
+                    capability=capability,
+                    provider=provider_token,
+                    dimensions={"channel": channel},
+                )
+                result.metrics_recorded += 1
             interface_id_by_key[(ni.device_external_id, ni.external_id)] = interface.id
             interface_id_by_name[(ni.device_external_id, ni.name)] = interface.id
             result.interfaces_upserted += 1
@@ -536,7 +598,6 @@ class BundleSaver:
             result.vpn_tunnels_upserted = fw_result.tunnels_upserted
             result.vpn_tunnels_retired = fw_result.tunnels_retired
             result.firewall_status = dict(bundle.firewall_status)
-        firewall_reading_ids = {r.external_id for r in firewall_readings}
 
         # -- 2c. Backup vaults, protected items and jobs ----------------------
         # Same shape as the firewall tables: own tables, and what the provider
@@ -560,13 +621,17 @@ class BundleSaver:
             result.backup_items_retired = bk_result.items_retired
             result.backup_jobs_upserted = bk_result.jobs_upserted
             result.backup_status = dict(bundle.backup_status)
-        # Firewall and backup readings always name their device (the firewall /
-        # the vault), so their alerts are linked to it below.
-        device_linked_reading_ids = firewall_reading_ids | {r.external_id for r in backup_readings}
 
         # -- 3. Sensors ------------------------------------------------------
         # external_id -> Sensor.id, for metric sensor_id resolution in step 4.
         sensor_id_by_external: dict[str, object] = {}
+        # Sensors a user disabled: their readings and channel values are ignored.
+        disabled_external_ids: set[str] = set()
+        # Sensors whose collector already sends their single-value series as
+        # channel-less metrics (step 4 records those as the primary channel).
+        primary_from_metrics = {
+            m.sensor_external_id for m in bundle.metrics if m.sensor_external_id is not None and not m.channel
+        }
 
         for reading in [*bundle.sensors, *firewall_readings, *backup_readings]:
             interface_id = None
@@ -582,6 +647,12 @@ class BundleSaver:
             # "changed" this save.
             prior = await self.sensor_repo.get_by_external_id(source.id, reading.external_id)
             prior_status = prior.status if prior is not None else None
+            if prior is not None and prior.admin_state == "disabled":
+                disabled_external_ids.add(reading.external_id)
+                continue
+            # User thresholds survive the sync (the upsert below would take the
+            # collector's when it sends any).
+            user_thresholds = user_thresholds_of(prior) if prior is not None else None
 
             if prior is None and sensor_allowance is not None and sensor_allowance <= 0:
                 result.sensors_blocked += 1
@@ -609,14 +680,37 @@ class BundleSaver:
                 critical_threshold=reading.critical_threshold,
                 interface_id=interface_id,
             )
+            if user_thresholds is not None:
+                sensor.warning_threshold = user_thresholds.warning
+                sensor.critical_threshold = user_thresholds.critical
+            sensor.status = effective_status(reading.status, reading.value, sensor.admin_state, user_thresholds)
             sensor_id_by_external[reading.external_id] = sensor.id
-            # Firewall readings always name their device, so their alerts
-            # carry it for correlation and health (KNOWN GAP #2 is about the
-            # repository signature; the link is set on the row directly).
-            if reading.external_id in device_linked_reading_ids:
-                fw_device_id = device_id_by_external.get(reading.device_external_id)
-                if fw_device_id is not None and sensor.device_id != fw_device_id:
-                    sensor.device_id = fw_device_id
+            # The sensor's own reading is its primary channel's history.
+            if reading.value is not None and reading.external_id not in primary_from_metrics:
+                await self.metric_repo.record(
+                    tenant_id=source.tenant_id,
+                    metric_type=reading.metric_type,
+                    value=reading.value,
+                    recorded_at=collected_at,
+                    monitoring_source_id=source.id,
+                    sensor_id=sensor.id,
+                    interface_id=interface_id,
+                    unit=reading.unit,
+                    metric_name=canonical_telemetry.canonical_metric_name(reading.metric_type),
+                    capability=capability_of_metric(reading.metric_type) or None,
+                    provider=provider_token,
+                    dimensions={"provider_metric_type": reading.metric_type, "channel": PRIMARY_CHANNEL},
+                )
+                result.metrics_recorded += 1
+            # A reading that names a device of this bundle is linked to it, so
+            # its alerts carry the host for correlation and health, and host
+            # views see the sensor (KNOWN GAP #2 is about the repository
+            # signature; the link is set on the row directly). A reading whose
+            # device is not in the bundle keeps the link it already has.
+            if reading.device_external_id is not None:
+                linked_device_id = device_id_by_external.get(reading.device_external_id)
+                if linked_device_id is not None and sensor.device_id != linked_device_id:
+                    sensor.device_id = linked_device_id
 
             if created:
                 result.sensors_created += 1
@@ -628,6 +722,8 @@ class BundleSaver:
 
         # -- 4. Metrics (append-only) -----------------------------------------
         for m in bundle.metrics:
+            if m.sensor_external_id is not None and m.sensor_external_id in disabled_external_ids:
+                continue
             device_id = (
                 device_id_by_external.get(m.device_external_id)
                 if m.device_external_id is not None
@@ -654,7 +750,7 @@ class BundleSaver:
                 metric_name=canonical_telemetry.canonical_metric_name(m.metric_type),
                 capability=capability_of_metric(m.metric_type) or None,
                 provider=provider_token,
-                dimensions={"provider_metric_type": m.metric_type},
+                dimensions={"provider_metric_type": m.metric_type, **_channel_dimension(m)},
             )
             result.metrics_recorded += 1
 
@@ -798,7 +894,9 @@ class BundleSaver:
         ).save(
             canonical,
             device_type_by_id={
-                device_id_by_external[nd.external_id]: nd.device_type
+                device_id_by_external[nd.external_id]: device_type_by_bound_id.get(
+                    device_id_by_external[nd.external_id], nd.device_type
+                )
                 for nd in bundle.devices
                 if nd.external_id in device_id_by_external
             },

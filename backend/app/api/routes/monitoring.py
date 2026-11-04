@@ -43,7 +43,10 @@ from app.schemas.monitoring import (
     MonitoringSourceUpdate,
     ReadinessReportOut,
     ReadinessResultOut,
+    SensorDetailOut,
+    SensorHistoryOut,
     SensorOut,
+    SensorUpdate,
     SupportedSourceType,
     SyncResult,
 )
@@ -51,6 +54,7 @@ from app.services.alert_service import AlertService
 from app.services.monitoring.bundle_saver import BundleSaver
 from app.services.monitoring.collection_orchestrator import CollectionOrchestrator
 from app.services.monitoring.monitoring_service import MonitoringService, MonitoringSourceNotFound
+from app.services.monitoring.sensor_service import SensorNotFound, SensorService
 from app.services.monitoring.source_health_manager import SourceHealthManager
 from app.repositories.source_health_audit_repository import SourceHealthAuditRepository
 from app.services.events.event_bus import get_event_bus
@@ -328,6 +332,83 @@ async def list_sensors(
         status=status,
         metric_type=metric_type,
     )
+
+
+@router.get(
+    "/sensors/{sensor_id}",
+    response_model=SensorDetailOut,
+    dependencies=[Depends(require_permission("monitoring.read"))],
+)
+async def get_sensor(
+    sensor_id: uuid.UUID,
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> SensorDetailOut:
+    """One sensor with its device, source, measurement channels and open alert."""
+    try:
+        return await SensorService(db).detail(tenant_id, sensor_id)
+    except SensorNotFound as exc:
+        raise HTTPException(status_code=404, detail="Sensor not found") from exc
+
+
+@router.get(
+    "/sensors/{sensor_id}/history",
+    response_model=SensorHistoryOut,
+    dependencies=[Depends(require_permission("monitoring.read"))],
+)
+async def get_sensor_history(
+    sensor_id: uuid.UUID,
+    channel: str = Query("primary", min_length=1, max_length=255),
+    hours: int = Query(24, ge=1, le=720),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> SensorHistoryOut:
+    """One channel's history, bucketed (avg / min / max / count) to at most 300 points."""
+    try:
+        return await SensorService(db).history(tenant_id, sensor_id, channel=channel, hours=hours)
+    except SensorNotFound as exc:
+        raise HTTPException(status_code=404, detail="Sensor not found") from exc
+
+
+@router.patch(
+    "/sensors/{sensor_id}",
+    response_model=SensorDetailOut,
+    dependencies=[_active_sub_guard],
+)
+async def update_sensor(
+    sensor_id: uuid.UUID,
+    change: SensorUpdate,
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    principal: Principal = Depends(require_permission("monitoring.update")),
+    db: AsyncSession = Depends(get_db),
+) -> SensorDetailOut:
+    """Pause / disable / resume a sensor, describe it, or set or reset its own
+    thresholds. Takes effect at once (status and alert re-evaluated) and is audited."""
+    service = SensorService(db)
+    try:
+        sensor, old, new = await service.update(tenant_id, sensor_id, change)
+    except SensorNotFound as exc:
+        raise HTTPException(status_code=404, detail="Sensor not found") from exc
+    if new:
+        if "status" in new:
+            await AlertService(AlertRepository(db)).evaluate_sensor(sensor)
+        await AuditService(db).record_entity(
+            tenant_id=tenant_id,
+            action="sensor.updated",
+            entity_type="sensor",
+            entity_id=sensor.id,
+            actor_id=principal.user_id,
+            actor_email=principal.email,
+            description=f"Sensor {sensor.name} changed: {', '.join(sorted(k for k in new if k != 'status'))}",
+            old_values={k: _jsonable(v) for k, v in old.items()},
+            new_values={k: _jsonable(v) for k, v in new.items()},
+        )
+        await db.commit()
+    return await service.detail(tenant_id, sensor_id)
+
+
+def _jsonable(value):
+    return value.isoformat() if isinstance(value, datetime) else value
 
 
 # ---------------------------------------------------------------------------

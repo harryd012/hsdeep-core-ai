@@ -31,6 +31,8 @@ import {
   getAuthToken,
   getMe,
   loginWithCredentials,
+  completeMfaLogin,
+  completeSsoLogin,
   logoutSession,
   signupTenant,
   type LoginCredentials,
@@ -52,6 +54,10 @@ interface AuthContextValue {
    * failure (bad credentials, network error, timeout) — callers (the login
    * form) are expected to catch this and show a message. */
   login: (creds: LoginCredentials) => Promise<void>;
+  /** Second sign-in step after login() threw MfaRequiredError. */
+  completeMfa: (mfaToken: string, code: string) => Promise<void>;
+  /** Finish single sign-on with the one-time code from /sso/complete. */
+  completeSso: (code: string) => Promise<void>;
   /** Create a brand-new tenant + Owner user + trial subscription via
    * POST /api/billing/signup, then load the resulting session. Throws
    * ApiError on failure (duplicate email, rate limit, network error). */
@@ -119,6 +125,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await loadUser();
   }, [loadUser]);
 
+  const completeMfa = useCallback(async (mfaToken: string, code: string) => {
+    await completeMfaLogin(mfaToken, code); // throws ApiError on a wrong code
+    await loadUser();
+  }, [loadUser]);
+
+  const completeSso = useCallback(async (code: string) => {
+    await completeSsoLogin(code);
+    await loadUser();
+  }, [loadUser]);
+
   const signup = useCallback(async (payload: SignupRequest) => {
     await signupTenant(payload); // throws ApiError on failure
     await loadUser();
@@ -145,6 +161,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isAuthenticated: user !== null,
     sessionError,
     login,
+    completeMfa,
+    completeSso,
     signup,
     logout,
     refresh: loadUser,

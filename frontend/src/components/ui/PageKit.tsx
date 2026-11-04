@@ -152,7 +152,8 @@ export function Tabs<K extends string>({
 
 export interface Column<T> {
   key: string;
-  header: string;
+  /** Usually text; a control (e.g. a select-all checkbox) on unsortable columns. */
+  header: ReactNode;
   render: (row: T) => ReactNode;
   /** Value used for sorting; omit to make the column unsortable. */
   sortValue?: (row: T) => string | number | null;
@@ -346,6 +347,85 @@ export function BarList({
         );
       })}
     </ul>
+  );
+}
+
+/**
+ * LineChart — one time series (average line, optional min/max band) with
+ * optional horizontal threshold lines. Points are drawn as given (the API
+ * buckets them); a gap longer than three buckets breaks the line instead of
+ * drawing a value that was never measured.
+ */
+export function LineChart({
+  points,
+  label,
+  height = 180,
+  format = (v: number) => v.toLocaleString("en-US", { maximumFractionDigits: 2 }),
+  thresholds = [],
+  gapMs,
+}: {
+  points: { t: number; value: number; min?: number | null; max?: number | null }[];
+  label: string;
+  height?: number;
+  format?: (v: number) => string;
+  thresholds?: { value: number; label: string; color: string }[];
+  /** Break the line when consecutive points are further apart than this. */
+  gapMs?: number;
+}) {
+  if (points.length === 0) return <p className="pk-muted pk-empty-note">No measurements in this window.</p>;
+  const W = 600, H = height, padL = 52, padR = 8, padT = 8, padB = 22;
+  const t0 = points[0].t, t1 = points[points.length - 1].t;
+  const values = points.flatMap((p) => [p.value, p.min ?? p.value, p.max ?? p.value]).concat(thresholds.map((th) => th.value));
+  let lo = Math.min(...values), hi = Math.max(...values);
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const pad = (hi - lo) * 0.08;
+  lo -= pad; hi += pad;
+  const x = (t: number) => padL + (t1 === t0 ? (W - padL - padR) / 2 : ((t - t0) / (t1 - t0)) * (W - padL - padR));
+  const y = (v: number) => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
+  const segments: (typeof points)[] = [];
+  for (const p of points) {
+    const seg = segments[segments.length - 1];
+    if (seg && (!gapMs || p.t - seg[seg.length - 1].t <= gapMs)) seg.push(p);
+    else segments.push([p]);
+  }
+  const fmtTime = (t: number) => new Date(t).toLocaleString("en-US", t1 - t0 > 2 * 86_400_000 ? { month: "short", day: "numeric" } : { hour: "2-digit", minute: "2-digit" });
+  return (
+    <figure className="pk-linechart" aria-label={label} style={{ margin: 0 }}>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" role="img" aria-label={label}>
+        {[hi - pad, (hi + lo) / 2, lo + pad].map((v) => (
+          <g key={v}>
+            <line x1={padL} x2={W - padR} y1={y(v)} y2={y(v)} stroke="var(--ecc-border)" strokeDasharray="2 3" />
+            <text x={padL - 6} y={y(v) + 4} textAnchor="end" fontSize="10" fill="var(--ecc-text-muted)">{format(v)}</text>
+          </g>
+        ))}
+        {thresholds.map((th) => (
+          <g key={th.label}>
+            <line x1={padL} x2={W - padR} y1={y(th.value)} y2={y(th.value)} stroke={th.color} strokeDasharray="6 4" />
+            <text x={W - padR} y={y(th.value) - 3} textAnchor="end" fontSize="10" fill={th.color}>{th.label} {format(th.value)}</text>
+          </g>
+        ))}
+        {segments.map((seg, i) => (
+          <g key={i}>
+            {seg.some((p) => p.min != null && p.max != null) && (
+              <path
+                d={`M ${seg.map((p) => `${x(p.t)} ${y(p.max ?? p.value)}`).join(" L ")} L ${[...seg].reverse().map((p) => `${x(p.t)} ${y(p.min ?? p.value)}`).join(" L ")} Z`}
+                fill="var(--ecc-accent)" opacity="0.12"
+              />
+            )}
+            <path d={`M ${seg.map((p) => `${x(p.t)} ${y(p.value)}`).join(" L ")}`} fill="none" stroke="var(--ecc-accent)" strokeWidth="1.8" vectorEffect="non-scaling-stroke" />
+            {seg.length === 1 && <circle cx={x(seg[0].t)} cy={y(seg[0].value)} r="2.5" fill="var(--ecc-accent)" />}
+          </g>
+        ))}
+        {points.map((p) => (
+          <rect key={p.t} x={x(p.t) - 3} y={padT} width="6" height={H - padT - padB} fill="transparent">
+            <title>{`${new Date(p.t).toLocaleString()}
+${format(p.value)}${p.min != null && p.max != null ? ` (min ${format(p.min)}, max ${format(p.max)})` : ""}`}</title>
+          </rect>
+        ))}
+        <text x={padL} y={H - 6} fontSize="10" fill="var(--ecc-text-muted)">{fmtTime(t0)}</text>
+        <text x={W - padR} y={H - 6} fontSize="10" textAnchor="end" fill="var(--ecc-text-muted)">{fmtTime(t1)}</text>
+      </svg>
+    </figure>
   );
 }
 

@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.core.config import get_settings
+from app.core.redaction import RedactingFilter
 
 
 #: LogRecord attributes that must never be emitted as their own JSON key.
@@ -76,6 +77,9 @@ def configure_logging() -> None:
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(formatter)
+    # Scrub credentials (passwords, tokens, keys, connection strings) from every
+    # message before it is written (security programme S5, core/redaction.py).
+    handler.addFilter(RedactingFilter())
 
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)

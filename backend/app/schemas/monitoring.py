@@ -182,3 +182,80 @@ class SensorOut(BaseModel):
     last_value_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    #: active | paused | disabled (user lifecycle; app/services/monitoring/sensor_policy.py)
+    admin_state: str = "active"
+    #: provider | user
+    threshold_source: str = "provider"
+
+
+
+# ---------------------------------------------------------------------------
+# Sensor detail, channel history, lifecycle (observability plan P1)
+# ---------------------------------------------------------------------------
+class SensorRef(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
+class SensorChannelOut(BaseModel):
+    """One measurement channel of a sensor, from its metric history."""
+
+    #: Channel key ("primary" = the sensor's own reading; else the provider's channel name).
+    key: str
+    unit: str | None
+    last_value: float | None
+    last_recorded_at: datetime | None
+    #: Samples recorded in the last 24 hours.
+    samples_24h: int
+
+
+class SensorOpenAlert(BaseModel):
+    id: uuid.UUID
+    title: str
+    severity: str
+    status: str
+
+
+class SensorDetailOut(SensorOut):
+    description: str | None = None
+    threshold_direction: str | None = None
+    device: SensorRef | None = None
+    interface: SensorRef | None = None
+    source: SensorRef
+    source_type: str
+    channels: list[SensorChannelOut]
+    open_alert: SensorOpenAlert | None = None
+
+
+class SensorHistoryPoint(BaseModel):
+    t: datetime
+    avg: float | None
+    min: float | None
+    max: float | None
+    count: int
+
+
+class SensorHistoryOut(BaseModel):
+    channel: str
+    unit: str | None
+    hours: int
+    bucket_seconds: int
+    points: list[SensorHistoryPoint]
+
+
+class SensorThresholdsIn(BaseModel):
+    warning: float | None = None
+    critical: float | None = None
+    #: above: higher values are worse; below: lower values are worse.
+    direction: str = Field("above", pattern="^(above|below)$")
+
+
+class SensorUpdate(BaseModel):
+    """Change a sensor's lifecycle, description or thresholds. Omitted fields
+    stay as they are; `thresholds: null` returns to the provider's thresholds."""
+
+    admin_state: str | None = Field(None, pattern="^(active|paused|disabled)$")
+    description: str | None = Field(None, max_length=2000)
+    thresholds: SensorThresholdsIn | None = None
+    #: True with thresholds omitted: drop user thresholds (provider thresholds from the next sync).
+    reset_thresholds: bool = False

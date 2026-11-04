@@ -1,6 +1,6 @@
 import {
   Activity, ArrowLeftRight, Bell, BookOpen, Bot, Building2, CreditCard, Database, DatabaseBackup, LayoutDashboard,
-  LayoutGrid, LifeBuoy, Server, Settings, Shield, Ticket, TriangleAlert, Workflow, type LucideIcon,
+  LayoutGrid, LayoutPanelLeft, LifeBuoy, Network, ScrollText, Server, Settings, Shield, Ticket, TriangleAlert, Workflow, type LucideIcon,
 } from "lucide-react";
 
 /**
@@ -46,10 +46,20 @@ export const NAV_CONFIG: NavGroup[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, route: "/dashboard", section: "Observe", permission: "dashboard.read",
     description: "Executive Command Center: estate health, incidents and response KPIs" },
   // No permission gate on purpose: /portal enforces authorization server-side.
+  { id: "dashboards", label: "My Dashboards", icon: LayoutPanelLeft, route: "/dashboards", section: "Observe", permission: "dashboard.read",
+    description: "Your own and shared dashboards built from platform widgets" },
   { id: "command-center", label: "Command Center", icon: LayoutGrid, route: "/portal", section: "Observe",
     description: "Operations portal: live alerts, incidents and services" },
   { id: "monitoring", label: "Monitoring", icon: Activity, route: "/monitoring", section: "Observe", permission: "monitoring.read",
-    description: "Collection sources and sensors" },
+    description: "Collection sources and sensors",
+    children: [
+      { label: "Sources & Sensors", route: "/monitoring" },
+      { label: "Sensor Library", route: "/monitoring/library", keywords: "templates thresholds coverage recommendations" },
+    ] },
+  { id: "network", label: "Network", icon: Network, route: "/network", section: "Observe", permission: "monitoring.read",
+    description: "Interface health and load, errors and VPN tunnels" },
+  { id: "logs", label: "Logs", icon: ScrollText, route: "/logs", section: "Observe", permission: "monitoring.read",
+    description: "Search syslog and collector log lines" },
   { id: "alerts", label: "Alerts", icon: Bell, route: "/alerts", section: "Observe", permission: "alerts.read",
     description: "Alerts from every connected source" },
   { id: "reports", label: "Reports", icon: Database, route: "/reports", section: "Observe", permission: "dashboard.read",
@@ -68,6 +78,7 @@ export const NAV_CONFIG: NavGroup[] = [
     children: [
       { label: "Overview", route: "/infrastructure" },
       { label: "Hosts", route: "/infrastructure/hosts", keywords: "servers devices health facets" },
+      { label: "Servers", route: "/infrastructure/servers", keywords: "windows linux vmware cpu memory disk uptime" },
       { label: "Universal Resources", route: "/infrastructure/universal", keywords: "cloud firewall router switch" },
       { label: "Asset Inventory", route: "/infrastructure/assets", keywords: "cmdb devices" },
       { label: "Firewalls", route: "/infrastructure/firewalls", keywords: "firewall fortigate palo alto ha vpn licence" },
@@ -141,7 +152,10 @@ export const NAV_CONFIG: NavGroup[] = [
     description: "Tenant, security, users, notifications and API keys",
     children: [
       { label: "General", route: "/settings/general" },
-      { label: "Security", route: "/settings/security", keywords: "sso mfa password" },
+      { label: "Security", route: "/settings/security", keywords: "password policy sessions sign out lockout timeout mfa" },
+      { label: "Audit Log", route: "/settings/audit-log", keywords: "audit history compliance who changed export" },
+      { label: "Single Sign-On", route: "/settings/sso", keywords: "sso oidc saml okta entra azure ad google scim provisioning domain" },
+      { label: "Privacy & Data", route: "/settings/privacy", keywords: "privacy gdpr ai retention export delete organization" },
       { label: "Users & Roles", route: "/settings/users-roles", keywords: "rbac permissions" },
       { label: "Notifications", route: "/settings/notifications", keywords: "email slack pagerduty" },
       { label: "API Keys", route: "/settings/api-keys", keywords: "tokens" },

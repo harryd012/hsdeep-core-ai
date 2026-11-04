@@ -302,6 +302,7 @@ async def explorer_hosts(
     vendor: str | None = Query(None, max_length=100),
     criticality: str | None = Query(None, max_length=20),
     environment: str | None = Query(None, max_length=20),
+    tag: str | None = Query(None, max_length=50),
     site_id: uuid.UUID | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -324,6 +325,7 @@ async def explorer_hosts(
         vendor=vendor,
         criticality=criticality,
         environment=environment,
+        tag=tag,
         site_id=site_id,
     )
     return await service.snapshot(tenant_id, filters, limit=limit, offset=offset)

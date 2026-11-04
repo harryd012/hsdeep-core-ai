@@ -77,7 +77,10 @@ class RoleRepository:
         role.permissions = permissions
         self.db.add(role)
         await self.db.flush()
-        await self.db.refresh(role)
+        # Scoped refresh (server defaults only): a full refresh would expire
+        # ``permissions`` and the caller's next read of it would lazy-load
+        # synchronously (MissingGreenlet), as set_permissions explains.
+        await self.db.refresh(role, attribute_names=list(_REFRESHABLE_COLUMNS))
         return role
 
     async def set_permissions(self, role: Role, permissions: list[Permission]) -> Role:
@@ -118,6 +121,9 @@ class RoleRepository:
             select(Role)
             .options(selectinload(Role.permissions))
             .where(Role.id == role.id)
+            # Overwrite a collection loaded earlier in this session (e.g. by
+            # get_by_id); without it the caller would see the old grants.
+            .execution_options(populate_existing=True)
         )
         result = await self.db.execute(stmt)
         loaded = result.scalar_one()

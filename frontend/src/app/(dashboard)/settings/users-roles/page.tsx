@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Users, Shield, Plus, Trash2, Edit3, Check, X } from "lucide-react";
+import { Users, Shield, Plus, Trash2, Edit3, Check, X, LogOut, ShieldOff } from "lucide-react";
 import {
   listUsers,
   listRoles,
@@ -14,12 +14,15 @@ import {
   ApiError,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { resetUserMfa } from "@/lib/security";
 import SettingsBackButton from "@/components/settings/SettingsBackButton";
 
 type ModalMode = "invite" | "edit" | "delete" | null;
 
 export default function UsersRolesPage() {
-  const { tenantId } = useAuth();
+  const { tenantId, user: me } = useAuth();
+  const canSecure = !!me && (me.is_superuser || me.permissions.includes("security.manage"));
+  const [notice, setNotice] = useState<string | null>(null);
   const [users, setUsers] = useState<UserOut[]>([]);
   const [roles, setRoles] = useState<RoleOut[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -204,6 +207,7 @@ export default function UsersRolesPage() {
               <h3 style={{ display: "flex", alignItems: "center", gap: 8, color: "#c5f3ff", fontSize: 14, marginBottom: 12 }}>
                 <Users size={16} /> Users ({users.length})
               </h3>
+              {notice && <p role="status" style={{ color: "var(--green, #34d399)", fontSize: 12, margin: "0 0 8px" }}>{notice}</p>}
               {!loaded && <p style={{ color: "var(--muted)", fontSize: 12 }}>Loading users…</p>}
               {loaded && users.length === 0 && (
                 <p style={{ color: "var(--muted)", fontSize: 12 }}>No users found.</p>
@@ -219,6 +223,38 @@ export default function UsersRolesPage() {
                       <div style={{ color: "var(--muted)", fontSize: 11 }}>{u.email} {u.is_superuser ? "(superuser)" : ""} {u.is_active ? "" : "(inactive)"}</div>
                     </div>
                     <div style={{ display: "flex", gap: 4 }}>
+                      {canSecure && (
+                        <>
+                          <button
+                            title="Sign out of every session"
+                            aria-label={`Sign ${u.email} out of every session`}
+                            onClick={async () => {
+                              if (!window.confirm(`Sign ${u.email} out of every session?`)) return;
+                              try {
+                                const r = await apiFetch<{ sessions_ended: number }>(`/api/auth/users/${u.id}/sessions/end`, { method: "POST" });
+                                setNotice(`${u.email} was signed out of ${r.sessions_ended} session(s).`);
+                              } catch (e) {
+                                setError(e instanceof ApiError ? e.message : "Could not sign the user out.");
+                              }
+                            }}
+                            style={{ padding: 4, borderRadius: 4, border: "1px solid var(--line)", background: "transparent", color: "var(--amber)", cursor: "pointer" }}
+                          ><LogOut size={14} /></button>
+                          <button
+                            title="Reset two-step verification (lost device)"
+                            aria-label={`Reset two-step verification for ${u.email}`}
+                            onClick={async () => {
+                              if (!window.confirm(`Reset two-step verification for ${u.email}? They are signed out and set it up again with their password.`)) return;
+                              try {
+                                const r = await resetUserMfa(u.id);
+                                setNotice(r.mfa_removed ? `Two-step verification was reset for ${u.email}.` : `${u.email} had no two-step verification; their sessions were ended.`);
+                              } catch (e) {
+                                setError(e instanceof ApiError ? e.message : "Could not reset two-step verification.");
+                              }
+                            }}
+                            style={{ padding: 4, borderRadius: 4, border: "1px solid var(--line)", background: "transparent", color: "var(--amber)", cursor: "pointer" }}
+                          ><ShieldOff size={14} /></button>
+                        </>
+                      )}
                       <button onClick={() => openEdit(u)} style={{ padding: 4, borderRadius: 4, border: "1px solid var(--line)", background: "transparent", color: "var(--cyan)", cursor: "pointer" }}><Edit3 size={14} /></button>
                       <button onClick={() => openDelete(u)} style={{ padding: 4, borderRadius: 4, border: "1px solid var(--line)", background: "transparent", color: "var(--red)", cursor: "pointer" }}><Trash2 size={14} /></button>
                     </div>

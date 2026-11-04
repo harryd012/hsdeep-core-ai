@@ -47,6 +47,7 @@ class AuditService:
         context: dict | None = None,
     ) -> None:
         """Write one audit event. Best-effort: failures are logged, never raised."""
+        event = None
         try:
             event = AuditEvent(
                 tenant_id=tenant_id,
@@ -63,15 +64,30 @@ class AuditService:
                 user_agent=user_agent,
                 context=context or {},
             )
-            self.db.add(event)
             # SAVEPOINT: if the insert fails (e.g. an unknown actor_id FK),
             # only the audit write rolls back - the caller's business
             # transaction stays intact instead of being poisoned by a
-            # PendingRollbackError.
+            # PendingRollbackError. The event is added inside the savepoint
+            # (and expunged on failure) so the caller's commit does not try
+            # to insert the failed event again.
             async with self.db.begin_nested():
+                self.db.add(event)
                 await self.db.flush()
         except Exception:  # noqa: BLE001 - auditing must never break the request
+            if event is not None and event in self.db:
+                self.db.expunge(event)
             logger.exception("Failed to write audit event action=%s tenant=%s", action, tenant_id)
+            return
+        # Tamper evidence (S4): link the event into the tenant's hash chain, in
+        # its own savepoint. If that fails the event still stands and the
+        # sealing job links it later.
+        try:
+            from app.services.audit_chain import link_event
+
+            async with self.db.begin_nested():
+                await link_event(self.db, event.id, tenant_id)
+        except Exception:  # noqa: BLE001 - the chain must never break the request either
+            logger.warning("Audit chain: event %s left for the sealing job", event.id, exc_info=True)
 
     # -- Convenience wrappers for common security-sensitive actions ---------
 

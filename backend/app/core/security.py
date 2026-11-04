@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
 from app.core.config import get_settings
 
@@ -45,19 +45,54 @@ def _derive_fernet_key(secret: str) -> bytes:
     return base64.urlsafe_b64encode(digest)
 
 
+def key_fingerprint(secret: str) -> str:
+    """Short, non-reversible identifier of a configured key (for status
+    reports): the first 8 hex characters of SHA-256 over the derived key."""
+    return hashlib.sha256(_derive_fernet_key(secret)).hexdigest()[:8]
+
+
+def previous_keys() -> list[str]:
+    return [k.strip() for k in (settings.secret_encryption_keys_previous or "").split(",") if k.strip()]
+
+
 class SecretCrypto:
     """
-    Fernet-based encrypt/decrypt helper for monitoring source credentials.
+    Fernet-based encrypt/decrypt helper for stored credentials and secrets.
 
-    The encryption key is derived from `Settings.secret_encryption_key`
-    (see `_derive_fernet_key`). Instances are cheap to construct; a module
-    level singleton is not required but callers may create one per request
-    or reuse a shared instance.
+    Key versioning (enterprise security programme S4): encryption always uses
+    the current key (`Settings.secret_encryption_key`); decryption also
+    accepts the previous keys (`Settings.secret_encryption_keys_previous`),
+    so a key can be rotated without downtime. `rotate()` re-encrypts a value
+    with the current key (scripts/rotate_encryption_keys.py does it for every
+    stored secret). Instances are cheap to construct.
     """
 
-    def __init__(self, secret_encryption_key: str | None = None) -> None:
+    def __init__(self, secret_encryption_key: str | None = None, previous: list[str] | None = None) -> None:
         key_source = secret_encryption_key or settings.secret_encryption_key
-        self._fernet = Fernet(_derive_fernet_key(key_source))
+        older = previous_keys() if previous is None else previous
+        self._keys = [key_source, *[k for k in older if k != key_source]]
+        self._fernets = [Fernet(_derive_fernet_key(k)) for k in self._keys]
+        self._fernet = MultiFernet(self._fernets)
+
+    @property
+    def fingerprints(self) -> list[str]:
+        """Current key first, then the previous ones."""
+        return [key_fingerprint(k) for k in self._keys]
+
+    def key_index(self, ciphertext: str) -> int | None:
+        """0 when the current key decrypts it, i for the i-th key, None if none does."""
+        data = ciphertext.encode("utf-8")
+        for i, f in enumerate(self._fernets):
+            try:
+                f.decrypt(data)
+                return i
+            except InvalidToken:
+                continue
+        return None
+
+    def rotate(self, ciphertext: str) -> str:
+        """The same plaintext, encrypted with the current key."""
+        return self._fernet.rotate(ciphertext.encode("utf-8")).decode("utf-8")
 
     def encrypt(self, plaintext: str) -> str:
         """

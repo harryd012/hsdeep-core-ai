@@ -204,7 +204,12 @@ class UserRepository:
         #    collection is populated asynchronously (no lazy load).  The
         #    identity map returns the SAME ``user`` object, so the caller's
         #    reference is updated in-place.
-        stmt = select(User).options(selectinload(User.roles)).where(User.id == user.id)
+        stmt = (
+            select(User).options(selectinload(User.roles)).where(User.id == user.id)
+            # Overwrite a collection loaded earlier in this session, or the
+            # caller would see (and return) the old roles.
+            .execution_options(populate_existing=True)
+        )
         result = await self.db.execute(stmt)
         loaded = result.scalar_one()
         # Scoped refresh — do NOT expire ``roles`` right after loading it,

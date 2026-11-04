@@ -118,9 +118,13 @@ class DiscoveryScope(Base, UUIDPKMixin, TimestampMixin, SoftDeleteMixin):
     excluded_targets: Mapped[list] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )
-    # Free-form schedule descriptor; execution is owned by the existing
-    # scheduler, this only records the tenant's intent.
+    # Repeat interval ("15m", "6h", "1d"; app/services/discovery/schedule.py),
+    # run by app/scheduler/discovery_jobs.py. None: runs only on demand.
     schedule: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # When the scheduler next probes this scope; None without a schedule.
+    next_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     # -- Run state -------------------------------------------------------------
     status: Mapped[str] = mapped_column(

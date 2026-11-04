@@ -330,7 +330,7 @@ function HostContent() {
       )}
       {tab === "interfaces" && (
         <Panel title="Interfaces" state={q.interfaces.data ? "ready" : q.interfaces.isError ? "error" : "loading"} onRetry={() => q.interfaces.refetch()} skeletonHeight={240}>
-          <DataTable caption="Interfaces" columns={ifColumns} rows={interfaces} rowKey={(i) => i.id} emptyText="No interfaces discovered on this host." />
+          <DataTable caption="Interfaces" columns={ifColumns} rows={interfaces} rowKey={(i) => i.id} rowHref={(i) => `/network/interfaces/${i.id}`} emptyText="No interfaces discovered on this host." />
         </Panel>
       )}
       {tab === "events" && (

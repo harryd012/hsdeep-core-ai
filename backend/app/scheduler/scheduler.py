@@ -15,7 +15,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.core.config import get_settings
 from app.core.db import AsyncSessionLocal
 from app.repositories.collector_run_repository import CollectorRunRepository
+from app.scheduler.discovery_jobs import DISCOVERY_SCHEDULE_INTERVAL_SECONDS, discovery_schedule_job
 from app.scheduler.email_jobs import EMAIL_DELIVERY_INTERVAL_SECONDS, deliver_email_outbox_job
+from app.scheduler.metric_jobs import METRIC_RETENTION_INTERVAL_SECONDS, metric_retention_job
 from app.scheduler.incident_lifecycle import close_stale_incidents_job
 from app.scheduler.notification_jobs import NOTIFICATION_INTERVAL_SECONDS, dispatch_incident_notifications_job
 from app.scheduler.jobs import tick
@@ -63,6 +65,13 @@ async def _reconcile_stale_runs() -> None:
             logger.warning("Startup reconciliation: marked %s stale run(s) as error.", len(stale_runs))
         else:
             logger.info("Startup reconciliation: no stale running CollectorRun rows found.")
+
+
+from app.services.audit_chain import seal_audit_chain_job  # noqa: E402
+from app.services.offboarding import tenant_purge_job  # noqa: E402
+from app.services.tenant_export import tenant_export_job  # noqa: E402
+
+AUDIT_CHAIN_SEAL_INTERVAL_SECONDS = 300
 
 
 def start_scheduler(app: "FastAPI") -> AsyncIOScheduler:
@@ -119,6 +128,38 @@ def start_scheduler(app: "FastAPI") -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
     )
+    # Metric / sensor history retention (off unless metric_retention_days > 0).
+    scheduler.add_job(
+        metric_retention_job,
+        "interval",
+        seconds=METRIC_RETENTION_INTERVAL_SECONDS,
+        id="metric_retention",
+        max_instances=1,
+        coalesce=True,
+    )
+    # Scheduled discovery: probe scopes whose schedule is due (observation
+    # only; hosts become devices when an operator approves them).
+    scheduler.add_job(
+        discovery_schedule_job,
+        "interval",
+        seconds=DISCOVERY_SCHEDULE_INTERVAL_SECONDS,
+        id="discovery_schedule",
+        max_instances=1,
+        coalesce=True,
+    )
+    # Tamper-evident audit log: link events written outside AuditService.
+    scheduler.add_job(
+        seal_audit_chain_job,
+        "interval",
+        seconds=AUDIT_CHAIN_SEAL_INTERVAL_SECONDS,
+        id="audit_chain_seal",
+        max_instances=1,
+        coalesce=True,
+    )
+    # Privacy (S5): build requested tenant exports; delete tenants whose
+    # scheduled deletion date has passed.
+    scheduler.add_job(tenant_export_job, "interval", seconds=60, id="tenant_exports", max_instances=1, coalesce=True)
+    scheduler.add_job(tenant_purge_job, "interval", seconds=3600, id="tenant_purge", max_instances=1, coalesce=True)
     scheduler.start()
     app.state.scheduler = scheduler
     logger.info("Scheduler started: collection tick every %ss.", _TICK_INTERVAL_SECONDS)

@@ -33,6 +33,7 @@ import platform
 import re
 import socket
 import subprocess
+import uuid
 from typing import Any
 
 from app.collectors.base import (
@@ -46,6 +47,11 @@ from app.collectors.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: config["connectivity"]["device_id"]: the existing host this check watches.
+#: Set by the sensor library's bulk reachability (P3); the saver then attaches
+#: the check's sensors to that host instead of creating a device for the target.
+BOUND_DEVICE_KEY = "device_id"
 
 DEFAULT_CHECKS = ("icmp",)
 DEFAULT_TIMEOUT_SECONDS = 3.0
@@ -134,7 +140,45 @@ class ConnectivityCollector(BaseCollector):
             ip_address=self.source.ip_address or hostname,
             status=device_status,
         )
-        return NormalizedBundle(devices=[device], sensors=_latency_sensors(raw, hostname))
+        sensors = _latency_sensors(raw, hostname)
+        reachability = _reachability_sensor(raw, hostname)
+        if reachability is not None:
+            sensors.insert(0, reachability)
+        return NormalizedBundle(devices=[device], sensors=sensors)
+
+
+def bound_device_id(source_type: str | None, config: dict[str, Any] | None) -> uuid.UUID | None:
+    """The host a connectivity source is tied to, or None (pure; any other source type is None)."""
+    if source_type != "connectivity":
+        return None
+    raw = ((config or {}).get("connectivity") or {}).get(BOUND_DEVICE_KEY)
+    if not raw:
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except ValueError:
+        return None
+
+
+def _reachability_sensor(raw: dict[str, Any], hostname: str) -> NormalizedSensorReading | None:
+    """One up / down sensor over every check that ran (pure).
+
+    Latency and packet loss exist only while ICMP answers, so without this a
+    host that stops answering would only flip its device status and raise no
+    sensor alert. Down when any check failed; None when no check ran.
+    """
+    ran = [key for key in ("icmp", "tcp", "dns") if key in raw]
+    if not ran:
+        return None
+    failed = [key for key in ran if not (raw[key] or {}).get("ok")]
+    return NormalizedSensorReading(
+        external_id="reachability",
+        name="Reachability",
+        metric_type="reachability",
+        value=0.0 if failed else 1.0,
+        status="down" if failed else "up",
+        device_external_id=hostname,
+    )
 
 
 def _latency_sensors(raw: dict[str, Any], hostname: str) -> list[NormalizedSensorReading]:

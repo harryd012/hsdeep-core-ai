@@ -117,7 +117,9 @@ export const PORTAL_NAV: NavSection[] = [
       { id: "adm-settings", label: "Settings", route: "/settings/general" },
       { id: "adm-apikeys", label: "API Keys", route: "/settings/api-keys" },
       { id: "adm-security", label: "Security Settings", route: "/settings/security" },
-      COMING_SOON("adm-audit", "Audit", "No audit-log page exists yet."),
+      { id: "adm-audit", label: "Audit Log", route: "/settings/audit-log" },
+      { id: "adm-privacy", label: "Privacy & Data", route: "/settings/privacy" },
+      { id: "adm-sso", label: "Single Sign-On", route: "/settings/sso" },
     ],
   },
 ];

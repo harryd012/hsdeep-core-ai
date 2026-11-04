@@ -48,6 +48,7 @@ class HostRow(BaseModel):
     criticality: str | None = None
     environment: str | None = None
     lifecycle_state: str
+    tags: list[str] = []
     site_id: uuid.UUID | None = None
     site_name: str | None = None
     health: HostHealth
@@ -69,6 +70,8 @@ class HostFacets(BaseModel):
     vendor: list[FacetValue]
     criticality: list[FacetValue]
     environment: list[FacetValue]
+    #: Operator tags (Device.tags); a host with several tags counts once per tag.
+    tags: list[FacetValue] = []
 
 
 class HostsExplorer(BaseModel):

@@ -33,7 +33,7 @@ function VerifyEmail() {
   return (
     <AccountCard subtitle="Confirm your email" error={state.error} notice={pending ? "Confirming…" : state.notice}>
       {state.notice && (
-        <a href="/login" className={`${BUTTON_CLASS} block text-center`}>
+        <a href="/login" className={BUTTON_CLASS}>
           Sign in
         </a>
       )}

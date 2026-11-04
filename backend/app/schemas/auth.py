@@ -193,3 +193,58 @@ class RoleOut(BaseModel):
     name: str
     description: str | None
     permission_codes: list[str]
+
+
+class AuthSessionOut(BaseModel):
+    """One live sign-in session of the current user ("Your sessions")."""
+
+    session_id: uuid.UUID
+    started_at: datetime
+    last_seen_at: datetime
+    expires_at: datetime
+    ip_address: str | None = None
+    user_agent: str | None = None
+    #: The session making this request.
+    current: bool = False
+
+
+# ---- Multi-factor authentication (security programme S2) -------------------
+
+class MfaChallengeResponse(BaseModel):
+    """Returned by /auth/login instead of tokens when the user has MFA on."""
+
+    mfa_required: bool = True
+    mfa_token: str = Field(..., description="Short-lived; send it with the code to /auth/login/mfa")
+    expires_in: int
+
+
+class MfaLoginRequest(BaseModel):
+    mfa_token: str = Field(..., min_length=10, max_length=2000)
+    code: str = Field(..., min_length=6, max_length=32, description="6-digit app code or a recovery code")
+
+
+class MfaCodeRequest(BaseModel):
+    code: str = Field(..., min_length=6, max_length=32)
+
+
+class MfaStatusOut(BaseModel):
+    enabled: bool
+    confirmed_at: datetime | None = None
+    recovery_codes_remaining: int
+    setup_pending: bool
+    #: The tenant policy requires MFA for everyone.
+    required_by_policy: bool
+
+
+class MfaSetupOut(BaseModel):
+    """Shown once while setting up; the secret is never returned again."""
+
+    secret: str
+    otpauth_uri: str
+    qr_svg: str
+
+
+class RecoveryCodesOut(BaseModel):
+    """One-time codes for a lost device. Shown once; store them safely."""
+
+    codes: list[str]

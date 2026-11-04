@@ -26,6 +26,18 @@ from app.api.routes import ingest
 from app.api.routes import agents, tasks
 from app.api.routes import command_center
 from app.api.routes import discovery_scopes
+from app.api.routes import host_inventory
+from app.api.routes import audit_log
+from app.api.routes import mfa as mfa_routes
+from app.api.routes import network_access
+from app.api.routes import admin_security
+from app.api.routes import privacy as privacy_routes
+from app.api.routes import identity as identity_routes
+from app.api.routes import scim as scim_routes
+from app.api.routes import sensor_library
+from app.api.routes import network as network_center
+from app.api.routes import saved_dashboards
+from app.api.routes import logs as logs_explorer
 from app.api.routes import admin_tenants
 from app.api.routes import copilot
 from app.api.routes import billing, onboarding, stripe_webhook
@@ -604,5 +616,17 @@ app.include_router(failover_intelligence.router, prefix="/api")
 app.include_router(discovery.router, prefix="/api")
 app.include_router(discovery_probe_jobs.router, prefix="/api")
 app.include_router(discovery_scopes.router, prefix="/api")
+app.include_router(host_inventory.router, prefix="/api")
+app.include_router(audit_log.router, prefix="/api")
+app.include_router(mfa_routes.router, prefix="/api")
+app.include_router(network_access.router, prefix="/api")
+app.include_router(admin_security.router, prefix="/api")
+app.include_router(privacy_routes.router, prefix="/api")
+app.include_router(identity_routes.router, prefix="/api")
+app.include_router(scim_routes.router, prefix="/api")
+app.include_router(sensor_library.router, prefix="/api")
+app.include_router(network_center.router, prefix="/api")
+app.include_router(saved_dashboards.router, prefix="/api")
+app.include_router(logs_explorer.router, prefix="/api")
 app.include_router(admin_tenants.router, prefix="/api")
 app.include_router(ingest.router, prefix="/api/v1")

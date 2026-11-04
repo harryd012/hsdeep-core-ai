@@ -21,7 +21,9 @@ export type SensorState =
   | "STALE"
   | "UNKNOWN"
   | "COLLECTION_FAILED"
-  | "NOT_CONFIGURED";
+  | "NOT_CONFIGURED"
+  | "PAUSED"
+  | "DISABLED";
 
 export interface SensorStateInfo {
   state: SensorState;
@@ -49,6 +51,9 @@ const STATE_MAP: Record<SensorState, SensorStateInfo> = {
     dot: "var(--muted)",
     label: "Not configured",
   },
+  // Set by a user (sensor lifecycle): no alerting while paused or disabled.
+  PAUSED: { state: "PAUSED", color: "var(--muted)", dot: "var(--muted)", label: "Paused" },
+  DISABLED: { state: "DISABLED", color: "var(--muted)", dot: "var(--muted)", label: "Disabled" },
 };
 
 /** States that justify the "Alerting" stat card (anything not healthy/unknown). */
@@ -95,6 +100,10 @@ export function classifySensorState(
       return STATE_MAP.COLLECTION_FAILED;
     case "not_configured":
       return STATE_MAP.NOT_CONFIGURED;
+    case "paused":
+      return STATE_MAP.PAUSED;
+    case "disabled":
+      return STATE_MAP.DISABLED;
     default:
       return STATE_MAP.UNKNOWN;
   }

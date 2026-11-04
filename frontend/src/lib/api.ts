@@ -184,6 +184,64 @@ export interface LoginResponse {
   expires_in: number;
 }
 
+/** /api/auth/login answer for a user with MFA: a code step follows. */
+interface MfaChallenge {
+  mfa_required: true;
+  mfa_token: string;
+  expires_in: number;
+}
+
+/**
+ * Thrown by loginWithCredentials when the password was right and the account
+ * has multi-factor authentication: finish with completeMfaLogin(mfaToken, code).
+ */
+export class MfaRequiredError extends Error {
+  constructor(public readonly mfaToken: string, public readonly expiresIn: number) {
+    super("Enter the code from your authenticator app.");
+    this.name = "MfaRequiredError";
+  }
+}
+
+/** Single sign-on: trade the one-time handoff code from /sso/complete for a session. */
+export async function completeSsoLogin(code: string): Promise<LoginResponse> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}/api/auth/sso/exchange`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+      cache: "no-store",
+    });
+  } catch (err) {
+    throw new ApiError("/api/auth/sso/exchange", 0, err instanceof Error ? `Can't reach the server (${err.message}).` : "Can't reach the server.");
+  }
+  if (!res.ok) throw new ApiError("/api/auth/sso/exchange", res.status, await readErrorDetail(res));
+  const data = (await res.json()) as LoginResponse;
+  setAuthSession(data);
+  clearActiveTenantOverride();
+  return data;
+}
+
+/** Second sign-in step: the challenge from MfaRequiredError plus an app or recovery code. */
+export async function completeMfaLogin(mfaToken: string, code: string): Promise<LoginResponse> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}/api/auth/login/mfa`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mfa_token: mfaToken, code }),
+      cache: "no-store",
+    });
+  } catch (err) {
+    throw new ApiError("/api/auth/login/mfa", 0, err instanceof Error ? `Can't reach the server (${err.message}).` : "Can't reach the server.");
+  }
+  if (!res.ok) throw new ApiError("/api/auth/login/mfa", res.status, await readErrorDetail(res));
+  const data = (await res.json()) as LoginResponse;
+  setAuthSession(data);
+  clearActiveTenantOverride();
+  return data;
+}
+
 export interface LoginCredentials {
   tenantId?: string;
   email?: string;
@@ -251,15 +309,18 @@ export async function loginWithCredentials(creds: LoginCredentials = {}): Promis
   if (!res.ok) {
     throw new ApiError("/api/auth/login", res.status, await readErrorDetail(res));
   }
-  let data: LoginResponse;
+  let data: LoginResponse | MfaChallenge;
   try {
-    data = (await res.json()) as LoginResponse;
+    data = (await res.json()) as LoginResponse | MfaChallenge;
   } catch {
     throw new ApiError(
       "/api/auth/login",
       res.status,
       "The server returned a malformed login response.",
     );
+  }
+  if (data && "mfa_required" in data) {
+    throw new MfaRequiredError(data.mfa_token, data.expires_in);
   }
   if (!data?.access_token) {
     throw new ApiError(
@@ -534,6 +595,62 @@ export interface SensorOut {
   last_value_at: string | null;
   created_at: string;
   updated_at: string;
+  /** active | paused | disabled (user lifecycle). */
+  admin_state?: string;
+  /** provider | user */
+  threshold_source?: string;
+}
+
+export interface SensorChannel {
+  /** "primary" = the sensor's own reading; else the provider's channel name. */
+  key: string;
+  unit: string | null;
+  last_value: number | null;
+  last_recorded_at: string | null;
+  samples_24h: number;
+}
+
+export interface SensorDetail extends SensorOut {
+  admin_state: string;
+  threshold_source: string;
+  description: string | null;
+  /** above | below (user thresholds) */
+  threshold_direction: string | null;
+  device: { id: string; name: string } | null;
+  interface: { id: string; name: string } | null;
+  source: { id: string; name: string };
+  source_type: string;
+  channels: SensorChannel[];
+  open_alert: { id: string; title: string; severity: string; status: string } | null;
+}
+
+export interface SensorHistory {
+  channel: string;
+  unit: string | null;
+  hours: number;
+  bucket_seconds: number;
+  points: { t: string; avg: number | null; min: number | null; max: number | null; count: number }[];
+}
+
+export interface SensorUpdate {
+  admin_state?: "active" | "paused" | "disabled";
+  description?: string;
+  thresholds?: { warning: number | null; critical: number | null; direction: "above" | "below" };
+  reset_thresholds?: boolean;
+}
+
+export function getSensor(id: string): Promise<SensorDetail> {
+  return apiFetch<SensorDetail>(`/api/monitoring/sensors/${encodeURIComponent(id)}`);
+}
+
+export function getSensorHistory(id: string, channel: string, hours: number): Promise<SensorHistory> {
+  const qs = new URLSearchParams({ channel, hours: String(hours) });
+  return apiFetch<SensorHistory>(`/api/monitoring/sensors/${encodeURIComponent(id)}/history?${qs.toString()}`);
+}
+
+/** Pause / disable / resume, describe, or set / reset thresholds. Needs monitoring.update; audited. */
+export function updateSensor(id: string, change: SensorUpdate): Promise<SensorDetail> {
+  return apiFetch<SensorDetail>(`/api/monitoring/sensors/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(change) });
 }
 
 export function listMonitoringSources(tenantId: string = DEFAULT_TENANT_ID): Promise<MonitoringSourceOut[]> {
@@ -903,6 +1020,9 @@ export function clearActiveTenantOverride(): void {
 
 /** Server detail when a superuser's X-Tenant-Id has no live support grant. */
 const SUPPORT_GRANT_REQUIRED = "break-glass grant";
+/** Backend detail prefix: the tenant requires MFA and this user has not set it up. */
+export const MFA_ENROLLMENT_REQUIRED = "MFA_ENROLLMENT_REQUIRED";
+export const MFA_ENROLL_ROUTE = "/settings/security?mfa=setup";
 
 /**
  * Open break-glass support access to another tenant (R1.2). Grants are
@@ -977,6 +1097,8 @@ export interface SecuritySettings {
   max_login_attempts: number;
   created_at: string;
   updated_at: string;
+  /** True when the tenant never saved a policy (platform defaults apply). */
+  is_default?: boolean;
 }
 
 export interface SecuritySettingsUpdate {
@@ -1259,6 +1381,19 @@ async function apiFetchWithRetry<T>(
       if (getAuthToken() === token) await refreshAuthToken();
       if (!getAuthToken()) throw new ApiError(path, 401, "Please log in again.");
       return apiFetchWithRetry<T>(path, init, attempt + 1, timeoutMs);
+    }
+
+    // The organization requires MFA and this user has not set it up: every
+    // other request is refused until they do, so take them to set-up.
+    if (res.status === 403 && message.startsWith(MFA_ENROLLMENT_REQUIRED)) {
+      if (typeof window !== "undefined" && window.location.pathname !== "/settings/security") {
+        window.location.assign(MFA_ENROLL_ROUTE);
+      }
+      throw new ApiError(path, 403, "Your organization requires multi-factor authentication. Set it up to continue.");
+    }
+
+    if (res.status === 403 && message.startsWith("IP_NOT_ALLOWED")) {
+      throw new ApiError(path, 403, "Your organization only allows access from approved networks. Connect from an office or VPN network.");
     }
 
     // A support grant expired or was revoked by the customer: return to the
@@ -3403,6 +3538,8 @@ export interface HostExplorerRow {
   criticality: string | null;
   environment: string | null;
   lifecycle_state: string;
+  /** Operator tags (set with the bulk actions below). */
+  tags: string[];
   site_id: string | null;
   site_name: string | null;
   health: HostHealth;
@@ -3422,7 +3559,8 @@ export type HostFacetDimension =
   | "device_type"
   | "vendor"
   | "criticality"
-  | "environment";
+  | "environment"
+  | "tags";
 
 export interface HostsExplorer {
   generated_at: string;
@@ -3442,6 +3580,8 @@ export interface HostsExplorerParams {
   vendor?: string;
   criticality?: string;
   environment?: string;
+  /** One operator tag (the explorer's `tags` facet). */
+  tag?: string;
   site_id?: string;
   limit?: number;
   offset?: number;
@@ -3455,6 +3595,95 @@ export async function getExplorerHosts(params: HostsExplorerParams = {}): Promis
   }
   const query = qs.toString();
   return apiFetch<HostsExplorer>(`/api/explorer/hosts${query ? `?${query}` : ""}`);
+}
+
+// ---------------------------------------------------------------------------
+// Hosts explorer: saved views and bulk actions (/api/explorer/hosts/views, /bulk).
+// Mirrors backend/app/schemas/host_inventory.py.
+// ---------------------------------------------------------------------------
+
+export type HostViewFilters = Omit<HostsExplorerParams, "limit" | "offset">;
+export type HostViewLayout = "health" | "inventory";
+
+export interface HostSavedView {
+  id: string;
+  name: string;
+  filters: HostViewFilters;
+  layout: HostViewLayout;
+  /** Listed for the whole tenant; only the owner can change it. */
+  shared: boolean;
+  /** True when the caller owns the view. */
+  owned: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HostViewInput {
+  name?: string;
+  filters?: HostViewFilters;
+  layout?: HostViewLayout;
+  shared?: boolean;
+}
+
+const HOST_VIEWS = "/api/explorer/hosts/views";
+
+export function listHostViews(): Promise<HostSavedView[]> {
+  return apiFetch<HostSavedView[]>(HOST_VIEWS);
+}
+
+export function createHostView(body: HostViewInput & { name: string }): Promise<HostSavedView> {
+  return apiFetch<HostSavedView>(HOST_VIEWS, { method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateHostView(id: string, body: HostViewInput): Promise<HostSavedView> {
+  return apiFetch<HostSavedView>(`${HOST_VIEWS}/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function deleteHostView(id: string): Promise<void> {
+  return apiFetch<void>(`${HOST_VIEWS}/${id}`, { method: "DELETE" });
+}
+
+export type HostBulkAction =
+  | "set_criticality"
+  | "set_environment"
+  | "add_tags"
+  | "remove_tags"
+  | "pause_monitoring"
+  | "resume_monitoring";
+
+export interface HostBulkRequest {
+  device_ids: string[];
+  action: HostBulkAction;
+  /** set_criticality / set_environment; null clears the field. */
+  value?: string | null;
+  /** add_tags / remove_tags. */
+  tags?: string[];
+}
+
+export interface HostBulkResult {
+  action: HostBulkAction;
+  requested: number;
+  matched: number;
+  changed: number;
+  not_found: string[];
+  sensors_changed: number;
+  tag_limit_hit: number;
+}
+
+export interface HostVocabulary {
+  criticality: string[];
+  environment: string[];
+  max_bulk_hosts: number;
+}
+
+export function getHostVocabulary(): Promise<HostVocabulary> {
+  return apiFetch<HostVocabulary>("/api/explorer/hosts/vocabulary");
+}
+
+/** Classification goes to /bulk (devices.write); pause / resume to /bulk/monitoring (monitoring.update). */
+export function bulkHostAction(body: HostBulkRequest): Promise<HostBulkResult> {
+  const monitoring = body.action === "pause_monitoring" || body.action === "resume_monitoring";
+  return apiFetch<HostBulkResult>(`/api/explorer/hosts/bulk${monitoring ? "/monitoring" : ""}`, { method: "POST", body: JSON.stringify(body) });
 }
 
 // ---------------------------------------------------------------------------

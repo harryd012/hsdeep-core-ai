@@ -11,15 +11,14 @@ Two groups of endpoints:
 """
 from __future__ import annotations
 
-import time
 import uuid
-from collections import defaultdict
-from collections import deque
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import Principal, get_current_user, require_permission
+from app.core.auth import MFA_CHALLENGE_MINUTES, Principal, get_current_user, require_permission
+from app.core.client_ip import client_ip
+from app.core.shared_rate_limit import SharedRateLimiter
 from app.core.db import get_db
 from app.core.entitlements import require_active_subscription, require_entitlement
 from app.models.role import Role
@@ -31,11 +30,13 @@ from app.repositories.user_repository import UserRepository
 from app.schemas.auth import (
     AcceptInviteRequest,
     AssignRolesRequest,
+    AuthSessionOut,
     ForgotPasswordRequest,
     ResetPasswordRequest,
     VerifyEmailRequest,
     LoginRequest,
     LogoutRequest,
+    MfaChallengeResponse,
     MeResponse,
     PermissionOut,
     RefreshRequest,
@@ -54,9 +55,14 @@ from app.services.auth_service import (
     AuthService,
     Conflict,
     EmailNotVerified,
+    MfaRequired,
+    NetworkNotAllowed,
     NotFound,
+    SsoRequired,
 )
+from app.services.audit_service import AuditService
 from app.services.email.outbox import EmailDisabled
+from app.services.security_policy import PasswordPolicyError
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -65,33 +71,13 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # Suspended/canceled/incomplete tenants cannot WRITE (402);
 # reads stay open and past_due keeps its grace period.
 _active_sub_guard = Depends(require_active_subscription)
-# ---- Auth-rate limiter (5 rpm per IP) ----
-class _AuthRateLimiter:
-    """Stricter sliding-window limiter for login/refresh endpoints."""
-
-    def __init__(self, requests_per_minute: int = 5) -> None:
-        self._rpm = requests_per_minute
-        self._windows: dict[str, deque[float]] = defaultdict(deque)
-
-    def acquire(self, key: str) -> bool:
-        now = time.monotonic()
-        cutoff = now - 60.0
-        window = self._windows[key]
-        while window and window[0] < cutoff:
-            window.popleft()
-        if len(window) >= self._rpm:
-            return False
-        window.append(now)
-        return True
+# ---- Auth-rate limiter (5 per minute per IP, shared across API processes) ----
+_auth_limiter = SharedRateLimiter("ratelimit:auth:", limit=5, window_seconds=60)
 
 
-_auth_limiter = _AuthRateLimiter()
-
-
-def _check_auth_rate(request: Request) -> None:
+async def _check_auth_rate(request: Request) -> None:
     """Dependency that raises 429 if the client has exceeded the auth rate limit."""
-    client_ip = request.client.host if request.client else "unknown"
-    if not _auth_limiter.acquire(client_ip):
+    if not await _auth_limiter.acquire(client_ip(request) or "unknown"):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many authentication attempts. Try again later.",
@@ -107,6 +93,39 @@ def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
     )
 
 
+def _client(request: Request) -> tuple[str | None, str | None]:
+    """(IP address, user agent) of the caller, for session details."""
+    return client_ip(request), request.headers.get("user-agent")
+
+
+def _policy_error(exc: PasswordPolicyError) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+
+async def _audit(
+    db: AsyncSession,
+    principal: Principal,
+    *,
+    action: str,
+    entity_type: str,
+    entity_id: uuid.UUID | None,
+    description: str,
+    old_values: dict | None = None,
+    new_values: dict | None = None,
+) -> None:
+    await AuditService(db).record_entity(
+        tenant_id=principal.tenant_id,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        actor_id=principal.user_id,
+        actor_email=principal.email,
+        description=description,
+        old_values=old_values,
+        new_values=new_values,
+    )
+
+
 def _role_out(role: Role) -> RoleOut:
     return RoleOut(
         id=role.id,
@@ -119,7 +138,7 @@ def _role_out(role: Role) -> RoleOut:
 
 # ---- Authentication flow -------------------------------------------------
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=TokenResponse | MfaChallengeResponse)
 async def login(
     payload: LoginRequest,
     request: Request,
@@ -127,12 +146,31 @@ async def login(
     service: AuthService = Depends(get_auth_service),
     _: None = Depends(_check_auth_rate),
 ):
+    ip_address, user_agent = _client(request)
     try:
         access, refresh, expires_in, _resolved_tenant_id = await service.login(
-            tenant_id=payload.tenant_id, email=payload.email, password=payload.password
+            tenant_id=payload.tenant_id, email=payload.email, password=payload.password,
+            ip_address=ip_address, user_agent=user_agent,
         )
     except EmailNotVerified as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except SsoRequired as exc:
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"SSO_REQUIRED: {exc}") from exc
+    except NetworkNotAllowed as exc:
+        if exc.user is not None:
+            await AuditService(db).record(
+                tenant_id=exc.user.tenant_id, action="auth.login_blocked_network",
+                actor_id=exc.user.id, actor_email=exc.user.email, entity_type="auth",
+                description=f"Sign-in for {exc.user.email} refused: network {ip_address} is not allowed",
+                ip_address=ip_address, user_agent=(user_agent or "")[:500] or None,
+            )
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"IP_NOT_ALLOWED: {exc}") from exc
+    except MfaRequired as exc:
+        # Password accepted; the code step follows at /auth/login/mfa.
+        await db.commit()
+        return MfaChallengeResponse(mfa_token=exc.challenge_token, expires_in=MFA_CHALLENGE_MINUTES * 60)
     except AuthError as exc:
         # Security audit: every failed login attempt is recorded (best-effort
         # - auditing must never change the 401 response). AuditEvent rows are
@@ -141,8 +179,6 @@ async def login(
         # tenant-scoped to write to - it's still covered by the per-IP auth
         # rate limiter above, just not by the per-tenant audit trail.
         if payload.tenant_id is not None:
-            from app.services.audit_service import AuditService
-
             await AuditService(db).record_auth(
                 tenant_id=payload.tenant_id,
                 action="auth.login_failed",
@@ -187,6 +223,9 @@ async def reset_password(
         await AccountService(db).reset_password(payload.token, payload.password)
     except InvalidAccountToken as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except PasswordPolicyError as exc:
+        # Nothing is committed: the link stays usable for a compliant password.
+        raise _policy_error(exc) from exc
     await db.commit()
     return {"detail": "Password updated. Sign in with your new password."}
 
@@ -215,6 +254,8 @@ async def accept_invite(
         await AccountService(db).accept_invite(payload.token, payload.password)
     except InvalidAccountToken as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except PasswordPolicyError as exc:
+        raise _policy_error(exc) from exc
     await db.commit()
     return {"detail": "Password set. Sign in to continue."}
 
@@ -227,8 +268,14 @@ async def refresh(
     service: AuthService = Depends(get_auth_service),
     _: None = Depends(_check_auth_rate),
 ):
+    ip_address, user_agent = _client(request)
     try:
-        access, refresh_token, expires_in = await service.refresh(refresh_token=payload.refresh_token)
+        access, refresh_token, expires_in = await service.refresh(
+            refresh_token=payload.refresh_token, ip_address=ip_address, user_agent=user_agent
+        )
+    except NetworkNotAllowed as exc:
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"IP_NOT_ALLOWED: {exc}") from exc
     except AuthError as exc:
         # Commit even on failure: a replayed refresh token revokes its whole
         # session, and that revocation must persist.
@@ -258,8 +305,86 @@ async def logout_all(
     not sessions and are revoked separately."""
     if principal.user_id.int == 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="API keys have no sessions to end")
-    await service.logout_everywhere(principal.user_id)
+    count = await service.logout_everywhere(principal.user_id)
+    await _audit(db, principal, action="auth.signed_out_everywhere", entity_type="user", entity_id=principal.user_id,
+                 description=f"{principal.email} signed out of every session", new_values={"sessions_ended": count})
     await db.commit()
+
+
+# ---- Sessions ("Your sessions") --------------------------------------------
+
+def _require_user(principal: Principal) -> None:
+    if principal.user_id.int == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="API keys have no sessions")
+
+
+@router.get("/sessions", response_model=list[AuthSessionOut])
+async def list_my_sessions(
+    request: Request,
+    principal: Principal = Depends(get_current_user),
+    service: AuthService = Depends(get_auth_service),
+):
+    """The signed-in user's live sessions, most recently used first."""
+    _require_user(principal)
+    current = getattr(request.state, "session_id", None)
+    return [
+        AuthSessionOut(**s, current=str(s["session_id"]) == str(current))
+        for s in await service.list_sessions(principal.user_id)
+    ]
+
+
+@router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def end_my_session(
+    session_id: uuid.UUID,
+    principal: Principal = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    service: AuthService = Depends(get_auth_service),
+):
+    """End one of your own sessions (another device or browser)."""
+    _require_user(principal)
+    if not await service.end_session(user_id=principal.user_id, session_id=session_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    await _audit(db, principal, action="auth.session_ended", entity_type="user", entity_id=principal.user_id,
+                 description=f"{principal.email} ended a session", new_values={"session_id": str(session_id)})
+    await db.commit()
+
+
+@router.post("/sessions/end-others")
+async def end_my_other_sessions(
+    request: Request,
+    principal: Principal = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    service: AuthService = Depends(get_auth_service),
+) -> dict[str, int]:
+    """End every session except the one making this request."""
+    _require_user(principal)
+    current = getattr(request.state, "session_id", None)
+    keep = uuid.UUID(current) if current else None
+    count = await service.end_other_sessions(user_id=principal.user_id, keep=keep)
+    if count:
+        await _audit(db, principal, action="auth.other_sessions_ended", entity_type="user", entity_id=principal.user_id,
+                     description=f"{principal.email} signed out of {count} other session(s)", new_values={"sessions_ended": count})
+    await db.commit()
+    return {"sessions_ended": count}
+
+
+@router.post("/users/{user_id}/sessions/end", dependencies=[_active_sub_guard])
+async def end_user_sessions(
+    user_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(require_permission("security.manage")),
+    service: AuthService = Depends(get_auth_service),
+) -> dict[str, int]:
+    """Sign a user of this tenant out of every session (lost laptop, offboarding)."""
+    user = await service.users.get_by_id(user_id, principal.tenant_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    count = await service.logout_everywhere(user.id)
+    await _audit(db, principal, action="auth.user_signed_out", entity_type="user", entity_id=user.id,
+                 description=f"{principal.email} signed {user.email} out of every session",
+                 new_values={"sessions_ended": count})
+    await db.commit()
+    return {"sessions_ended": count}
 
 
 @router.get("/me", response_model=MeResponse)
@@ -358,8 +483,12 @@ async def create_role(
         )
     except Conflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    out = _role_out(role)  # before the audit write, which may expire loaded relationships
+    await _audit(db, principal, action="role.created", entity_type="role", entity_id=role.id,
+                 description=f"Role {role.name} created",
+                 new_values={"name": out.name, "permission_codes": out.permission_codes})
     await db.commit()
-    return _role_out(role)
+    return out
 
 
 @router.patch("/roles/{role_id}", response_model=RoleOut)
@@ -370,6 +499,11 @@ async def update_role(
     principal: Principal = Depends(require_permission("roles.write")),
     service: AuthService = Depends(get_auth_service),
 ):
+    before = await service.roles.get_by_id(role_id, principal.tenant_id)
+    old = (
+        {"description": before.description, "permission_codes": sorted(p.code for p in before.permissions)}
+        if before is not None else None
+    )
     try:
         role = await service.update_role(
             tenant_id=principal.tenant_id,
@@ -379,8 +513,12 @@ async def update_role(
         )
     except NotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    out = _role_out(role)  # before the audit write, which may expire loaded relationships
+    await _audit(db, principal, action="role.updated", entity_type="role", entity_id=role.id,
+                 description=f"Role {out.name} changed", old_values=old,
+                 new_values={"description": out.description, "permission_codes": out.permission_codes})
     await db.commit()
-    return _role_out(role)
+    return out
 
 
 @router.delete("/roles/{role_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -390,10 +528,14 @@ async def delete_role(
     principal: Principal = Depends(require_permission("roles.write")),
     service: AuthService = Depends(get_auth_service),
 ):
+    before = await service.roles.get_by_id(role_id, principal.tenant_id)
     try:
         await service.delete_role(tenant_id=principal.tenant_id, role_id=role_id)
     except NotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    await _audit(db, principal, action="role.deleted", entity_type="role", entity_id=role_id,
+                 description=f"Role {before.name if before else role_id} deleted",
+                 old_values={"name": before.name} if before else None)
     await db.commit()
 
 
@@ -430,9 +572,15 @@ async def create_user(
             await AccountService(db).send_invite(user)
     except Conflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except PasswordPolicyError as exc:
+        raise _policy_error(exc) from exc
     except EmailDisabled as exc:
         # Nothing is committed: no half-created user without a way in.
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=_EMAIL_OFF) from exc
+    await _audit(db, principal, action="user.created", entity_type="user", entity_id=user.id,
+                 description=f"User {user.email} created",
+                 new_values={"email": user.email, "is_superuser": user.is_superuser,
+                             "role_ids": [str(r) for r in payload.role_ids], "invited": bool(payload.send_invite)})
     await db.commit()
     return user
 
@@ -451,6 +599,10 @@ async def set_user_password(
         )
     except NotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except PasswordPolicyError as exc:
+        raise _policy_error(exc) from exc
+    await _audit(db, principal, action="user.password_set", entity_type="user", entity_id=user.id,
+                 description=f"{principal.email} set a new password for {user.email} (all sessions ended)")
     await db.commit()
     return user
 
@@ -463,12 +615,17 @@ async def assign_user_roles(
     principal: Principal = Depends(require_permission("users.update")),
     service: AuthService = Depends(get_auth_service),
 ):
+    before = await service.users.get_by_id(user_id, principal.tenant_id)
+    old_roles = sorted(r.name for r in before.roles) if before is not None else None
     try:
         user = await service.assign_roles(
             tenant_id=principal.tenant_id, user_id=user_id, role_ids=payload.role_ids
         )
     except NotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    await _audit(db, principal, action="user.roles_changed", entity_type="user", entity_id=user.id,
+                 description=f"Roles of {user.email} changed",
+                 old_values={"roles": old_roles}, new_values={"roles": sorted(r.name for r in user.roles)})
     await db.commit()
     return user
 
@@ -480,8 +637,12 @@ async def delete_user(
     principal: Principal = Depends(require_permission("users.delete")),
     service: AuthService = Depends(get_auth_service),
 ):
+    before = await service.users.get_by_id(user_id, principal.tenant_id)
     try:
         await service.delete_user(tenant_id=principal.tenant_id, user_id=user_id)
     except NotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    await _audit(db, principal, action="user.deleted", entity_type="user", entity_id=user_id,
+                 description=f"User {before.email if before else user_id} deleted",
+                 old_values={"email": before.email} if before else None)
     await db.commit()

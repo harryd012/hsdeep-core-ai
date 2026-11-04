@@ -4,7 +4,8 @@
 import { useState, type FormEvent } from "react";
 import { ApiError } from "@/lib/api";
 import { accountErrorMessage, requestPasswordReset } from "@/lib/account";
-import { AccountCard, BUTTON_CLASS, INPUT_CLASS, LABEL_CLASS } from "@/components/auth/AccountCard";
+import { Mail } from "lucide-react";
+import { AccountCard, BUTTON_CLASS } from "@/components/auth/AccountCard";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
@@ -29,10 +30,19 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <AccountCard subtitle="Reset your password" error={error} notice={notice} onSubmit={handleSubmit}>
-      <label htmlFor="email" className={LABEL_CLASS}>Email</label>
-      <input id="email" type="email" autoComplete="email" required value={email}
-        onChange={(e) => setEmail(e.target.value)} className={INPUT_CLASS} />
+    <AccountCard
+      subtitle="Reset your password"
+      lead="Enter the email you sign in with and we'll send you a reset link."
+      error={error}
+      notice={notice}
+      onSubmit={handleSubmit}
+    >
+      <div className="lx-field">
+        <label htmlFor="email" className="lx-sr-only">Email address</label>
+        <Mail className="lx-field__icon" size={18} aria-hidden="true" />
+        <input id="email" type="email" inputMode="email" autoComplete="email" required value={email} placeholder="Email address"
+          onChange={(e) => setEmail(e.target.value)} disabled={submitting} className="lx-input" />
+      </div>
       <button type="submit" disabled={submitting} className={BUTTON_CLASS}>
         {submitting ? "Sending…" : "Email me a reset link"}
       </button>

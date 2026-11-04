@@ -64,6 +64,28 @@ _pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 _oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 _ACCESS_TOKEN_TYPE = "access"
+#: Second sign-in step (MFA): proves the password was right, grants nothing else.
+_MFA_CHALLENGE_TYPE = "mfa_challenge"
+MFA_CHALLENGE_MINUTES = 5
+#: A token carrying "mfa_enroll" belongs to a user whose tenant requires MFA
+#: and who has not set it up: it can only reach these paths until they do.
+MFA_ENROLLMENT_REQUIRED = "MFA_ENROLLMENT_REQUIRED"
+#: Detail prefix when the caller's network is outside the tenant's IP allowlist.
+IP_NOT_ALLOWED = "IP_NOT_ALLOWED"
+
+
+async def _require_allowed_network(request: Request, tenant_id: uuid.UUID) -> None:
+    """The tenant's IP allowlist (S3). No rules = open; otherwise the caller's
+    address must be inside one of them."""
+    from app.core.client_ip import client_ip
+    from app.services.network_policy import ip_allowed
+
+    if not await ip_allowed(tenant_id, client_ip(request)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"{IP_NOT_ALLOWED}: your organization only allows access from approved networks.",
+        )
+_MFA_ENROLL_PATHS = ("/api/auth/mfa", "/api/auth/me", "/api/auth/logout", "/api/auth/sessions")
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +136,7 @@ def create_access_token(
     is_superuser: bool,
     permissions: frozenset[str],
     session_id: uuid.UUID | None = None,
+    mfa_enroll: bool = False,
 ) -> str:
     now = datetime.now(timezone.utc)
     claims: dict = {
@@ -128,7 +151,46 @@ def create_access_token(
     }
     if session_id is not None:
         claims["sid"] = str(session_id)
+    if mfa_enroll:
+        claims["mfa_enroll"] = True
     return jwt.encode(claims, settings.effective_jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def create_mfa_challenge_token(*, user_id: uuid.UUID, tenant_id: uuid.UUID) -> str:
+    """Short-lived proof that the password step passed, for POST /auth/login/mfa.
+    Its type is not "access", so it is rejected as a bearer token everywhere."""
+    now = datetime.now(timezone.utc)
+    claims = {
+        "sub": str(user_id),
+        "tid": str(tenant_id),
+        "type": _MFA_CHALLENGE_TYPE,
+        "jti": uuid.uuid4().hex,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(minutes=MFA_CHALLENGE_MINUTES)).timestamp()),
+    }
+    return jwt.encode(claims, settings.effective_jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def decode_mfa_challenge_token(token: str) -> tuple[uuid.UUID, uuid.UUID] | None:
+    """(user_id, tenant_id) of a valid, unexpired challenge token, else None."""
+    try:
+        payload = jwt.decode(token, settings.effective_jwt_secret, algorithms=[settings.jwt_algorithm])
+    except JWTError:
+        return None
+    if payload.get("type") != _MFA_CHALLENGE_TYPE:
+        return None
+    try:
+        return uuid.UUID(payload["sub"]), uuid.UUID(payload["tid"])
+    except (KeyError, ValueError):
+        return None
+
+
+def _mfa_enrollment_allows(request: Request) -> bool:
+    path = request.url.path
+    if any(path.startswith(p) for p in _MFA_ENROLL_PATHS):
+        return True
+    # The Security page reads the policy; it may not change it before enrolling.
+    return request.method == "GET" and path == "/api/settings/security"
 
 
 def _decode_access_token(token: str) -> dict:
@@ -406,6 +468,11 @@ def _publish_principal(request: Request, principal: Principal) -> None:
     between requests or tenants.
     """
     request.state.principal = principal
+    # Code far from the request (the AI gateway) applies the tenant's privacy
+    # settings; contextvars are per request task, so tenants never mix.
+    from app.core.tenant_context import current_tenant_id
+
+    current_tenant_id.set(principal.tenant_id)
 
 
 async def get_current_user(
@@ -445,12 +512,22 @@ async def get_current_user(
                 detail="Session has ended. Sign in again.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        # The caller's own tenant may restrict the networks it can be used from.
+        await _require_allowed_network(request, uuid.UUID(payload["tid"]))
+        # The tenant requires MFA and this user has not set it up yet: only
+        # the set-up, profile and sign-out endpoints answer until they do.
+        if payload.get("mfa_enroll") and not _mfa_enrollment_allows(request):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"{MFA_ENROLLMENT_REQUIRED}: your organization requires multi-factor authentication. Set it up to continue.",
+            )
         # Superuser acting in another tenant: the target must exist AND the
         # caller must hold a live break-glass grant for it (R1.2).
         if _override_applied(principal, payload):
             await _validate_override_tenant(principal.tenant_id)
             await _require_support_grant(principal)
         request.state.token_tenant_id = uuid.UUID(payload["tid"])
+        request.state.session_id = payload.get("sid")
         _publish_principal(request, principal)
         return principal
 
@@ -459,6 +536,7 @@ async def get_current_user(
     async for session in get_db():
         principal = await _resolve_api_key_principal(token, session, x_tenant_id)
         if principal is not None:
+            await _require_allowed_network(request, principal.tenant_id)
             _publish_principal(request, principal)
             return principal
         break
@@ -497,8 +575,20 @@ async def get_optional_user(
         # P0 hardening: validate the override target before trusting it.
         # (Outside the except block so a 403 for a bogus override is NOT
         # silently swallowed into "no principal".)
+        # Same checks as get_current_user, so this path can never be a way
+        # around session revocation or the break-glass grant.
+        if payload.get("sid") and not await session_is_live(payload["sid"]):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session has ended. Sign in again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if payload.get("mfa_enroll"):
+            # No request path here to allow the set-up endpoints, so refuse.
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"{MFA_ENROLLMENT_REQUIRED}: set up multi-factor authentication to continue.")
         if _override_applied(principal, payload):
             await _validate_override_tenant(principal.tenant_id)
+            await _require_support_grant(principal)
         return principal
 
 
