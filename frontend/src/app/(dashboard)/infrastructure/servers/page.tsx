@@ -38,12 +38,14 @@ function gaugeState(status: string): "ok" | "warning" | "critical" | "unknown" {
 function Gauge({ r }: { r: ResourceReading | null }) {
   if (!r) return <span className="pk-muted">Not measured</span>;
   const st = gaugeState(r.status);
-  const pct = r.value !== null && r.unit === "%" ? Math.min(100, Math.max(0, r.value)) : null;
+  const free = r.measure === "free";
+  const pct = !free && r.value !== null && r.unit === "%" ? Math.min(100, Math.max(0, r.value)) : null;
+  const derived = r.reported_free != null ? ` · reported ${fmt(r.reported_free)} % free` : "";
   return (
-    <span className="hd-gauge" title={`${r.name} · ${r.status}${r.recorded_at ? ` · ${ago(r.recorded_at)}` : ""}`}>
+    <span className="hd-gauge" title={`${r.name} · ${r.status}${derived}${r.recorded_at ? ` · ${ago(r.recorded_at)}` : ""}`}>
       <span className="hd-gauge__value">
         {r.value === null ? "—" : fmt(r.value)}
-        {r.value !== null && r.unit ? <small> {r.unit}</small> : null}
+        {r.value !== null && r.unit ? <small> {r.unit}{free ? " free" : ""}</small> : null}
       </span>
       <span className="hd-gauge__track" aria-hidden="true">
         {pct !== null && <span className={`hd-gauge__fill hd-gauge__fill--${st}`} style={{ width: `${Math.max(3, pct)}%` }} />}
@@ -145,7 +147,7 @@ export default function ServersPage() {
           maxHeight="max(480px, calc(100vh - 360px))"
           emptyText={
             summary && summary.servers === 0
-              ? "No server reports CPU, memory or disk yet. Add a Linux (SSH), Windows (WinRM / WMI) or VMware source to start collecting."
+              ? "No server reports CPU, memory or disk yet. Add a Linux (SSH), Windows (WinRM / WMI) or VMware source, or PRTG CPU load, memory and disk free sensors, to start collecting."
               : "No servers on this platform."
           }
         />

@@ -20,9 +20,11 @@ Three uses:
                 Nothing is created: adding a check needs a source and, for
                 most collectors, credentials.
 
-PRTG sensors are one template: the connector stores every PRTG sensor as
-`prtg_sensor` (PRTG's own sensor kind is not fetched yet), so their thresholds
-stay PRTG's and the template cannot apply thresholds in bulk.
+PRTG sensors are one template: the connector stores PRTG's CPU load, memory
+and disk free sensors as `prtg_cpu_load` / `prtg_memory_free` /
+`prtg_disk_free` (from PRTG's own sensor type) and every other one as
+`prtg_sensor`. Their thresholds stay PRTG's, so the template cannot apply
+thresholds in bulk.
 """
 from __future__ import annotations
 
@@ -142,7 +144,7 @@ TEMPLATES: tuple[SensorTemplate, ...] = (
        ["azure_backup"], ["replication_health"], None, None),
     _t("prtg_sensor", "PRTG sensor", "vendor",
        "Any PRTG sensor. Its kind, unit and thresholds are defined in PRTG; channels are kept as history.",
-       ["prtg"], ["prtg_sensor"], None, None),
+       ["prtg"], ["prtg_sensor", "prtg_cpu_load", "prtg_memory_free", "prtg_disk_free"], None, None),
 )
 TEMPLATES_BY_KEY = {t.key: t for t in TEMPLATES}
 TEMPLATE_BY_METRIC = {m: t for t in TEMPLATES for m in t.metric_types}

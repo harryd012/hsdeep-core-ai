@@ -16,6 +16,10 @@ export interface ResourceReading {
   /** The sensor's own status, from its thresholds. */
   status: string;
   recorded_at: string | null;
+  /** "used", or "free" for a free amount (GB ...) that could not be turned into used. */
+  measure?: "used" | "free";
+  /** The free percentage the sensor reported, when `value` (used) was derived from it (PRTG). */
+  reported_free?: number | null;
 }
 
 export interface ServerResources {

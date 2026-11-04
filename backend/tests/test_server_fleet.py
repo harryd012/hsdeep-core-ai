@@ -144,3 +144,47 @@ async def test_fleet_api_platform_filter_rbac_and_isolation(tenant, monitoring_s
     async with _client(uuid.uuid4()) as client:
         other = (await client.get("/api/explorer/hosts/resources")).json()
         assert other["servers"] == [] and other["summary"]["servers"] == 0
+
+
+# ---------------------------------------------------------------------------
+# PRTG host-resource sensors
+# ---------------------------------------------------------------------------
+
+
+def test_prtg_sensor_type_maps_to_host_resources():
+    from app.collectors.prtg import PRTGCollector, _lastvalue_unit, prtg_resource_metric_type
+
+    # PRTG's own type id first, then PRTG's own type name; never the sensor name.
+    assert prtg_resource_metric_type("snmpcpu", "") == "prtg_cpu_load"
+    assert prtg_resource_metric_type("wmimemory", "") == "prtg_memory_free"
+    assert prtg_resource_metric_type("unknownid", "WMI Free Disk Space (Multi Disk)") == "prtg_disk_free"
+    for type_raw, type_name in (("ping", "Ping v2"), ("sslcertificate", "SSL Certificate"), (None, None)):
+        assert prtg_resource_metric_type(type_raw, type_name) == "prtg_sensor"
+    assert [_lastvalue_unit(v) for v in ("12 %", "3.4 GB", "45%", "<1 %", None, "No data")] == ["%", "GB", "%", "%", None, None]
+
+    disk = PRTGCollector._normalize_sensor(
+        {"objid": 9, "name": "C: drive", "type_raw": "wmidiskspace", "lastvalue_": "12 %", "status_raw": 3, "parentid": 2}
+    )
+    assert (disk.metric_type, disk.value, disk.unit) == ("prtg_disk_free", 12.0, "%")
+    ping = PRTGCollector._normalize_sensor({"objid": 10, "name": "Ping", "type_raw": "ping", "lastvalue_": "3 msec", "parentid": 2})
+    assert (ping.metric_type, ping.unit) == ("prtg_sensor", None)  # generic checks keep today's shape
+
+
+def test_prtg_free_values_become_used_only_when_percent():
+    d = _device("prtg-srv")
+    sensors = [
+        _sensor(d.id, "prtg_cpu_load", 35.0, source_id="p"),
+        _sensor(d.id, "prtg_memory_free", 20.0, source_id="p"),
+        _sensor(d.id, "prtg_disk_free", 8.0, name="C:", status="warning", source_id="p"),
+        _sensor(d.id, "prtg_disk_free", 120.0, unit="GB", name="D:", source_id="p"),
+        _sensor(d.id, "prtg_sensor", None, unit=None, source_id="p"),  # ping, SSL ...: not a resource
+    ]
+    row = build_rows([d], sensors, {"p": "prtg"}, NOW)[0]
+    assert (row.cpu.value, row.memory.value, row.memory.reported_free) == (35.0, 80.0, 20.0)
+    # The 92 % used volume speaks for the disk; the GB-free one is not compared as a percentage.
+    assert (row.disk.name, row.disk.value, row.disk.reported_free, row.disks) == ("C:", 92.0, 8.0, 2)
+    assert row.peak_pct == 92.0 and row.platform == "other"
+    assert summarize([row]).disk_over_90 == 1
+
+    gb_only = build_rows([d], [_sensor(d.id, "prtg_disk_free", 120.0, unit="GB", source_id="p")], {"p": "prtg"}, NOW)[0]
+    assert (gb_only.disk.measure, gb_only.disk.value, gb_only.peak_pct) == ("free", 120.0, None)

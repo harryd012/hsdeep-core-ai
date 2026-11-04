@@ -17,6 +17,9 @@ Built only from what collectors reported:
   * Every value carries its sensor's own status (its thresholds decide it), and
     a percentage is only compared as a percentage when its unit says "%".
     VMware's MHz / MB readings are shown as reported, not turned into %.
+  * PRTG's memory and disk sensors report what is free: a free percentage
+    becomes used (100 - free, exact for a share of capacity) and keeps the
+    reported free value; a free amount in GB ... is shown as free.
   * A server whose newest reading is older than ``STALE_AFTER`` is "stale":
     its values are the last ones received, not current.
 
@@ -52,7 +55,16 @@ RESOURCE_OF_METRIC: dict[str, str] = {
     "cpu_load_1m": "load",
     "load_avg_1m": "load",
     "uptime_seconds": "uptime",
+    # PRTG host-resource sensors (app/collectors/prtg.py, from PRTG's own sensor type).
+    "prtg_cpu_load": "cpu",
+    "prtg_memory_free": "memory",
+    "prtg_disk_free": "disk",
 }
+
+#: Metric types whose value is what is FREE, not used (PRTG's memory / disk
+#: sensors). A free percentage is shown as used (100 - free); a free amount in
+#: another unit (GB ...) stays as reported and is labelled free.
+FREE_METRICS = frozenset({"prtg_memory_free", "prtg_disk_free"})
 
 _PLATFORM_OF_SOURCE = {"linux_ssh": "linux", "windows_winrm": "windows", "wmi": "windows", "vmware": "vmware"}
 #: Worst first, for picking the reading that speaks for a resource.
@@ -92,6 +104,10 @@ class Reading:
     unit: str | None
     status: str
     recorded_at: datetime | None
+    #: "used", or "free" for a free amount that could not be turned into used.
+    measure: str = "used"
+    #: The free percentage the sensor reported, when `value` was derived from it.
+    reported_free: float | None = None
 
 
 @dataclass
@@ -131,9 +147,16 @@ class FleetSummary:
 
 
 def _reading(s: Sensor) -> Reading:
-    return Reading(
+    reading = Reading(
         sensor_id=s.id, name=s.name, value=s.current_value, unit=s.unit, status=s.status, recorded_at=s.last_value_at,
     )
+    if s.metric_type in FREE_METRICS:
+        if is_percent(s.unit) and s.current_value is not None:
+            reading.reported_free = s.current_value
+            reading.value = round(100.0 - s.current_value, 2)
+        elif not is_percent(s.unit):
+            reading.measure = "free"
+    return reading
 
 
 def _pick(current: Reading | None, s: Sensor, *, prefer_high: bool) -> Reading:
@@ -144,7 +167,7 @@ def _pick(current: Reading | None, s: Sensor, *, prefer_high: bool) -> Reading:
         return candidate
     key = lambda r: (  # noqa: E731
         _STATUS_RANK.get(r.status, 2),
-        -(r.value if (prefer_high and r.value is not None and is_percent(r.unit)) else float("-inf")),
+        -(r.value if (prefer_high and r.value is not None and is_percent(r.unit) and r.measure == "used") else float("-inf")),
     )
     return candidate if key(candidate) < key(current) else current
 
@@ -178,13 +201,20 @@ def build_rows(devices: list[Device], sensors: list[Sensor], source_types: dict[
             if s.last_value_at is not None and (row.last_reading_at is None or s.last_value_at > row.last_reading_at):
                 row.last_reading_at = s.last_value_at
         row.stale = row.last_reading_at is None or now - row.last_reading_at > STALE_AFTER
-        pcts = [r.value for r in (row.cpu, row.memory, row.disk) if r is not None and r.value is not None and is_percent(r.unit)]
+        pcts = [r.value for r in (row.cpu, row.memory, row.disk) if _used_pct(r) is not None]
         row.peak_pct = max(pcts) if pcts else None
         rows.append(row)
 
     # Worst first: hosts with critical sensors, then warnings, then fullest.
     rows.sort(key=lambda r: (-r.critical, -r.warning, -(r.peak_pct if r.peak_pct is not None else -1), r.name.lower()))
     return rows
+
+
+def _used_pct(r: Reading | None) -> float | None:
+    """The reading as a used percentage, or None when it is not one."""
+    if r is None or r.value is None or r.measure != "used" or not is_percent(r.unit):
+        return None
+    return r.value
 
 
 def summarize(rows: list[ServerRow]) -> FleetSummary:
@@ -194,8 +224,8 @@ def summarize(rows: list[ServerRow]) -> FleetSummary:
         summary.critical += r.critical > 0
         summary.warning += r.critical == 0 and r.warning > 0
         summary.stale += r.stale
-        summary.disk_over_90 += bool(r.disk and r.disk.value is not None and is_percent(r.disk.unit) and r.disk.value >= 90)
-        summary.cpu_over_90 += bool(r.cpu and r.cpu.value is not None and is_percent(r.cpu.unit) and r.cpu.value >= 90)
+        summary.disk_over_90 += (_used_pct(r.disk) or 0) >= 90
+        summary.cpu_over_90 += (_used_pct(r.cpu) or 0) >= 90
     return summary
 
 
@@ -248,6 +278,6 @@ class HostResourcesService:
 
 
 __all__ = [
-    "PLATFORMS", "RESOURCE_OF_METRIC", "STALE_AFTER", "FleetSummary", "HostResourcesService", "Reading", "ServerRow",
+    "FREE_METRICS", "PLATFORMS", "RESOURCE_OF_METRIC", "STALE_AFTER", "FleetSummary", "HostResourcesService", "Reading", "ServerRow",
     "build_rows", "is_percent", "platform_of", "resource_of", "summarize",
 ]

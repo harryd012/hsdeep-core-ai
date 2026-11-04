@@ -263,7 +263,7 @@ class PRTGCollector(BaseCollector):
             "/api/table.json",
             {
                 "content": "sensors",
-                "columns": "objid,name,status,status_raw,lastvalue_,device,parentid",
+                "columns": "objid,name,type,type_raw,status,status_raw,lastvalue_,device,parentid",
                 "output": "json",
                 **params,
             },
@@ -408,11 +408,15 @@ class PRTGCollector(BaseCollector):
     @staticmethod
     def _normalize_sensor(row: dict[str, Any]) -> NormalizedSensorReading:
         parent_id = row.get("parentid")
+        metric_type = prtg_resource_metric_type(row.get("type_raw"), row.get("type"))
         return NormalizedSensorReading(
             external_id=str(row["objid"]),
             name=row.get("name") or "unknown-sensor",
-            metric_type="prtg_sensor",
+            metric_type=metric_type,
             value=_parse_lastvalue(row.get("lastvalue_")),
+            # The unit is only recorded for host-resource sensors, where it
+            # decides whether the value is a percentage (P5 server fleet).
+            unit=_lastvalue_unit(row.get("lastvalue_")) if metric_type != PRTG_GENERIC_SENSOR else None,
             status=_normalize_sensor_status(row),
             device_external_id=str(parent_id) if parent_id is not None else None,
         )
@@ -491,6 +495,62 @@ class PRTGCollector(BaseCollector):
                 )
             )
         return alerts
+
+
+#: Metric type of a PRTG sensor that is not a recognised host resource.
+PRTG_GENERIC_SENSOR = "prtg_sensor"
+
+#: PRTG's own sensor type ids (the `type_raw` column, set by PRTG and not
+#: editable by users) for host-resource sensors -> metric type. PRTG's memory
+#: and disk sensors report what is FREE (their primary channel is "Percent
+#: Available Memory" / "Free Space"), so they are named as such and the server
+#: fleet converts a free percentage to used.
+_PRTG_RESOURCE_TYPES: dict[str, str] = {
+    "snmpcpu": "prtg_cpu_load",
+    "wmiprocessor": "prtg_cpu_load",
+    "sshcpu": "prtg_cpu_load",
+    "snmpmemory": "prtg_memory_free",
+    "wmimemory": "prtg_memory_free",
+    "sshmeminfo": "prtg_memory_free",
+    "snmplinuxmeminfo": "prtg_memory_free",
+    "snmpdiskfree": "prtg_disk_free",
+    "wmidiskspace": "prtg_disk_free",
+    "wmivolume": "prtg_disk_free",
+    "sshdiskfree": "prtg_disk_free",
+    "snmplinuxdiskfree": "prtg_disk_free",
+    "diskfree": "prtg_disk_free",
+}
+
+#: Fallback on PRTG's sensor type NAME (the `type` column, also PRTG's own
+#: text, e.g. "SNMP CPU Load", "WMI Free Disk Space (Multi Disk)") for type
+#: ids not listed above. Never matched against the user-editable sensor name.
+_PRTG_RESOURCE_TYPE_NAMES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("cpu load",), "prtg_cpu_load"),
+    (("processor",), "prtg_cpu_load"),
+    (("free disk", "disk free", "volume"), "prtg_disk_free"),
+    (("memory", "meminfo"), "prtg_memory_free"),
+)
+
+
+def prtg_resource_metric_type(type_raw: Any, type_name: Any) -> str:
+    """The metric type for a PRTG sensor from PRTG's own sensor type."""
+    raw = str(type_raw or "").strip().lower()
+    if raw in _PRTG_RESOURCE_TYPES:
+        return _PRTG_RESOURCE_TYPES[raw]
+    name = str(type_name or "").strip().lower()
+    for keywords, metric_type in _PRTG_RESOURCE_TYPE_NAMES:
+        if any(k in name for k in keywords):
+            return metric_type
+    return PRTG_GENERIC_SENSOR
+
+
+def _lastvalue_unit(raw: str | None) -> str | None:
+    """The unit PRTG prints after a last value ("12 %" -> "%", "3.4 GB" ->
+    "GB"); None when there is no value or no unit."""
+    if not raw or _parse_lastvalue(raw) is None:
+        return None
+    unit = raw.strip().split(" ", 1)[1].strip() if " " in raw.strip() else raw.strip().lstrip("<>-.,0123456789").strip()
+    return unit or None
 
 
 def _parse_lastvalue(raw: str | None) -> float | None:

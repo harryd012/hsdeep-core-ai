@@ -16,6 +16,10 @@ class ResourceReadingOut(BaseModel):
     #: The sensor's own status (its thresholds decide it).
     status: str
     recorded_at: datetime | None
+    #: "used", or "free" for a free amount (GB ...) that could not be turned into used.
+    measure: str = "used"
+    #: The free percentage the sensor reported, when `value` (used) was derived from it.
+    reported_free: float | None = None
 
 
 class ServerResourcesOut(BaseModel):

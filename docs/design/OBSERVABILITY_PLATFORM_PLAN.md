@@ -305,9 +305,18 @@ across all servers.
 - **UI** `/infrastructure/servers` (nav: Infrastructure → Servers): stat strip (measured, down,
   warning, disk ≥ 90 %, CPU ≥ 90 %, stale), platform tabs, table with gauges, rows open the host
   page.
-- **Known gap**: PRTG sensors arrive as `prtg_sensor` with no resource type, so a PRTG-only
-  estate shows no servers here until PRTG sensor types (CPU Load, Memory, Disk Free) are mapped
-  to resources (next slice). The dev tenant's 34 PRTG sensors are of this kind.
+- **PRTG** (slice 2): the collector now requests PRTG's own sensor type (`type_raw`, and the
+  type name as a fallback; never the user-editable sensor name) and stores CPU load, memory and
+  disk free sensors as `prtg_cpu_load` / `prtg_memory_free` / `prtg_disk_free`, with the unit
+  PRTG prints after the value. Every other PRTG sensor stays `prtg_sensor`, unit unset, as before.
+  PRTG's memory and disk sensors report what is free: a free percentage is shown as used
+  (100 - free) with the reported free value in the tooltip; a free amount in GB is shown as free
+  and never compared as a percentage. The sensor library's PRTG template covers the new types.
+  `STATUS = Needs Verification`: the type ids (`snmpcpu`, `wmiprocessor`, `snmpmemory`,
+  `wmimemory`, `wmidiskspace`, `snmpdiskfree` ...) are not yet checked against a live PRTG (the
+  dev PRTG at 192.168.1.5 was unreachable), and existing PRTG sensors take the new types at
+  their next sync. Not mapped: uptime (PRTG prints it as "3 d 4 h", which the value parser does
+  not read) and the platform of PRTG-only servers (shown as "other").
 
 ## 9. P6 slice 1: topology drill-down
 
