@@ -101,7 +101,7 @@ from app.models.tenant_ip_rule import TenantIpRule
 from app.models.audit_chain import AuditChainLink
 from app.models.tenant_privacy import TenantPrivacySetting
 from app.models.tenant_export import TenantExport
-from app.models.identity import SsoHandoff, SsoLoginState, TenantDomain, TenantSsoConfig, UserIdentity
+from app.models.identity import SsoHandoff, SsoLoginState, TenantDomain, TenantSamlConfig, TenantSsoConfig, UserIdentity
 from app.models.tenant_custom_property import TenantCustomProperty
 
 ___all__ = [
@@ -197,5 +197,6 @@ ___all__ = [
     "UserIdentity",
     "SsoLoginState",
     "SsoHandoff",
+    "TenantSamlConfig",
     "TenantCustomProperty",
 ]
