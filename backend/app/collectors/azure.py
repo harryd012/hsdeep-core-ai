@@ -156,6 +156,11 @@ class AzureCollector(BaseCollector):
                 hostname=vm.get("name"),
                 status=status,
                 site_hint=vm.get("location"),
+                custom_metadata={
+                    "provider": "azure",
+                    "resource_kind": "virtual_machine",
+                    "region": vm.get("location"),
+                },
             )
             devices.append(device)
 

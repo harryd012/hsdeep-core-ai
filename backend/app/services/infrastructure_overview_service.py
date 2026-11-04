@@ -54,6 +54,7 @@ from app.repositories.resource_relationship_repository import (
 )
 from app.repositories.sensor_repository import SensorRepository
 from app.repositories.site_repository import SiteRepository
+from app.services.infrastructure_intelligence import vocabulary as V
 
 HEALTH_HEALTHY = "healthy"
 HEALTH_WARNING = "warning"
@@ -116,6 +117,68 @@ def _bucket(
     if key in critical:
         return HEALTH_CRITICAL
     return HEALTH_UNKNOWN
+
+
+#: Cloud provider from a device's vendor, when the collector set no
+#: `custom_metadata.provider` (older rows; the vendor is the collector's own).
+_CLOUD_PROVIDER_OF_VENDOR = {"amazon": "aws", "microsoft": "azure", "google": "gcp"}
+
+#: Cloud service category of a collector's `custom_metadata.resource_kind`.
+CLOUD_SERVICE_CATEGORY: dict[str, str] = {
+    "ec2_instance": "virtual_machines",
+    "compute_instance": "virtual_machines",
+    "virtual_machine": "virtual_machines",
+    "vpc": "networking",
+    "vpc_network": "networking",
+    "subnet": "networking",
+    "subnetwork": "networking",
+    "security_group": "security",
+    "firewall_rule": "security",
+    "load_balancer": "load_balancing",
+}
+
+
+def _empty_health() -> dict[str, int]:
+    return {"total": 0, HEALTH_HEALTHY: 0, HEALTH_WARNING: 0, HEALTH_CRITICAL: 0, HEALTH_UNKNOWN: 0}
+
+
+def _count(bucket: dict[str, int], health: str) -> None:
+    bucket["total"] += 1
+    bucket[health] += 1
+
+
+def cloud_provider_of(device: Device) -> str:
+    meta = device.custom_metadata or {}
+    provider = str(meta.get("provider") or "").strip().lower()
+    if provider:
+        return provider
+    return _CLOUD_PROVIDER_OF_VENDOR.get(str(device.vendor or "").strip().lower(), UNKNOWN_STATUS)
+
+
+def category_rollup(devices: list[Device]) -> tuple[dict[str, dict[str, int]], dict[str, Any]]:
+    """Device health per resource family, and cloud resources per provider and
+    service category (Infrastructure health overview).
+
+    The family is the existing vocabulary's (`resource_family`: server ->
+    compute, switch / router -> network, firewall -> security ...); a type it
+    does not know stays `unknown`. Cloud categories come only from the
+    collector's own `resource_kind`; anything else is `other`.
+    """
+    by_category: dict[str, dict[str, int]] = {}
+    providers: dict[str, dict[str, Any]] = {}
+    for device in devices:
+        health = device_health_bucket(device.status)
+        family = V.resource_family(device.device_type)
+        _count(by_category.setdefault(family, _empty_health()), health)
+        if family != V.FAMILY_CLOUD:
+            continue
+        provider = providers.setdefault(cloud_provider_of(device), {**_empty_health(), "services": {}})
+        _count(provider, health)
+        kind = str((device.custom_metadata or {}).get("resource_kind") or "").strip().lower()
+        _count(provider["services"].setdefault(CLOUD_SERVICE_CATEGORY.get(kind, "other"), _empty_health()), health)
+    ordered = {f: by_category[f] for f in V.RESOURCE_FAMILIES if f in by_category}
+    ordered.update({f: v for f, v in by_category.items() if f not in ordered})
+    return ordered, {"providers": dict(sorted(providers.items()))}
 
 
 def device_health_bucket(status: Any) -> str:
@@ -268,6 +331,7 @@ class InfrastructureOverviewService:
                 health.unknown_devices += 1
 
         health.total_devices = len(devices)
+        by_category, cloud = category_rollup(devices)
         return {
             "total": len(devices),
             # Raw vocabulary as stored, so the bucketed totals are auditable.
@@ -277,6 +341,10 @@ class InfrastructureOverviewService:
             "by_type": dict(sorted(by_type_canonical.items())),
             "by_type_raw": dict(sorted(by_type_raw.items())),
             "unassigned_to_site": unassigned,
+            # Health per resource family and cloud health per provider / service
+            # (additive; the Infrastructure health overview).
+            "by_category": by_category,
+            "cloud": cloud,
         }
 
     # -- sites -----------------------------------------------------------------

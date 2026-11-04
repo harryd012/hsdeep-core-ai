@@ -1,0 +1,28 @@
+/* Infrastructure health overview: category cards with a segmented health bar. */
+.ho-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.ho-card {
+  display: flex; flex-direction: column; gap: 10px; padding: 12px 14px;
+  border: 1px solid var(--ecc-border); border-radius: 10px; background: var(--ecc-surface);
+  color: var(--ecc-text); text-decoration: none; min-height: 74px;
+  transition: border-color .12s ease, background .12s ease;
+}
+a.ho-card:hover, a.ho-card:focus-visible { border-color: var(--ecc-accent); background: var(--ecc-surface-raised); outline: none; }
+.ho-card--muted { opacity: .75; }
+.ho-card__head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ho-card__icon { display: inline-flex; color: var(--ecc-text-muted); flex: none; }
+.ho-card__title { font-weight: 600; font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ho-card__counts { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ho-count { display: inline-flex; align-items: center; gap: 3px; font-weight: 600; }
+.ho-count--critical { color: var(--ecc-bad); }
+.ho-count--warning { color: var(--ecc-warn); }
+.ho-count--total { color: var(--ecc-text-muted); font-weight: 500; }
+.ho-bar { display: flex; height: 6px; border-radius: 999px; overflow: hidden; background: var(--ecc-track); }
+.ho-bar__seg { display: block; height: 100%; }
+.ho-bar__seg--critical { background: var(--ecc-bad); }
+.ho-bar__seg--warning { background: var(--ecc-warn); }
+.ho-bar__seg--healthy { background: var(--ecc-good); }
+.ho-bar__seg--unknown { background: var(--ecc-unknown); }
+.ho-card__note { font-size: 12px; color: var(--ecc-text-muted); margin: 0; }
+.ho-section { margin: 0 0 4px; font-size: 12px; font-weight: 600; letter-spacing: .02em; color: var(--ecc-text-muted); text-transform: uppercase; }
+.ho-provider { display: flex; flex-direction: column; gap: 10px; }
+.ho-provider + .ho-provider { margin-top: 16px; }
