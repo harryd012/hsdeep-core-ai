@@ -105,6 +105,10 @@ class Settings(BaseSettings):
 
     # Security
     secret_encryption_key: str
+    # Earlier encryption keys, comma-separated, newest first. Secrets written
+    # with them still decrypt; scripts/rotate_encryption_keys.py re-encrypts
+    # them with SECRET_ENCRYPTION_KEY, after which they can be removed here.
+    secret_encryption_keys_previous: str = ""
 
     # Billing / Stripe webhooks. Empty means "webhook endpoint disabled"
     # (POST /api/stripe/webhook returns 501) - see stripe_webhook.py.

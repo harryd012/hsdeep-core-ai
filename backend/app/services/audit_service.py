@@ -77,6 +77,17 @@ class AuditService:
             if event is not None and event in self.db:
                 self.db.expunge(event)
             logger.exception("Failed to write audit event action=%s tenant=%s", action, tenant_id)
+            return
+        # Tamper evidence (S4): link the event into the tenant's hash chain, in
+        # its own savepoint. If that fails the event still stands and the
+        # sealing job links it later.
+        try:
+            from app.services.audit_chain import link_event
+
+            async with self.db.begin_nested():
+                await link_event(self.db, event.id, tenant_id)
+        except Exception:  # noqa: BLE001 - the chain must never break the request either
+            logger.warning("Audit chain: event %s left for the sealing job", event.id, exc_info=True)
 
     # -- Convenience wrappers for common security-sensitive actions ---------
 

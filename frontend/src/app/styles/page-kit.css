@@ -273,6 +273,10 @@ a.pk-tile:hover { border-color: var(--ecc-accent); }
 .sec-sessions__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .sec-sessions__main b { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
 .sec-stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.ai-integrity { display: flex; flex-direction: column; gap: 8px; }
+.ai-integrity__problems { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--ecc-bad); }
+.ai-integrity__head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ai-integrity__head code { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: min(560px, 100%); }
 .net-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 .net-form .pk-input { flex: 1 1 160px; height: 32px; min-width: 0; }
 .mfa-setup__steps { margin: 0 0 12px; padding-left: 18px; font-size: 13px; line-height: 1.7; }

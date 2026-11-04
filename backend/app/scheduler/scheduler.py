@@ -67,6 +67,11 @@ async def _reconcile_stale_runs() -> None:
             logger.info("Startup reconciliation: no stale running CollectorRun rows found.")
 
 
+from app.services.audit_chain import seal_audit_chain_job  # noqa: E402
+
+AUDIT_CHAIN_SEAL_INTERVAL_SECONDS = 300
+
+
 def start_scheduler(app: "FastAPI") -> AsyncIOScheduler:
     """Called from main.py's startup event. Registers the 60s interval job
     and stores the AsyncIOScheduler on app.state so shutdown can stop it
@@ -137,6 +142,15 @@ def start_scheduler(app: "FastAPI") -> AsyncIOScheduler:
         "interval",
         seconds=DISCOVERY_SCHEDULE_INTERVAL_SECONDS,
         id="discovery_schedule",
+        max_instances=1,
+        coalesce=True,
+    )
+    # Tamper-evident audit log: link events written outside AuditService.
+    scheduler.add_job(
+        seal_audit_chain_job,
+        "interval",
+        seconds=AUDIT_CHAIN_SEAL_INTERVAL_SECONDS,
+        id="audit_chain_seal",
         max_instances=1,
         coalesce=True,
     )

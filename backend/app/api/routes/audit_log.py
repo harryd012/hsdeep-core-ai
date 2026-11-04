@@ -4,6 +4,7 @@ Tenant audit log (enterprise security programme S1).
   GET /api/audit/events          - filtered page, newest first
   GET /api/audit/events/facets   - actions and entity types for filter menus
   GET /api/audit/events/export   - CSV of the filtered events (max 50,000 rows)
+  GET /api/audit/integrity       - verify the tenant's tamper-evident hash chain (S4)
 
 All need audit.read (Owner, Admin; not the read-only Viewer role) and are
 scoped to the caller's tenant. An export is itself an audit event.
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import Principal, require_permission
 from app.core.db import get_db
 from app.schemas.audit_log import AuditEventOut, AuditFacetsOut, AuditPageOut
+from app.services import audit_chain
 from app.services.audit_log_service import MAX_EXPORT_ROWS, AuditFilters, AuditLogService
 from app.services.audit_service import AuditService
 
@@ -81,6 +83,7 @@ async def export_audit_events(
         new_values={k: (str(v) if v is not None else None) for k, v in filters.__dict__.items() if v is not None},
     )
     await db.commit()
+    chain_head = await audit_chain.head(db, principal.tenant_id)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return StreamingResponse(
         AuditLogService.export_csv(principal.tenant_id, filters),
@@ -89,5 +92,20 @@ async def export_audit_events(
             "Content-Disposition": f'attachment; filename="audit-log-{stamp}.csv"',
             "Cache-Control": "no-store",
             "X-Total-Count": str(count),
+            # Record this outside the platform: a later chain that does not
+            # contain it has been rebuilt.
+            **({"X-Audit-Chain-Head": f"{chain_head['seq']}:{chain_head['hash']}"} if chain_head else {}),
         },
     )
+
+
+@router.get("/integrity")
+async def audit_integrity(
+    full: bool = Query(False, description="Check the whole history instead of the most recent 10,000 events"),
+    principal: Principal = Depends(require_permission("audit.read")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Walk this tenant's audit hash chain: "intact", "broken" (with the first
+    problems: event_modified, event_deleted, broken_link, missing_link) or
+    "empty". `head` is the checkpoint to keep outside the platform."""
+    return (await audit_chain.verify(db, principal.tenant_id, full=full)).as_dict()

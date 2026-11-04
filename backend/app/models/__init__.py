@@ -98,6 +98,7 @@ from app.models.saved_dashboard import SavedDashboard
 from app.models.auth_session import AuthSession
 from app.models.user_mfa import MfaRecoveryCode, UserMfa
 from app.models.tenant_ip_rule import TenantIpRule
+from app.models.audit_chain import AuditChainLink
 from app.models.tenant_custom_property import TenantCustomProperty
 
 ___all__ = [
@@ -185,5 +186,6 @@ ___all__ = [
     "UserMfa",
     "MfaRecoveryCode",
     "TenantIpRule",
+    "AuditChainLink",
     "TenantCustomProperty",
 ]

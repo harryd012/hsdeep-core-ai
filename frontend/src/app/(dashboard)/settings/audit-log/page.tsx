@@ -11,6 +11,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronLeft, ChevronRight, Download, History } from "lucide-react";
 import { Banner, PageShell, Panel, Pill, SearchBox, ago, titleCaseWords } from "@/components/ui/PageKit";
+import AuditIntegrityPanel from "@/components/settings/AuditIntegrityPanel";
 import { useAuth } from "@/lib/auth-context";
 import { downloadAuditCsv, getAuditFacets, listAuditEvents, type AuditEvent, type AuditFilters } from "@/lib/security";
 
@@ -116,6 +117,8 @@ export default function AuditLogPage() {
       {!allowed ? (
         <Banner tone="info">The audit log needs the audit.read permission (Owner or Admin).</Banner>
       ) : (
+        <div className="sec-stack">
+        <AuditIntegrityPanel />
         <Panel
           title={data ? `Events ${data.total.toLocaleString("en-US")}` : "Events"}
           state={data ? "ready" : page.isError ? "error" : "loading"}
@@ -214,6 +217,7 @@ export default function AuditLogPage() {
             </div>
           )}
         </Panel>
+        </div>
       )}
     </PageShell>
   );

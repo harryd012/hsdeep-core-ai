@@ -223,3 +223,27 @@ export function addIpRule(cidr: string, label?: string): Promise<IpRule> {
 export function removeIpRule(id: string): Promise<void> {
   return apiFetch<void>(`/api/settings/network/ip-rules/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
+
+// ---------------------------------------------------------------------------
+// Tamper-evident audit log (security programme S4)
+// ---------------------------------------------------------------------------
+
+export interface AuditIntegrity {
+  status: "intact" | "broken" | "empty";
+  /** "recent": the latest 10,000 events (anchored on the link before them); "full": all history. */
+  scope: "recent" | "full";
+  from_seq: number;
+  links_checked: number;
+  /** Events not yet linked into the chain (linked by the sealing job within minutes). */
+  unchained_events: number;
+  problems: { seq: number; event_id: string; problem: "event_modified" | "event_deleted" | "broken_link" | "missing_link" }[];
+  /** Latest link: record it outside the platform as a checkpoint. */
+  head: { seq: number; hash: string; linked_at: string } | null;
+}
+
+/** `full` checks the whole history; it can take a while for a large log. */
+export function getAuditIntegrity(full = false): Promise<AuditIntegrity> {
+  return full
+    ? apiFetch<AuditIntegrity>("/api/audit/integrity?full=true", undefined, 120_000)
+    : apiFetch<AuditIntegrity>("/api/audit/integrity");
+}

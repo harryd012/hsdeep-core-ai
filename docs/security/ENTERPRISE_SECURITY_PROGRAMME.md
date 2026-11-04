@@ -1,6 +1,6 @@
 # Enterprise security, privacy and compliance programme
 
-Status: **S1–S3 implemented and tested** (2026-11-03 / 04). S4–S6 approved as the plan, not built.
+Status: **S1–S4 implemented and tested** (2026-11-03 / 04). S5–S6 approved as the plan, not built.
 
 Every item is labelled by its real state. Nothing here claims a certification: HSDEEP CORE AI
 holds no SOC 2, ISO 27001 or similar attestation.
@@ -151,10 +151,57 @@ Tests: `tests/test_mfa_totp.py`, `tests/test_security_s2_mfa.py`. Full backend s
 
 Tests: `tests/test_security_s3_network.py`.
 
+## S4: encryption and integrity (implemented)
+
+**Key rotation** (`app/core/security.py`, `app/services/key_rotation.py`):
+
+- `SecretCrypto` encrypts with `SECRET_ENCRYPTION_KEY` and also decrypts with the keys in
+  `SECRET_ENCRYPTION_KEYS_PREVIOUS` (comma-separated), so keys rotate without downtime.
+- Every encrypted column is registered in `ENCRYPTED_FIELDS`: monitoring source credentials,
+  ServiceNow secrets and OAuth tokens, ITSM credentials (per value in the JSON) and webhook
+  secrets, and MFA secrets.
+- `python scripts/rotate_encryption_keys.py --status | --rotate [--tenant]` reports, per column,
+  how many values the current key protects, how many still need an older key and how many no key
+  can read; `--rotate` re-encrypts the older ones in batches (`FOR UPDATE SKIP LOCKED`). Only
+  counts and 8-character key fingerprints are shown, never a secret. Exit code 1 if anything is
+  unreadable. `GET /api/admin/security/encryption` gives the same status to platform superusers.
+- Procedure: set the new key, move the old one to the previous list, restart, run `--rotate`,
+  remove the old key once `--status` shows nothing on it.
+- Note: in development, where `JWT_SECRET_KEY` is unset, the JWT secret falls back to the
+  encryption key, so changing it there also signs everyone out. Production requires a separate
+  `JWT_SECRET_KEY` (existing validator).
+
+**Tamper-evident audit log** (`audit_chain`, migration `a7c5e1f3b9d4`, `app/services/audit_chain.py`):
+
+- Each tenant's audit events form a SHA-256 hash chain: every link hashes the previous link
+  plus the event's canonical content as stored. A per-tenant advisory lock keeps it sequential.
+- `AuditService` links each event as it is written (in its own savepoint; a failure leaves it to
+  the sealing job). Events that a few services insert directly are linked by the scheduler's
+  sealing job every 5 minutes. Existing events were linked oldest first by the job after upgrade.
+- Links live in their own table, keyed by event id without a foreign key, so a deleted event
+  leaves its link and shows as `event_deleted`; an edited event shows as `event_modified`; an
+  altered link as `broken_link`.
+- `GET /api/audit/integrity` (`audit.read`) checks the most recent 10,000 events (anchored on the
+  stored link before them) so it stays fast at any size; `?full=true` or
+  `python scripts/verify_audit_chain.py` checks the whole history (dev tenant: 16,694 events in
+  about 2 seconds warm).
+- The chain head (sequence and hash) is shown on the Audit log page with "Copy checkpoint" and
+  sent with every CSV export (`X-Audit-Chain-Head`). Someone with full database write access could
+  rebuild the chain; a checkpoint kept outside the platform detects that.
+
+**Per-tenant keys (design, not built):** the next step towards customer-managed keys is envelope
+encryption: a random data key per tenant encrypts that tenant's secrets, and only the data keys
+are encrypted with the platform key (later, a key in the customer's own KMS: AWS KMS, Azure Key
+Vault, GCP KMS). Rotating the platform key then re-wraps a handful of data keys instead of every
+secret, and revoking a customer's KMS key makes their data unreadable (crypto-shredding). It needs
+a `tenant_keys` table, a `key_id` prefix on stored ciphertexts and a KMS client abstraction; the
+`ENCRYPTED_FIELDS` registry and rotation job above are the migration path.
+
+Tests: `tests/test_security_s4.py`. Full backend suite green (2799 passed).
+
 ## Approved plan, not built yet
 
 | Phase | Scope |
 |---|---|
-| S4 Encryption & integrity | Versioned keys with rotation (MultiFernet) and a re-encryption job, tamper-evident audit hash chain, per-tenant key design (for customer-managed keys later) |
 | S5 Privacy & compliance | Per-tenant retention, tenant data export, offboarding with a grace period, secret / PII redaction in logs and AI prompts, AI data-use control, an honest Trust page |
 | S6 Enterprise identity | OIDC (Entra ID, Okta, Google), SAML 2.0, SCIM provisioning, domain verification, require SSO |
