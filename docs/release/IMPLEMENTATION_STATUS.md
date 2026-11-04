@@ -68,10 +68,17 @@ on any branch; they need the owner's commit before they can be released.
 
 ### R1 follow-ups found by the leak scan (performance, R5.5)
 
-- `GET /api/command-center/overview` took 37 s locally while Redis was
-  unreachable; check whether every request waits on Redis connect timeouts.
-- `GET /api/infrastructure/discovery/scopes/{scope_id}` took 25 s to return
-  404 for an unknown id, with no database work logged in between.
+- `GET /api/command-center/overview`: about 3 s per request whenever Redis is
+  unreachable, because it probed Redis and Ollama one after the other on every
+  call (the dashboard polls it every 5 s). Fixed on `fix/slow-read-endpoints`:
+  probes run concurrently and are reused for 15 s.
+- The 25 s and ~55 s stalls during the API-key scan were the rate limiter, not
+  the routes: API-key traffic is limited per client IP at 60 requests/min and
+  the middleware waits for a free slot instead of answering 429
+  (`app/main.py`, `_RateLimiter.acquire`). The scan now skips that wait.
+  Decision for the owner: answer API-key callers over the limit with 429 and
+  `Retry-After` (as session traffic already is) instead of holding the
+  request open, which ties up server capacity under load.
 
 Overlap: the S1-S6 security programme (session in the main checkout) covers
 R1.6 (security audit), R1.8 (API key scopes, S3) and parts of R1.5; those are

@@ -199,8 +199,18 @@ async def test_no_get_route_returns_another_tenants_data(estate):
     assert sum(statuses.values()) >= 200
 
 
-async def test_no_get_route_leaks_to_another_tenants_api_key(estate):
-    """Same scan through the API-key principal path (all scopes)."""
+async def test_no_get_route_leaks_to_another_tenants_api_key(estate, monkeypatch):
+    """Same scan through the API-key principal path (all scopes).
+
+    API-key traffic is limited per client IP (60/min) and the limiter waits for
+    a free slot rather than answering 429, so 228 requests from one test client
+    would wait about three minutes. Rate limiting is not under test here."""
+    from app.main import _RateLimiter
+
+    async def no_wait(self, key, rpm):
+        return None
+
+    monkeypatch.setattr(_RateLimiter, "acquire", no_wait)
     leaks, statuses = await _scan(estate["key_b"], estate)
     real = {p: n for p, n in leaks.items() if n}
     assert real == {}, f"tenant B's API key saw tenant A data: {_scan.details}"
