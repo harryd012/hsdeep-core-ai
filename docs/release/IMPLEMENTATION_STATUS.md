@@ -58,13 +58,24 @@ on any branch; they need the owner's commit before they can be released.
 | --- | --- | --- | --- |
 | R1.1 | Tenant identity: no frontend fallback tenant | VERIFIED | `9e979cbc4`. Backend reads no tenant from the query (0 matches for `tenant_id ... Query(` in routes). `tsc` clean; 121 frontend tests pass. Not yet checked in a signed-in browser session. |
 | R1.2 | Scoped, time-bound, audited support access | VERIFIED | Break-glass grants (owner decision). `tests/test_support_access.py` 11 passed; `test_auth_tenants` updated; full backend suite 2,553 passed (+ RBAC guard list updated, 26 passed); frontend 121 passed. Browser check on a throwaway tenant: the switch asked for a reason, opened a 60 min grant, wrote `support_access.granted` in the customer's audit log; after revocation the app returned to the home tenant by itself. Migration `d2b8e6f1a4c9` round-tripped. |
-| R1.3 | Cross-tenant isolation suite | NOT_STARTED | |
+| R1.3 | Cross-tenant isolation suite | VERIFIED | `backend/tests/test_cross_tenant_leak_scan.py`: seeds tenant A (site, source, device, sensor, alert, incident, ticket, SOP + version, runbook, integration, task, user, API key, audit event) with a unique marker and calls every GET route (228) as tenant B, both with an all-permission session token and an all-scope API key, filling path ids with A's real ids. No route returns A's data; a positive control proves the markers are found for A's own user. Found and fixed one crash: `ServiceNowSyncJobRepository` filtered on a non-existent `is_deleted` column, breaking the worker's ServiceNow sync, job list and retry (`tests/test_servicenow_sync_job_repository.py`). Not covered: write routes (guarded by `test_rbac_write_routes` and per-feature tests), background jobs, enterprise business units (no model yet, R4). |
 | R1.4 | Server-side session revocation | VERIFIED | `431b85c85`, `fe7af585f`; migration `c7f1a9d3e5b2` round-tripped; `tests/test_session_revocation.py` 8 passed; auth/email/pilot/security suites 64 passed; full backend suite 2,542 passed + RBAC guard fixed (15 passed). |
 | R1.5 | RBAC per-role tests | NOT_STARTED | Write routes already guarded (`test_rbac_write_routes`). Role changes now end the user's sessions (R1.4). |
 | R1.6 | Unified security audit | NOT_STARTED | |
 | R1.7 | Signup rate limit fails closed | VERIFIED | `e5cc42668`; `tests/test_signup_rate_limit.py` 2 passed; billing/pilot suites pass. |
 | R1.8 | API key expiry/last-used as timestamps, enforcement tests | NOT_STARTED | |
 | R1.9 | Security configuration review | NOT_STARTED | |
+
+### R1 follow-ups found by the leak scan (performance, R5.5)
+
+- `GET /api/command-center/overview` took 37 s locally while Redis was
+  unreachable; check whether every request waits on Redis connect timeouts.
+- `GET /api/infrastructure/discovery/scopes/{scope_id}` took 25 s to return
+  404 for an unknown id, with no database work logged in between.
+
+Overlap: the S1-S6 security programme (session in the main checkout) covers
+R1.6 (security audit), R1.8 (API key scopes, S3) and parts of R1.5; those are
+left to it to avoid two implementations.
 
 ## R2 to R5
 
