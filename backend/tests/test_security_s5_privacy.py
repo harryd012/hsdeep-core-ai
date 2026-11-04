@@ -39,12 +39,12 @@ NOW = datetime.now(timezone.utc)
     ("login password=Hunter2! user=bob", "Hunter2!"),
     ('{"api_key": "abc123XYZ", "name": "x"}', "abc123XYZ"),
     ("Authorization: Bearer abcdefghijklmnop.qrs", "abcdefghijklmnop"),
-    ("token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig_abcdefg", "eyJzdWIiOiIxIn0"),
+    ("token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig_abcdefg", "eyJzdWIiOiIxIn0"),  # secret-scan: allow (fake redaction fixture)
     ("postgresql://app:s3cretpw@db:5432/x", "s3cretpw"),
     ("snmp community: public2024", "public2024"),
-    ("key AKIAABCDEFGHIJKLMNOP used", "AKIAABCDEFGHIJKLMNOP"),
+    ("key AKIAABCDEFGHIJKLMNOP used", "AKIAABCDEFGHIJKLMNOP"),  # secret-scan: allow (fake redaction fixture)
     ("card 4111 1111 1111 1111 paid", "4111 1111 1111 1111"),
-    ("-----BEGIN RSA PRIVATE KEY-----\nMIIBOg\n-----END RSA PRIVATE KEY-----", "MIIBOg"),
+    ("-----BEGIN RSA PRIVATE KEY-----\nMIIBOg\n-----END RSA PRIVATE KEY-----", "MIIBOg"),  # secret-scan: allow (fake redaction fixture)
 ])
 def test_redact_removes_credentials(text, secret):
     assert secret not in redact(text)
