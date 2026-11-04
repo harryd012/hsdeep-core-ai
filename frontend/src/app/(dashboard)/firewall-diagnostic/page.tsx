@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Shield } from "lucide-react";
 import DataStateView from "@/components/shared/DataStateView";
@@ -86,6 +87,11 @@ export default function FirewallDiagnosticPage() {
           </div>
         </div>
       </header>
+
+      <p style={{ fontSize: "0.8125rem", margin: "8px 0 12px" }}>
+        Multi-vendor standard steps: <Link href="/soc-playbooks?sop=SOP-017">SOP-017 Firewall Diagnostic</Link>
+        {" · "}FortiGate scenarios: <Link href="/soc-playbooks?sop=SOP-022">SOP-022</Link>
+      </p>
 
       <DataStateView
         loading={loading}

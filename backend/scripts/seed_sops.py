@@ -1,7 +1,8 @@
 """
-Seed the SOP Repository with production runbooks SOP-002 through SOP-016
+Seed the SOP Repository with production runbooks SOP-002 through SOP-022
 (SOP-002 to SOP-014 were previously hardcoded in the frontend; SOP-015 is MPLS
-L2VPN/L3VPN troubleshooting; SOP-016 is the general internet-down triage). SOP-001 already exists.
+L2VPN/L3VPN troubleshooting; SOP-016 is the general internet-down triage; SOP-017 to SOP-022 are the SOC
+playbooks in scripts/sop_soc_library.py). SOP-001 already exists.
 Idempotent: keyed on (tenant_id, sop_number).
 """
 from __future__ import annotations
@@ -19,6 +20,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import AsyncSessionLocal
 from app.repositories.sop_repository import SOPRepository
+from scripts.sop_soc_library import SOC_SEEDS  # SOP-017..021, SOC playbooks
 
 SEEDS = [
     {
@@ -597,6 +599,9 @@ SEEDS = [
         ],
     },
 ]
+
+SEEDS += SOC_SEEDS
+
 
 
 async def seed_sops(db: AsyncSession, tenant_id: uuid.UUID) -> int:

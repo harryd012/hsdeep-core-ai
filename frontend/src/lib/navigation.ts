@@ -131,6 +131,7 @@ export const NAV_CONFIG: NavGroup[] = [
       { label: "SOC Dashboard", route: "/soc-analysis" },
       { label: "Analyst Roster", route: "/soc-analyst-roster" },
       { label: "Firewall Diagnostic", route: "/firewall-diagnostic", keywords: "palo alto runbook rca diagnostic" },
+      { label: "SOC Playbooks", route: "/soc-playbooks", keywords: "sop firewall fortigate ips ids compromise brute force threat playbook" },
     ] },
 
   // -- Automation & AI --------------------------------------------------------------
