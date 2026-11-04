@@ -19,6 +19,7 @@ import {
 import { formatBps, formatPercent, utilizationBand } from "../../lib/topology/traffic";
 import type { RenderEdge, RenderNode } from "./topologyRenderTypes";
 import { ResourceIcon } from "./TopologyVisuals";
+import { DeviceDrillDown, InterfaceDrillLink, deviceIdOf } from "./TopologyDrillDown";
 
 export interface DetailDrawerProps {
   node: RenderNode | null;
@@ -59,11 +60,14 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 function InterfaceBlock({
   title,
   deviceLabel,
+  deviceId,
   name,
   iface,
 }: {
   title: string;
   deviceLabel: string;
+  /** The end's device, for the interface drill-down link; null when not a device. */
+  deviceId: string | null;
   name: string | null;
   iface: RenderEdge["localInterface"];
 }) {
@@ -96,6 +100,7 @@ function InterfaceBlock({
           />
           <Row label="VLAN" value={iface.vlanId === null ? null : String(iface.vlanId)} />
           <Row label="Last telemetry" value={iface.lastTelemetryAt} />
+          <InterfaceDrillLink deviceId={deviceId} name={name ?? iface.name} />
         </>
       ) : (
         <p style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
@@ -272,10 +277,14 @@ function DeviceDetail({ node }: { node: RenderNode }) {
         <Row label="Evidence type" value={node.visual.source === "generic" ? "unclassified" : null} />
       </Section>
 
-      <Section title="EVENTS">
-        <p style={{ fontSize: 11, color: "var(--muted)" }}>
-          No data available — this view does not receive an event feed.
-        </p>
+      <Section title="MONITORING">
+        {node.kind === "device" && !node.l3Kind && deviceIdOf(node.id) ? (
+          <DeviceDrillDown deviceId={deviceIdOf(node.id) as string} />
+        ) : (
+          <p style={{ fontSize: 11, color: "var(--muted)" }}>
+            Not a monitored device, so there are no sensors or alerts to show.
+          </p>
+        )}
       </Section>
     </>
   );
@@ -306,12 +315,14 @@ function EdgeDetail({ edge }: { edge: RenderEdge }) {
       <InterfaceBlock
         title="LOCAL END"
         deviceLabel={edge.source}
+        deviceId={deviceIdOf(edge.source)}
         name={edge.localInterfaceName}
         iface={edge.localInterface}
       />
       <InterfaceBlock
         title="REMOTE END"
         deviceLabel={edge.target}
+        deviceId={deviceIdOf(edge.target)}
         name={edge.remoteInterfaceName}
         iface={edge.remoteInterface}
       />

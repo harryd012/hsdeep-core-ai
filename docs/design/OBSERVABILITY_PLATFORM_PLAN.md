@@ -44,7 +44,7 @@ Earlier audits: `docs/REPOSITORY_AUDIT.md`, `docs/PLATFORM_LEDGER.md` (batches 1
 | P3 Sensor library | Sensor templates (catalogue from the collectors' real metric types), recommendation from discovery profiles, bulk add for collectors that support configuration (SNMP, connectivity) | **Slice 1 implemented and tested**: catalogue of 29 templates with tenant usage, bulk thresholds through the P1 lifecycle, per-host coverage rules, sensors linked to their host; **slice 2**: bulk reachability checks tied to their hosts, a reachability sensor that alerts when a host stops answering (`tests/test_sensor_library.py`) |
 | P4 Network Monitoring Center | Interface traffic / errors / utilization pages from `interfaces` + metrics, top-N bandwidth, VPN tunnels (FortiGate / Palo Alto data already collected) | **Slice 1 implemented and tested**: per-interface history (traffic, utilisation, error rates), network overview / interface list / interface history API, Network Monitoring and interface pages (`tests/test_network_center.py`) |
 | P5 Infrastructure monitoring | Windows / Linux / VMware host views from existing collectors | **Slice 1 implemented and tested**: server fleet page (`tests/test_server_fleet.py`); per-host detail already existed |
-| P6 Dashboards & topology | Widget registry over aggregated APIs, saved dashboards per tenant / role; topology already exists, add drill-down to sensors | planned |
+| P6 Dashboards & topology | Widget registry over aggregated APIs, saved dashboards per tenant / role; topology already exists, add drill-down to sensors | **Slice 1 implemented** (frontend only): topology drill-down to sensors, alerts, host tabs and interface pages; saved dashboards are slice 2 (needs a migration, waiting on S3's) |
 | P7 Metrics / logs | Syslog receiver on the edge agent → normalized events, Logs Explorer over events | planned (needs agent work) |
 | P8 APM / tracing | OTLP/HTTP ingest of traces → spans table, service map from span parent/child | planned (new ingestion path) |
 | P9 Alerting | Dynamic baselines, notification policies, Teams channel | planned (engine exists) |
@@ -308,3 +308,25 @@ across all servers.
 - **Known gap**: PRTG sensors arrive as `prtg_sensor` with no resource type, so a PRTG-only
   estate shows no servers here until PRTG sensor types (CPU Load, Memory, Disk Free) are mapped
   to resources (next slice). The dev tenant's 34 PRTG sensors are of this kind.
+
+## 9. P6 slice 1: topology drill-down
+
+Order changed on purpose: saved dashboards need a new table, and an uncommitted security S3
+migration (`f6b4d0e2a8c3`) sits on the same base revision in this working copy, so a second
+migration now would give Alembic two heads. Slice 1 is the drill-down, which needs no storage;
+saved dashboards and the widget registry follow as slice 2 once S3's migration is committed.
+
+- **Topology drawer** (`components/topology/TopologyDrillDown.tsx`): selecting a device on the
+  live topology now shows a MONITORING section in place of the old "no event feed" note: its
+  sensors (count, down and warning, the failing ones linking to their sensor pages), open
+  alerts, and links to the host page's Overview, Sensors, Alerts, Interfaces and Events tabs.
+  Data comes on demand from the existing `/api/devices/{id}/sensors` and `/alerts`; nothing
+  new on the backend. Sites, sources and L3 synthetic nodes say they have no sensors.
+- **Link ends**: each end of a link offers "Open interface history" when its device has an
+  interface of exactly that name (looked up through `/api/network/interfaces`). The default L2
+  tree view draws links that cannot be selected, so this was type-checked and built but not
+  exercised in the browser.
+- **Host page**: interface rows open the P4 interface page.
+- **Verified live** on the dev tenant: selecting `hsdeep-lab-sw-b` shows "No sensor reports for
+  this device" (it is polled through interfaces), 0 open alerts and working host-tab links;
+  the host's `Gi1/2` row opens `/network/interfaces/<id>`.
