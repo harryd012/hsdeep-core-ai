@@ -1,6 +1,6 @@
 import {
   Activity, ArrowLeftRight, Bell, BookOpen, Bot, Building2, CreditCard, Database, DatabaseBackup, LayoutDashboard,
-  LayoutGrid, LifeBuoy, Network, Server, Settings, Shield, Ticket, TriangleAlert, Workflow, type LucideIcon,
+  LayoutGrid, LayoutPanelLeft, LifeBuoy, Network, Server, Settings, Shield, Ticket, TriangleAlert, Workflow, type LucideIcon,
 } from "lucide-react";
 
 /**
@@ -46,6 +46,8 @@ export const NAV_CONFIG: NavGroup[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, route: "/dashboard", section: "Observe", permission: "dashboard.read",
     description: "Executive Command Center: estate health, incidents and response KPIs" },
   // No permission gate on purpose: /portal enforces authorization server-side.
+  { id: "dashboards", label: "My Dashboards", icon: LayoutPanelLeft, route: "/dashboards", section: "Observe", permission: "dashboard.read",
+    description: "Your own and shared dashboards built from platform widgets" },
   { id: "command-center", label: "Command Center", icon: LayoutGrid, route: "/portal", section: "Observe",
     description: "Operations portal: live alerts, incidents and services" },
   { id: "monitoring", label: "Monitoring", icon: Activity, route: "/monitoring", section: "Observe", permission: "monitoring.read",

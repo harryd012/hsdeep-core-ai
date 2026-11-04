@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Network } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import { formatBps, getInterfaceHistory, getNetworkInterface, type InterfaceHistory } from "@/lib/network";
+import AddToDashboard from "@/components/dashboards/AddToDashboard";
 import { Banner, LineChart, PageShell, Panel, Pill, StatStrip, StatTile, Tabs, ago, titleCaseWords } from "@/components/ui/PageKit";
 
 /**
@@ -74,6 +75,11 @@ export default function InterfacePage() {
         <StatTile label="Utilization" value={i?.fresh && i.utilization_pct !== null ? `${i.utilization_pct.toFixed(1)} %` : "—"} info="Busiest direction against the interface speed." loading={iface.isLoading} />
         <StatTile label="Errors (counters)" value={i ? `${(i.in_errors ?? 0).toLocaleString("en-US")} / ${(i.out_errors ?? 0).toLocaleString("en-US")}` : "—"} sub="in / out since the counters started" info="Cumulative error counters as the device reports them." loading={iface.isLoading} />
       </StatStrip>
+      {i && (
+        <div style={{ marginBottom: 8 }}>
+          <AddToDashboard widget={{ type: "interface_chart", title: null, size: "medium", config: { interface_id: i.id, channel: "rx_bps", hours } }} />
+        </div>
+      )}
       {i && recorded === 0 && (
         <Banner tone="info">No history recorded for this interface yet. History starts with the first two polls after this release that both carry counters.</Banner>
       )}

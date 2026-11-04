@@ -125,12 +125,16 @@ def test_viewer_cannot_reach_any_guarded_write_route():
         if (codes := _required_permissions(route.dependant)) and codes <= VIEWER
     )
     # Read-only computations that are POSTs by shape (a request body, no
-    # writes), and a reader's own saved Hosts-explorer views (personal
-    # settings, owner-only writes). Everything else must be closed to Viewer.
+    # writes), and a reader's own saved Hosts-explorer views and dashboards
+    # (personal settings, owner-only writes; sharing needs devices.write).
+    # Everything else must be closed to Viewer.
     assert reachable == [
+        "DELETE /api/dashboards/{dashboard_id}",
         "DELETE /api/explorer/hosts/views/{view_id}",
+        "PATCH /api/dashboards/{dashboard_id}",
         "PATCH /api/explorer/hosts/views/{view_id}",
         "POST /api/copilot/chat",
+        "POST /api/dashboards",
         "POST /api/explorer/hosts/views",
         "POST /api/failover/evaluate",
         "POST /api/failover/simulate",

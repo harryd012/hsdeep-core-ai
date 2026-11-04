@@ -44,7 +44,7 @@ Earlier audits: `docs/REPOSITORY_AUDIT.md`, `docs/PLATFORM_LEDGER.md` (batches 1
 | P3 Sensor library | Sensor templates (catalogue from the collectors' real metric types), recommendation from discovery profiles, bulk add for collectors that support configuration (SNMP, connectivity) | **Slice 1 implemented and tested**: catalogue of 29 templates with tenant usage, bulk thresholds through the P1 lifecycle, per-host coverage rules, sensors linked to their host; **slice 2**: bulk reachability checks tied to their hosts, a reachability sensor that alerts when a host stops answering (`tests/test_sensor_library.py`) |
 | P4 Network Monitoring Center | Interface traffic / errors / utilization pages from `interfaces` + metrics, top-N bandwidth, VPN tunnels (FortiGate / Palo Alto data already collected) | **Slice 1 implemented and tested**: per-interface history (traffic, utilisation, error rates), network overview / interface list / interface history API, Network Monitoring and interface pages (`tests/test_network_center.py`) |
 | P5 Infrastructure monitoring | Windows / Linux / VMware host views from existing collectors | **Slice 1 implemented and tested**: server fleet page (`tests/test_server_fleet.py`); per-host detail already existed |
-| P6 Dashboards & topology | Widget registry over aggregated APIs, saved dashboards per tenant / role; topology already exists, add drill-down to sensors | **Slice 1 implemented** (frontend only): topology drill-down to sensors, alerts, host tabs and interface pages; saved dashboards are slice 2 (needs a migration, waiting on S3's) |
+| P6 Dashboards & topology | Widget registry over aggregated APIs, saved dashboards per tenant / role; topology already exists, add drill-down to sensors | **Slice 1 implemented** (frontend only): topology drill-down to sensors, alerts, host tabs and interface pages; **slice 2**: saved dashboards and the widget registry (`tests/test_saved_dashboards.py`) |
 | P7 Metrics / logs | Syslog receiver on the edge agent → normalized events, Logs Explorer over events | planned (needs agent work) |
 | P8 APM / tracing | OTLP/HTTP ingest of traces → spans table, service map from span parent/child | planned (new ingestion path) |
 | P9 Alerting | Dynamic baselines, notification policies, Teams channel | planned (engine exists) |
@@ -330,3 +330,32 @@ saved dashboards and the widget registry follow as slice 2 once S3's migration i
 - **Verified live** on the dev tenant: selecting `hsdeep-lab-sw-b` shows "No sensor reports for
   this device" (it is polled through interfaces), 0 open alerts and working host-tab links;
   the host's `Gi1/2` row opens `/network/interfaces/<id>`.
+
+## 10. P6 slice 2: saved dashboards and the widget registry
+
+- **Model** (`saved_dashboards`, migration `b7d2e4f9a1c6`, revises S3's `f6b4d0e2a8c3`): name,
+  description, widgets (JSONB), `shared`; `owner_id` without a foreign key, unique name per
+  owner, at most 30 per user and 24 widgets per dashboard. Same ownership rules as saved host
+  views: a user lists their own and the tenant's shared dashboards, changes only their own
+  (another user's private or another tenant's dashboard is a 404). A reader (`dashboard.read`)
+  may keep dashboards (personal settings, listed in `tests/test_rbac_write_routes.py`); sharing
+  needs `devices.write`. Create / update / delete are audit events (`dashboard.*`).
+- **Widget registry** (`app/schemas/dashboards.py`): nine types, each reading one existing API
+  with the viewer's own permissions: network summary, busiest links, interfaces down while
+  enabled, VPN tunnels (`/api/network/overview`); sensor history and interface history
+  (`/history` of P1 and P4); coverage gaps (sensor library recommendations); server fleet
+  (P5 `/api/explorer/hosts/resources`); sensors by template (sensor library). Each type has a
+  strict settings model (unknown keys, widget types, sizes, windows and channels are refused);
+  a chart naming a sensor or interface outside the caller's tenant is refused at save, so a
+  dashboard never stores another tenant's ids. A widget whose data the viewer may not read shows
+  "no permission"; a deleted target shows "no longer exists".
+- **API** (`/api/dashboards`): `GET /widgets` (registry with settings schemas), list, create,
+  get, update, delete.
+- **UI**: "My Dashboards" under Observe (`/dashboards`): pick, create (starts with three network
+  widgets), edit (title, size, order, add, remove, share), delete. Charts are added from the
+  sensor and interface pages ("Add to dashboard"), so nobody types an id. Verified on the dev
+  tenant: created a dashboard, added server fleet and sensors-by-template widgets, added the
+  "SNMP CPU Usage" chart from its sensor page, every widget rendered its real data (no servers
+  reporting resources; 34 PRTG sensors, 5 down; no measurements in the chart window), then
+  deleted the test dashboard.
+- **Not in this slice**: drag-and-drop layout, role-default dashboards, a widget for alerts.

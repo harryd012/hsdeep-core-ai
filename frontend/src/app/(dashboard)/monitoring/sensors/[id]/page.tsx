@@ -8,6 +8,7 @@ import { Activity } from "lucide-react";
 import { ApiError, getSensor, getSensorHistory, updateSensor, type SensorDetail, type SensorUpdate } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { classifySensorState } from "@/lib/sensorState";
+import AddToDashboard from "@/components/dashboards/AddToDashboard";
 import { Banner, DataTable, LineChart, PageShell, Panel, Pill, StatStrip, StatTile, Tabs, ago, titleCaseWords, type Column, type Tone } from "@/components/ui/PageKit";
 
 /**
@@ -177,6 +178,11 @@ export default function SensorPage() {
             state={history.isLoading ? "loading" : "ready"}
             className="pk-col-12"
           >
+            {s.channels.length > 0 && (
+              <div style={{ marginBottom: 8 }}>
+                <AddToDashboard widget={{ type: "sensor_chart", title: null, size: "medium", config: { sensor_id: s.id, channel: selected, hours } }} />
+              </div>
+            )}
             {s.channels.length === 0 ? (
               <p className="pk-muted pk-empty-note">No measurements recorded for this sensor yet. History starts with the next collection that reports a value.</p>
             ) : history.data ? (

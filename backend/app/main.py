@@ -32,6 +32,7 @@ from app.api.routes import mfa as mfa_routes
 from app.api.routes import network_access
 from app.api.routes import sensor_library
 from app.api.routes import network as network_center
+from app.api.routes import saved_dashboards
 from app.api.routes import admin_tenants
 from app.api.routes import copilot
 from app.api.routes import billing, onboarding, stripe_webhook
@@ -616,5 +617,6 @@ app.include_router(mfa_routes.router, prefix="/api")
 app.include_router(network_access.router, prefix="/api")
 app.include_router(sensor_library.router, prefix="/api")
 app.include_router(network_center.router, prefix="/api")
+app.include_router(saved_dashboards.router, prefix="/api")
 app.include_router(admin_tenants.router, prefix="/api")
 app.include_router(ingest.router, prefix="/api/v1")
