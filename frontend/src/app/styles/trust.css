@@ -1,0 +1,25 @@
+/* /trust — public Trust & security page (security programme S5). Always dark, like the sign-in pages. */
+.trust {
+  min-height: 100vh; padding: clamp(28px, 5vw, 64px) clamp(16px, 5vw, 72px); color: #e2e8f0;
+  background:
+    radial-gradient(60% 40% at 15% 0%, rgba(34, 211, 238, 0.12), transparent 70%),
+    radial-gradient(50% 40% at 100% 100%, rgba(99, 102, 241, 0.12), transparent 70%),
+    #020611;
+  color-scheme: dark;
+}
+.trust__head { max-width: 760px; margin-bottom: 32px; }
+.trust__brand { font-size: 15px; font-weight: 800; letter-spacing: 0.04em; color: #ffffff; text-decoration: none; }
+.trust__brand span { color: #22d3ee; }
+.trust__head h1 { margin: 18px 0 10px; font-size: clamp(30px, 4vw, 44px); font-weight: 800; letter-spacing: -0.01em; color: #ffffff; }
+.trust__head p { margin: 0; font-size: 16px; line-height: 1.6; color: #a5b4cc; }
+.trust__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.trust__card {
+  padding: 22px 24px; border-radius: 16px; background: rgba(15, 30, 60, 0.45);
+  border: 1px solid rgba(56, 189, 248, 0.22);
+}
+.trust__card h2 { margin: 0 0 12px; font-size: 16px; font-weight: 700; color: #67e8f9; }
+.trust__card ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; }
+.trust__card li, .trust__card p { font-size: 14px; line-height: 1.6; color: #cbd5e1; }
+.trust__card p { margin: 0; }
+.trust__note { margin-top: 16px; }
+.trust__foot { margin-top: 28px; font-size: 12px; color: #64748b; }

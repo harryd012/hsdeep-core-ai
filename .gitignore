@@ -160,3 +160,6 @@ frontend/src/*.txt
 frontend/scripts/*.png
 frontend/tests/*.png
 frontend/tests/_artifacts/
+
+# Tenant data exports (security programme S5): customer data, never committed.
+backend/var/

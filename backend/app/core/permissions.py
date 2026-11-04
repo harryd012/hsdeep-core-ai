@@ -95,7 +95,13 @@ PERMISSION_CATALOG: Final[list[tuple[str, str]]] = [
     # Security & compliance (enterprise security programme S1)
     ("security.manage", "Set the tenant security policy and sign users out of their sessions"),
     ("audit.read", "View and export the tenant audit log"),
+    # Privacy & compliance (S5)
+    ("privacy.manage", "Set AI data use and retention, and export the tenant data"),
+    ("tenant.delete", "Request or cancel deletion of the whole tenant"),
 ]
+
+#: Permissions only the tenant Owner holds by default (not Admin).
+OWNER_ONLY: Final[frozenset[str]] = frozenset({"tenant.delete"})
 
 #: `.read` permissions that are NOT part of the read-only Viewer role: the
 #: audit log shows who did what across the tenant, so it is an admin view.
@@ -114,7 +120,7 @@ DEFAULT_ROLES: Final[dict[str, tuple[str, object]]] = {
         [
             c
             for c in ALL_PERMISSION_CODES
-            if not c.startswith("roles.")
+            if not c.startswith("roles.") and c not in OWNER_ONLY
         ],
     ),
     "Operator": (

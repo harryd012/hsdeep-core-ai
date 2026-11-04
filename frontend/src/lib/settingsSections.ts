@@ -13,7 +13,7 @@
  */
 
 import type { LucideIcon } from "lucide-react";
-import { Settings, ShieldCheck, Bell, Users, Key, History } from "lucide-react";
+import { Settings, ShieldCheck, Bell, Users, Key, History, Lock } from "lucide-react";
 
 export interface SettingsSection {
   /** Stable key for React rendering and analytics. */
@@ -75,6 +75,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     icon: History,
     href: "/settings/audit-log",
     permission: "audit.read",
+  },
+  {
+    id: "privacy",
+    title: "Privacy & Data",
+    description: "AI data use, retention, export, deleting your organization",
+    icon: Lock,
+    href: "/settings/privacy",
   },
   {
     id: "notifications",

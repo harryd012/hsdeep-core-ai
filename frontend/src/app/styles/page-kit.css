@@ -273,6 +273,8 @@ a.pk-tile:hover { border-color: var(--ecc-accent); }
 .sec-sessions__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .sec-sessions__main b { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
 .sec-stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.priv-danger { border-color: color-mix(in srgb, var(--ecc-bad) 45%, var(--ecc-border)); }
+.priv-delete { display: flex; flex-direction: column; gap: 8px; }
 .ai-integrity { display: flex; flex-direction: column; gap: 8px; }
 .ai-integrity__problems { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--ecc-bad); }
 .ai-integrity__head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }

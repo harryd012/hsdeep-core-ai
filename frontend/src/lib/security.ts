@@ -230,7 +230,7 @@ export function removeIpRule(id: string): Promise<void> {
 
 export interface AuditIntegrity {
   status: "intact" | "broken" | "empty";
-  /** "recent": the latest 10,000 events (anchored on the link before them); "full": all history. */
+  /** "recent": the latest 2,000 events (anchored on the link before them); "full": all history. */
   scope: "recent" | "full";
   from_seq: number;
   links_checked: number;
@@ -245,5 +245,5 @@ export interface AuditIntegrity {
 export function getAuditIntegrity(full = false): Promise<AuditIntegrity> {
   return full
     ? apiFetch<AuditIntegrity>("/api/audit/integrity?full=true", undefined, 120_000)
-    : apiFetch<AuditIntegrity>("/api/audit/integrity");
+    : apiFetch<AuditIntegrity>("/api/audit/integrity", undefined, 60_000);
 }

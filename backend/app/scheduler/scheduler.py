@@ -68,6 +68,8 @@ async def _reconcile_stale_runs() -> None:
 
 
 from app.services.audit_chain import seal_audit_chain_job  # noqa: E402
+from app.services.offboarding import tenant_purge_job  # noqa: E402
+from app.services.tenant_export import tenant_export_job  # noqa: E402
 
 AUDIT_CHAIN_SEAL_INTERVAL_SECONDS = 300
 
@@ -154,6 +156,10 @@ def start_scheduler(app: "FastAPI") -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
     )
+    # Privacy (S5): build requested tenant exports; delete tenants whose
+    # scheduled deletion date has passed.
+    scheduler.add_job(tenant_export_job, "interval", seconds=60, id="tenant_exports", max_instances=1, coalesce=True)
+    scheduler.add_job(tenant_purge_job, "interval", seconds=3600, id="tenant_purge", max_instances=1, coalesce=True)
     scheduler.start()
     app.state.scheduler = scheduler
     logger.info("Scheduler started: collection tick every %ss.", _TICK_INTERVAL_SECONDS)

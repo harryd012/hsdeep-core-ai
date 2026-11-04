@@ -1,6 +1,6 @@
 # Enterprise security, privacy and compliance programme
 
-Status: **S1–S4 implemented and tested** (2026-11-03 / 04). S5–S6 approved as the plan, not built.
+Status: **S1–S5 implemented and tested** (2026-11-03 / 04). S6 approved as the plan, not built.
 
 Every item is labelled by its real state. Nothing here claims a certification: HSDEEP CORE AI
 holds no SOC 2, ISO 27001 or similar attestation.
@@ -181,7 +181,7 @@ Tests: `tests/test_security_s3_network.py`.
 - Links live in their own table, keyed by event id without a foreign key, so a deleted event
   leaves its link and shows as `event_deleted`; an edited event shows as `event_modified`; an
   altered link as `broken_link`.
-- `GET /api/audit/integrity` (`audit.read`) checks the most recent 10,000 events (anchored on the
+- `GET /api/audit/integrity` (`audit.read`) checks the most recent 2,000 events (anchored on the
   stored link before them) so it stays fast at any size; `?full=true` or
   `python scripts/verify_audit_chain.py` checks the whole history (dev tenant: 16,694 events in
   about 2 seconds warm).
@@ -199,9 +199,49 @@ a `tenant_keys` table, a `key_id` prefix on stored ciphertexts and a KMS client 
 
 Tests: `tests/test_security_s4.py`. Full backend suite green (2799 passed).
 
+## S5: privacy and compliance (implemented)
+
+Settings: `tenant_privacy_settings` (migration `b8d6f2a4c0e5`), Settings > Privacy & data,
+`GET/PUT /api/settings/privacy`. New permissions: `privacy.manage` (Owner, Admin) and
+`tenant.delete` (Owner only; excluded from Admin like `roles.*`).
+
+- **Redaction** (`app/core/redaction.py`): passwords / tokens / keys in key=value form, bearer and
+  basic credentials, JWTs, private-key blocks, AWS access keys, connection-string passwords and
+  Luhn-valid card numbers; optionally email and IP addresses. Applied to every application log
+  line (a filter on the root handler) and to every AI prompt. Pattern based: it lowers the risk
+  of a leak, it does not prove there is none.
+- **AI data use**: one chokepoint, `AIGateway.chat`. The tenant (from the signed-in request via a
+  context variable set in `core.auth`) can turn AI off: the gateway then makes no model call and
+  returns `ai_disabled_by_tenant`. Credentials are always removed from prompts; email addresses
+  by default; IP addresses on request. Background jobs without a tenant use the defaults.
+- **Retention**: a tenant can set its own metric / sensor history and raw-event retention (7 days
+  to 10 years); the hourly job applies it per tenant and the platform default
+  (`METRIC_RETENTION_DAYS`) only to tenants without their own. Normalized events, alerts,
+  incidents and the audit log are not purged (they feed correlation and compliance).
+- **Data export** (`tenant_exports`, `app/services/tenant_export.py`): `POST
+  /api/settings/privacy/exports` queues a full export; the job writes a ZIP with `manifest.json`
+  (row counts, omitted tables and columns, audit chain head) and one JSON-lines file per table
+  that has a `tenant_id` (106 tables today; new ones are included automatically). Sign-in internals
+  (sessions, refresh / account tokens, MFA secrets, email outbox, earlier exports) and every
+  credential-like column are left out. One export at a time; the file is kept 7 days under
+  `EXPORT_DIR` (default `backend/var/exports`, git-ignored); requests and downloads are audited.
+- **Offboarding** (`app/services/offboarding.py`): an Owner schedules deletion by typing the
+  organization's name; it happens 30 days later unless cancelled. The hourly purge job deletes the
+  tenant row (every tenant table cascades) and its export files, and logs the purge at platform
+  level (the tenant's own audit log is part of what is deleted).
+- **Trust & security page** (`/trust`, public, linked from the sign-in screens and Privacy & data):
+  states only implemented controls, marks SSO / SCIM as not available yet and says plainly that
+  no certification is held.
+
+Tests: `tests/test_security_s5_privacy.py`, `tests/test_security_s5_export.py`. Full backend suite
+green (2820 passed).
+
+**Known limits:** exports run in the API process's scheduler and write to local disk (a shared
+object store is needed with several API replicas); deletion is not yet surfaced to platform
+admins on the Customers page; redaction does not cover free-text personal data such as names.
+
 ## Approved plan, not built yet
 
 | Phase | Scope |
 |---|---|
-| S5 Privacy & compliance | Per-tenant retention, tenant data export, offboarding with a grace period, secret / PII redaction in logs and AI prompts, AI data-use control, an honest Trust page |
 | S6 Enterprise identity | OIDC (Entra ID, Okta, Google), SAML 2.0, SCIM provisioning, domain verification, require SSO |

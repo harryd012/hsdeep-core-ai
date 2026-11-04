@@ -151,7 +151,9 @@ export default function AuthScene({ title, children }: { title: string; children
         <footer className="lx-foot">
           <span className="lx-foot__built">Built for what&apos;s next</span>
           <span className="lx-foot__tagline">Enterprise IT. Intelligently operated.</span>
-          <span className="lx-foot__copy">© {new Date().getFullYear()} HSDEEP CORE AI</span>
+          <span className="lx-foot__copy">
+            <a href="/trust" className="lx-foot__trust">Trust &amp; security</a> · © {new Date().getFullYear()} HSDEEP CORE AI
+          </span>
         </footer>
       </div>
     </div>

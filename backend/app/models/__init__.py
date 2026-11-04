@@ -99,6 +99,8 @@ from app.models.auth_session import AuthSession
 from app.models.user_mfa import MfaRecoveryCode, UserMfa
 from app.models.tenant_ip_rule import TenantIpRule
 from app.models.audit_chain import AuditChainLink
+from app.models.tenant_privacy import TenantPrivacySetting
+from app.models.tenant_export import TenantExport
 from app.models.tenant_custom_property import TenantCustomProperty
 
 ___all__ = [
@@ -187,5 +189,7 @@ ___all__ = [
     "MfaRecoveryCode",
     "TenantIpRule",
     "AuditChainLink",
+    "TenantPrivacySetting",
+    "TenantExport",
     "TenantCustomProperty",
 ]

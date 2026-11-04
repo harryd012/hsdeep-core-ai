@@ -101,7 +101,7 @@ async def export_audit_events(
 
 @router.get("/integrity")
 async def audit_integrity(
-    full: bool = Query(False, description="Check the whole history instead of the most recent 10,000 events"),
+    full: bool = Query(False, description="Check the whole history instead of the most recent 2,000 events"),
     principal: Principal = Depends(require_permission("audit.read")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:

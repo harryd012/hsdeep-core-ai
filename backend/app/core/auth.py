@@ -450,6 +450,11 @@ def _publish_principal(request: Request, principal: Principal) -> None:
     between requests or tenants.
     """
     request.state.principal = principal
+    # Code far from the request (the AI gateway) applies the tenant's privacy
+    # settings; contextvars are per request task, so tenants never mix.
+    from app.core.tenant_context import current_tenant_id
+
+    current_tenant_id.set(principal.tenant_id)
 
 
 async def get_current_user(

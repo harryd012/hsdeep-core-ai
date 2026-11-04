@@ -43,7 +43,7 @@ _FIELDS = (
 VERIFY_BATCH = 2000
 MAX_PROBLEMS = 20
 #: Links checked by default (the most recent ones); full=True checks everything.
-RECENT_LINKS = 10_000
+RECENT_LINKS = 2_000
 
 
 def _plain(value):
