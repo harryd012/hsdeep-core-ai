@@ -11,15 +11,14 @@ Two groups of endpoints:
 """
 from __future__ import annotations
 
-import time
 import uuid
-from collections import defaultdict
-from collections import deque
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import MFA_CHALLENGE_MINUTES, Principal, get_current_user, require_permission
+from app.core.client_ip import client_ip
+from app.core.shared_rate_limit import SharedRateLimiter
 from app.core.db import get_db
 from app.core.entitlements import require_active_subscription, require_entitlement
 from app.models.role import Role
@@ -57,6 +56,7 @@ from app.services.auth_service import (
     Conflict,
     EmailNotVerified,
     MfaRequired,
+    NetworkNotAllowed,
     NotFound,
 )
 from app.services.audit_service import AuditService
@@ -70,33 +70,13 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # Suspended/canceled/incomplete tenants cannot WRITE (402);
 # reads stay open and past_due keeps its grace period.
 _active_sub_guard = Depends(require_active_subscription)
-# ---- Auth-rate limiter (5 rpm per IP) ----
-class _AuthRateLimiter:
-    """Stricter sliding-window limiter for login/refresh endpoints."""
-
-    def __init__(self, requests_per_minute: int = 5) -> None:
-        self._rpm = requests_per_minute
-        self._windows: dict[str, deque[float]] = defaultdict(deque)
-
-    def acquire(self, key: str) -> bool:
-        now = time.monotonic()
-        cutoff = now - 60.0
-        window = self._windows[key]
-        while window and window[0] < cutoff:
-            window.popleft()
-        if len(window) >= self._rpm:
-            return False
-        window.append(now)
-        return True
+# ---- Auth-rate limiter (5 per minute per IP, shared across API processes) ----
+_auth_limiter = SharedRateLimiter("ratelimit:auth:", limit=5, window_seconds=60)
 
 
-_auth_limiter = _AuthRateLimiter()
-
-
-def _check_auth_rate(request: Request) -> None:
+async def _check_auth_rate(request: Request) -> None:
     """Dependency that raises 429 if the client has exceeded the auth rate limit."""
-    client_ip = request.client.host if request.client else "unknown"
-    if not _auth_limiter.acquire(client_ip):
+    if not await _auth_limiter.acquire(client_ip(request) or "unknown"):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many authentication attempts. Try again later.",
@@ -114,7 +94,7 @@ def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
 
 def _client(request: Request) -> tuple[str | None, str | None]:
     """(IP address, user agent) of the caller, for session details."""
-    return (request.client.host if request.client else None), request.headers.get("user-agent")
+    return client_ip(request), request.headers.get("user-agent")
 
 
 def _policy_error(exc: PasswordPolicyError) -> HTTPException:
@@ -173,6 +153,16 @@ async def login(
         )
     except EmailNotVerified as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except NetworkNotAllowed as exc:
+        if exc.user is not None:
+            await AuditService(db).record(
+                tenant_id=exc.user.tenant_id, action="auth.login_blocked_network",
+                actor_id=exc.user.id, actor_email=exc.user.email, entity_type="auth",
+                description=f"Sign-in for {exc.user.email} refused: network {ip_address} is not allowed",
+                ip_address=ip_address, user_agent=(user_agent or "")[:500] or None,
+            )
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"IP_NOT_ALLOWED: {exc}") from exc
     except MfaRequired as exc:
         # Password accepted; the code step follows at /auth/login/mfa.
         await db.commit()
@@ -185,8 +175,6 @@ async def login(
         # tenant-scoped to write to - it's still covered by the per-IP auth
         # rate limiter above, just not by the per-tenant audit trail.
         if payload.tenant_id is not None:
-            from app.services.audit_service import AuditService
-
             await AuditService(db).record_auth(
                 tenant_id=payload.tenant_id,
                 action="auth.login_failed",
@@ -281,6 +269,9 @@ async def refresh(
         access, refresh_token, expires_in = await service.refresh(
             refresh_token=payload.refresh_token, ip_address=ip_address, user_agent=user_agent
         )
+    except NetworkNotAllowed as exc:
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"IP_NOT_ALLOWED: {exc}") from exc
     except AuthError as exc:
         # Commit even on failure: a replayed refresh token revokes its whole
         # session, and that revocation must persist.

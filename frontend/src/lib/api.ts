@@ -1372,6 +1372,10 @@ async function apiFetchWithRetry<T>(
       throw new ApiError(path, 403, "Your organization requires multi-factor authentication. Set it up to continue.");
     }
 
+    if (res.status === 403 && message.startsWith("IP_NOT_ALLOWED")) {
+      throw new ApiError(path, 403, "Your organization only allows access from approved networks. Connect from an office or VPN network.");
+    }
+
     // A support grant expired or was revoked by the customer: return to the
     // user's own tenant instead of failing every request.
     if (res.status === 403 && activeTenant && message.includes(SUPPORT_GRANT_REQUIRED)) {

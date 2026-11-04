@@ -31,7 +31,7 @@ PASSWORD = "Correct-Horse-9-battery"
 
 @pytest.fixture(autouse=True)
 def _no_auth_rate_limit(monkeypatch):
-    monkeypatch.setattr(auth_routes._auth_limiter, "acquire", lambda key: True)
+    monkeypatch.setattr(auth_routes._auth_limiter, "limit", 10**9)
 
 
 def _http(token: str | None = None) -> httpx.AsyncClient:

@@ -59,7 +59,7 @@ def _client(tenant_id, permissions, user_id, token: str | None = None):
 
 @pytest.fixture(autouse=True)
 def _no_auth_rate_limit(monkeypatch):
-    monkeypatch.setattr(auth_routes._auth_limiter, "acquire", lambda key: True)
+    monkeypatch.setattr(auth_routes._auth_limiter, "limit", 10**9)
 
 
 @pytest_asyncio.fixture

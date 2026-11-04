@@ -35,6 +35,7 @@ from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.role_repository import RoleRepository
 from app.repositories.user_repository import UserRepository
 from app.services.mfa.service import MfaService
+from app.services.network_policy import ip_allowed
 from app.services.security_policy import load_policy
 
 settings = get_settings()
@@ -50,6 +51,15 @@ class InvalidCredentials(AuthError):
 
 class EmailNotVerified(AuthError):
     """Correct password, but a self-service sign-up has not confirmed its email."""
+
+
+class NetworkNotAllowed(AuthError):
+    """The right password (or a live session), from a network outside the
+    tenant's IP allowlist. Carries the user for the audit trail."""
+
+    def __init__(self, message: str, user: User | None = None) -> None:
+        super().__init__(message)
+        self.user = user
 
 
 class MfaRequired(AuthError):
@@ -204,6 +214,10 @@ class AuthService:
         # Only reached with the right password, so this reveals nothing new.
         if user.requires_email_verification and user.email_verified_at is None:
             raise EmailNotVerified("Confirm your email address before signing in. Check your inbox for the link.")
+        if not await ip_allowed(user.tenant_id, ip_address):
+            # Only after the password checked out, so the answer reveals nothing
+            # to someone without it; the account's own users see why.
+            raise NetworkNotAllowed("Your organization only allows sign-in from approved networks.", user)
         if await self.mfa.is_enabled(user.id):
             # Second step: nothing is issued (and the failure count is not
             # cleared) until a valid code arrives at complete_mfa_login.
@@ -262,6 +276,8 @@ class AuthService:
         user = await self.users.get_by_id_any_tenant(row.user_id)
         if user is None or not user.is_active:
             raise InvalidRefreshToken("Invalid or expired refresh token")
+        if not await ip_allowed(user.tenant_id, ip_address):
+            raise NetworkNotAllowed("Your organization only allows access from approved networks.", user)
         # Idle timeout: the presented token was issued at sign-in or at the
         # last refresh, so its age is the time since the session was last used.
         policy = await load_policy(self.users.db, user.tenant_id)

@@ -18,6 +18,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { History, LaptopMinimal, LogOut, ShieldCheck, Smartphone } from "lucide-react";
 import MfaPanel from "@/components/settings/MfaPanel";
+import NetworkAccessPanel from "@/components/settings/NetworkAccessPanel";
 import { Banner, PageShell, Panel, Pill, ago } from "@/components/ui/PageKit";
 import { useAuth } from "@/lib/auth-context";
 import { getSecuritySettings, updateSecuritySettings, type SecuritySettings, type SecuritySettingsUpdate } from "@/lib/api";
@@ -276,7 +277,10 @@ export default function SecuritySettingsPage() {
       ) : undefined}
     >
       <div className="sec-grid">
-        <PolicyPanel canManage={has("security.manage")} />
+        <div className="sec-stack">
+          <PolicyPanel canManage={has("security.manage")} />
+          {has("security.manage") && <NetworkAccessPanel />}
+        </div>
         <div className="sec-stack">
           <MfaPanel />
           <SessionsPanel />

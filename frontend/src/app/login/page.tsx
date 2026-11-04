@@ -94,8 +94,10 @@ function LoginForm() {
           setError("Invalid email or password.");
           setInvalid({ email: true, password: true });
         } else if (err.status === 403) {
-          // e.g. "Confirm your email address before signing in."
-          setError(err.message || "Your account is not permitted to sign in. Contact your administrator.");
+          // e.g. "Confirm your email address before signing in." or a blocked network.
+          setError(
+            (err.message || "Your account is not permitted to sign in. Contact your administrator.").replace(/^IP_NOT_ALLOWED:\s*/, ""),
+          );
         } else if (err.status === 429) {
           setError("Too many attempts. Please wait a moment and try again.");
         } else if (err.status >= 500) {

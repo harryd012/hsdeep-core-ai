@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     # account for login_lockout_minutes (0 attempts disables the lockout).
     login_max_failed_attempts: int = 5
     login_lockout_minutes: int = 15
+    # Reverse proxies in front of the API that append to X-Forwarded-For
+    # (load balancer, ingress). 0 = the TCP peer is the client. Used for IP
+    # allowlists and per-IP limits (app/core/client_ip.py); never trust the
+    # header from more hops than you actually run.
+    trusted_proxy_hops: int = 0
     # Automated remediation is only "resolved" after fresh telemetry confirms
     # recovery (app/services/events/recovery_validator.py): this many
     # consecutive recovered checks, re-checked every interval, at most

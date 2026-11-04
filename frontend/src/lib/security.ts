@@ -196,3 +196,30 @@ export function resetUserMfa(userId: string): Promise<{ mfa_removed: boolean; se
 export function groupSecret(secret: string): string {
   return secret.replace(/(.{4})/g, "$1 ").trim();
 }
+
+// ---------------------------------------------------------------------------
+// Network access: per-tenant IP allowlist (security programme S3)
+// ---------------------------------------------------------------------------
+
+export interface IpRule {
+  id: string;
+  cidr: string;
+  label: string | null;
+  created_at: string;
+}
+
+export function getMyIp(): Promise<{ ip_address: string | null }> {
+  return apiFetch("/api/settings/network/my-ip");
+}
+
+export function listIpRules(): Promise<IpRule[]> {
+  return apiFetch<IpRule[]>("/api/settings/network/ip-rules");
+}
+
+export function addIpRule(cidr: string, label?: string): Promise<IpRule> {
+  return apiFetch<IpRule>("/api/settings/network/ip-rules", { method: "POST", body: JSON.stringify({ cidr, label: label || null }) });
+}
+
+export function removeIpRule(id: string): Promise<void> {
+  return apiFetch<void>(`/api/settings/network/ip-rules/${encodeURIComponent(id)}`, { method: "DELETE" });
+}

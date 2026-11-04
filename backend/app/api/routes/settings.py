@@ -24,6 +24,7 @@ from app.core.entitlements import require_active_subscription
 from app.models.api_key import ApiKey
 from app.models.incident_notification import IncidentNotification
 from app.models.notification_setting import NotificationSetting
+from app.core.permissions import ALL_PERMISSION_CODES
 from app.models.security_setting import SecuritySetting
 from app.services.security_policy import (
     DEFAULT_SECURITY_SETTINGS,
@@ -196,8 +197,10 @@ class ApiKeyOut(BaseModel):
 
 
 class ApiKeyCreate(BaseModel):
-    name: str
-    scopes: list[str] = []
+    name: str = Field(..., min_length=1, max_length=100)
+    #: Permission codes the key acts with: at least one, each in the catalog
+    #: and held by the person creating the key (no privilege escalation).
+    scopes: list[str] = Field(..., min_length=1, max_length=100)
     expires_at: str | None = None
 
 
@@ -435,6 +438,7 @@ async def send_test_notification(
 @router.get("/api-keys", response_model=list[ApiKeyOut])
 async def list_api_keys(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
+    _: Principal = Depends(require_permission("security.manage")),
     db: AsyncSession = Depends(get_db),
 ):
     rows = (await db.execute(select(ApiKey).where(ApiKey.tenant_id == tenant_id).order_by(ApiKey.created_at.desc()))).scalars().all()
@@ -446,9 +450,18 @@ async def create_api_key(
     payload: ApiKeyCreate,
     request: Request,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
-    principal: Principal = Depends(require_admin),
+    principal: Principal = Depends(require_permission("security.manage")),
     db: AsyncSession = Depends(get_db),
 ):
+    scopes = sorted(set(payload.scopes))
+    unknown = [s for s in scopes if s not in ALL_PERMISSION_CODES]
+    if unknown:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Unknown permission scopes: {', '.join(unknown)}")
+    beyond = [s for s in scopes if not principal.has_permission(s)]
+    if beyond:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail=f"A key cannot have permissions you don't hold: {', '.join(beyond)}")
     raw = secrets.token_urlsafe(24)
     prefix = raw[:12]
     # The raw key is returned EXACTLY ONCE in this response and never stored;
@@ -465,7 +478,7 @@ async def create_api_key(
         name=payload.name,
         key_prefix=prefix,
         key_hash=core_hash_api_key(raw),
-        scopes=payload.scopes,
+        scopes=scopes,
         created_by_user_id=creator_id,
         expires_at=payload.expires_at,
         is_active=True,
@@ -479,7 +492,7 @@ async def create_api_key(
         actor_id=creator_id,
         actor_email=principal.email,
         description=f"API key {payload.name!r} created",
-        new_values={"name": payload.name, "key_prefix": prefix, "scopes": payload.scopes},
+        new_values={"name": payload.name, "key_prefix": prefix, "scopes": scopes},
     )
     await db.commit()
     await db.refresh(row)
@@ -499,7 +512,7 @@ async def delete_api_key(
     key_id: uuid.UUID,
     request: Request,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
-    principal: Principal = Depends(require_admin),
+    principal: Principal = Depends(require_permission("security.manage")),
     db: AsyncSession = Depends(get_db),
 ):
     """Revoke an API key (soft-revoke: is_active=False). The row is kept for

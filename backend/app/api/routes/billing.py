@@ -60,6 +60,8 @@ logger = logging.getLogger(__name__)
 
 from app.services.security_policy import PasswordPolicyError
 
+from app.core.shared_rate_limit import LocalWindow, acquire_shared
+
 router = APIRouter(prefix="/billing", tags=["billing"])
 
 settings = get_settings()
@@ -722,28 +724,9 @@ async def get_billing_portal(
 
 # ---- Helpers ---------------------------------------------------------------
 
-class _LocalWindow:
-    """In-process sliding window, the fallback when Redis is unavailable.
-
-    Same limit as the shared one, counted per API process: with N replicas an
-    IP can reach at most N x the limit during a Redis outage. That is a bound,
-    unlike failing open, which allowed unlimited signups.
-    """
-
-    def __init__(self) -> None:
-        self._hits: dict[str, deque[float]] = defaultdict(deque)
-
-    def acquire(self, key: str, limit: int, window_seconds: int) -> bool:
-        now = time.monotonic()
-        hits = self._hits[key]
-        while hits and hits[0] <= now - window_seconds:
-            hits.popleft()
-        if len(hits) >= limit:
-            return False
-        hits.append(now)
-        if len(self._hits) > 100_000:  # bound memory under a flood of IPs
-            self._hits.clear()
-        return True
+# The sliding window lives in app/core/shared_rate_limit.py (shared with the
+# login limiter); the names below are kept for this module's callers and tests.
+_LocalWindow = LocalWindow
 
 
 _signup_local_window = _LocalWindow()
@@ -766,29 +749,8 @@ async def _check_signup_rate_limit(client_ip: str) -> None:
     request is checked against an in-process window with the same limit
     (never allowed unchecked) and the outage is logged at error level.
     """
-    from app.core.redis import redis_client
-
     key = f"{_SIGNUP_RATE_KEY_PREFIX}{client_ip}"
-    now = time.time()
-    try:
-        pipe = redis_client.pipeline()
-        pipe.zremrangebyscore(key, 0, now - _SIGNUP_RATE_WINDOW_SECONDS)
-        pipe.zcard(key)
-        count = (await pipe.execute())[1]
-        if count >= _SIGNUP_RATE_LIMIT:
-            raise _signup_rate_exceeded()
-        # Unique member per attempt so two signups in the same second count twice.
-        await redis_client.zadd(key, {f"{now}:{uuid.uuid4().hex[:8]}": now})
-        await redis_client.expire(key, _SIGNUP_RATE_WINDOW_SECONDS)
-        return
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001 - any Redis failure uses the local window
-        logger.error(
-            "Signup rate limit: Redis unavailable (%s); enforcing the per-process limit instead.",
-            type(exc).__name__,
-        )
-    if not _signup_local_window.acquire(key, _SIGNUP_RATE_LIMIT, _SIGNUP_RATE_WINDOW_SECONDS):
+    if not await acquire_shared(key, _SIGNUP_RATE_LIMIT, _SIGNUP_RATE_WINDOW_SECONDS, _signup_local_window):
         raise _signup_rate_exceeded()
 
 

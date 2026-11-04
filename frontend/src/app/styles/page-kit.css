@@ -273,6 +273,8 @@ a.pk-tile:hover { border-color: var(--ecc-accent); }
 .sec-sessions__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .sec-sessions__main b { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
 .sec-stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.net-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.net-form .pk-input { flex: 1 1 160px; height: 32px; min-width: 0; }
 .mfa-setup__steps { margin: 0 0 12px; padding-left: 18px; font-size: 13px; line-height: 1.7; }
 .mfa-setup__qr { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
 .mfa-setup__qr img { border-radius: 8px; border: 1px solid var(--ecc-border); background: #fff; }

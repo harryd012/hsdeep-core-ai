@@ -20,7 +20,7 @@ PASSWORD = "Original-Pass-1"
 
 @pytest.fixture(autouse=True)
 def _no_cache_no_ip_limit(monkeypatch):
-    monkeypatch.setattr(auth_routes._auth_limiter, "acquire", lambda key: True)
+    monkeypatch.setattr(auth_routes._auth_limiter, "limit", 10**9)
     monkeypatch.setattr(auth.settings, "session_check_cache_seconds", 0)
     auth.forget_session()
 

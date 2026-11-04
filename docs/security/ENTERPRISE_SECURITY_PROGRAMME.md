@@ -1,6 +1,6 @@
 # Enterprise security, privacy and compliance programme
 
-Status: **S1 and S2 implemented and tested** (2026-11-03 / 04). S3–S6 approved as the plan, not built.
+Status: **S1–S3 implemented and tested** (2026-11-03 / 04). S4–S6 approved as the plan, not built.
 
 Every item is labelled by its real state. Nothing here claims a certification: HSDEEP CORE AI
 holds no SOC 2, ISO 27001 or similar attestation.
@@ -119,11 +119,42 @@ Tests: `tests/test_mfa_totp.py`, `tests/test_security_s2_mfa.py`. Full backend s
 - WebAuthn / passkeys and SMS are not offered.
 - The login code step was type-checked and tested through the API, not clicked through in a browser.
 
+## S3: network and API controls (implemented)
+
+- **Client address** (`app/core/client_ip.py`): the TCP peer, or behind `TRUSTED_PROXY_HOPS`
+  proxies the address the outermost trusted proxy saw. Addresses a client writes into
+  `X-Forwarded-For` itself are never trusted. Set `TRUSTED_PROXY_HOPS` to the number of proxies
+  in front of the API in each deployment (0 by default).
+- **Per-tenant IP allowlist** (`tenant_ip_rules`, migration `f6b4d0e2a8c3`,
+  `app/services/network_policy.py`): no rules = open to every network (existing tenants are
+  unaffected). With rules, the tenant's users can only sign in, refresh and call the API, and its
+  API keys can only be used, from inside one of them (IPv4 / IPv6 ranges or single addresses;
+  IPv4-mapped IPv6 handled). Refusals are 403 `IP_NOT_ALLOWED`.
+  - Sign-in checks the network only after the password is right, so the answer tells nothing to
+    someone without it; a refused sign-in is audited (`auth.login_blocked_network`, with address).
+  - The caller's home tenant decides; platform support under a break-glass grant is governed by
+    the grant, not the customer's allowlist.
+  - Lock-out guard: adding or removing a rule is refused when the resulting allowlist would not
+    include the admin's own address.
+  - Rules are cached per process for 30 seconds (cleared at once where the change was made).
+  - API `GET/POST/DELETE /api/settings/network/ip-rules` (`security.manage`) and
+    `GET /api/settings/network/my-ip`; changes audited (`network.ip_rule_added / removed`).
+- **API key scopes**: creating a key needs at least one scope, every scope must be in the
+  permission catalog, and the creator must hold each one (no privilege escalation). Managing API
+  keys moved from superuser-only to `security.manage`; listing keys now needs it too.
+- **Shared rate limits** (`app/core/shared_rate_limit.py`): the login / refresh / account
+  self-service limit (5 per minute per address) is now a Redis sliding window shared by every API
+  process, like the sign-up limit (which now uses the same helper). When Redis is down the same
+  limit is enforced per process, never skipped.
+- **UI**: Network access panel on Settings > Security (your address, rules, add / remove), and
+  readable messages for a refused network at sign-in and in the app.
+
+Tests: `tests/test_security_s3_network.py`.
+
 ## Approved plan, not built yet
 
 | Phase | Scope |
 |---|---|
-| S3 Network & API | Per-tenant IP allowlist, API key scopes validated against the catalog, shared (DB/Redis) login rate limit |
 | S4 Encryption & integrity | Versioned keys with rotation (MultiFernet) and a re-encryption job, tamper-evident audit hash chain, per-tenant key design (for customer-managed keys later) |
 | S5 Privacy & compliance | Per-tenant retention, tenant data export, offboarding with a grace period, secret / PII redaction in logs and AI prompts, AI data-use control, an honest Trust page |
 | S6 Enterprise identity | OIDC (Entra ID, Okta, Google), SAML 2.0, SCIM provisioning, domain verification, require SSO |

@@ -69,6 +69,21 @@ MFA_CHALLENGE_MINUTES = 5
 #: A token carrying "mfa_enroll" belongs to a user whose tenant requires MFA
 #: and who has not set it up: it can only reach these paths until they do.
 MFA_ENROLLMENT_REQUIRED = "MFA_ENROLLMENT_REQUIRED"
+#: Detail prefix when the caller's network is outside the tenant's IP allowlist.
+IP_NOT_ALLOWED = "IP_NOT_ALLOWED"
+
+
+async def _require_allowed_network(request: Request, tenant_id: uuid.UUID) -> None:
+    """The tenant's IP allowlist (S3). No rules = open; otherwise the caller's
+    address must be inside one of them."""
+    from app.core.client_ip import client_ip
+    from app.services.network_policy import ip_allowed
+
+    if not await ip_allowed(tenant_id, client_ip(request)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"{IP_NOT_ALLOWED}: your organization only allows access from approved networks.",
+        )
 _MFA_ENROLL_PATHS = ("/api/auth/mfa", "/api/auth/me", "/api/auth/logout", "/api/auth/sessions")
 
 
@@ -474,6 +489,8 @@ async def get_current_user(
                 detail="Session has ended. Sign in again.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        # The caller's own tenant may restrict the networks it can be used from.
+        await _require_allowed_network(request, uuid.UUID(payload["tid"]))
         # The tenant requires MFA and this user has not set it up yet: only
         # the set-up, profile and sign-out endpoints answer until they do.
         if payload.get("mfa_enroll") and not _mfa_enrollment_allows(request):
@@ -496,6 +513,7 @@ async def get_current_user(
     async for session in get_db():
         principal = await _resolve_api_key_principal(token, session, x_tenant_id)
         if principal is not None:
+            await _require_allowed_network(request, principal.tenant_id)
             _publish_principal(request, principal)
             return principal
         break

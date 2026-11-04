@@ -34,7 +34,7 @@ PASSWORD = "Original-Pass-1"
 
 @pytest.fixture(autouse=True)
 def _no_ip_limit(monkeypatch):
-    monkeypatch.setattr(auth_routes._auth_limiter, "acquire", lambda key: True)
+    monkeypatch.setattr(auth_routes._auth_limiter, "limit", 10**9)
 
 
 def _client(headers=None) -> httpx.AsyncClient:
