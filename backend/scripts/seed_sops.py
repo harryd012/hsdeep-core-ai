@@ -1,7 +1,7 @@
 """
-Seed the SOP Repository with production runbooks SOP-002 through SOP-015
+Seed the SOP Repository with production runbooks SOP-002 through SOP-016
 (SOP-002 to SOP-014 were previously hardcoded in the frontend; SOP-015 is MPLS
-L2VPN/L3VPN troubleshooting). SOP-001 already exists.
+L2VPN/L3VPN troubleshooting; SOP-016 is the general internet-down triage). SOP-001 already exists.
 Idempotent: keyed on (tenant_id, sop_number).
 """
 from __future__ import annotations
@@ -427,6 +427,174 @@ SEEDS = [
             "Route-target mismatch",
             "MPLS label distribution failure"
         ]
+    },
+    {
+        "sop_number": "SOP-016",
+        "name": "Internet Down - Devices Connected but No Internet (Layered Triage)",
+        "description": (
+            "General first-response triage when users report that devices are connected to the LAN or Wi-Fi "
+            "but nothing on the internet works. Works up the path one layer at a time - device, link, "
+            "LAN/switch, router/firewall WAN, ISP access (fibre ONU/ONT/OLT, DSL, cellular) - so the root "
+            "cause is found rather than guessed. Read-only diagnostics; any reboot or config change needs "
+            "a change record. Hands over to SOP-006 (FortiGate / Starlink IP change) or SOP-009 (ISP "
+            "router missing static IP) when the evidence points there."
+        ),
+        "category": "connectivity",
+        "tags": ["internet", "outage", "wan", "dns", "gateway", "isp", "ping", "fiber", "gpon", "onu", "ont", "triage"],
+        "required_skills": ["Network Admin"],
+        "requires_approval": False,
+        "estimated_resolution_minutes": 30,
+        "rollback_procedure": (
+            "Diagnostic steps change nothing. If a router, firewall or ONU/ONT restart is needed, raise a "
+            "change record first and note the pre-change state (WAN IP, routes, optical levels)."
+        ),
+        "steps": [
+            {
+                "order": 1,
+                "action": "Define the scope: one user, one site, or every site. Check the HSDEEP dashboard for the site's devices, WAN/ping sensors and any open incident before touching anything.",
+                "expected_result": "You know which devices and sites are affected and when it started.",
+                "warnings": ["Do not restart equipment before you know the scope - a restart destroys the evidence."],
+                "troubleshooting_matrix": {
+                    "one_user_only": "Device problem: go to step 4 on that device (IP, gateway, DNS, proxy, VPN client).",
+                    "one_site": "Site access problem: continue with step 2 at that site.",
+                    "all_sites": "Shared dependency (data centre, ISP core, cloud DNS, firewall policy push): escalate to the NOC lead and continue with step 5 from two sites.",
+                },
+            },
+            {
+                "order": 2,
+                "action": "Check physical connection and link status: cables, connectors and port LEDs on the router/firewall WAN port, the LAN uplink and the ONU/ONT or modem.",
+                "expected_result": "Link lights on (green/amber steady), WAN port reports link up at the expected speed and duplex.",
+                "warnings": ["A link that is up at 10/100 instead of 1000 can point to a damaged cable."],
+                "troubleshooting_matrix": {
+                    "no_link_light": "Reseat or replace the cable or SFP; check power to the ONU/ONT or modem.",
+                    "link_flapping": "Check interface error counters (step 3); suspect cable, SFP or duplex mismatch.",
+                },
+                "commands": [
+                    {"platform": "cisco_ios", "version": "any", "command": "show interfaces status"},
+                    {"platform": "fortios", "version": "any", "command": "get system interface physical"},
+                    {"platform": "meraki", "version": "any", "command": "Dashboard > Security & SD-WAN > Appliance status > Uplink"},
+                ],
+            },
+            {
+                "order": 3,
+                "action": "Verify router and switch interfaces: WAN and LAN interface state, error and discard counters, and congestion on the uplink.",
+                "expected_result": "Interfaces up/up, error counters not increasing, uplink utilisation below saturation.",
+                "warnings": ["Clear counters only after recording them, so the change is visible on the next read."],
+                "troubleshooting_matrix": {
+                    "interface_down_down": "Physical or upstream problem: back to step 2, or step 7 for the ISP access device.",
+                    "up_down": "Protocol problem: check PPPoE/DHCP on the WAN, VLAN tagging required by the ISP.",
+                    "errors_increasing": "Cable, SFP or duplex mismatch.",
+                    "saturated_uplink": "Not an outage but congestion: find the top talkers before escalating.",
+                },
+                "commands": [
+                    {"platform": "cisco_ios", "version": "any", "command": "show interfaces <wan_interface>"},
+                    {"platform": "cisco_ios", "version": "any", "command": "show ip interface brief"},
+                    {"platform": "fortios", "version": "any", "command": "diagnose hardware deviceinfo nic <wan_port>"},
+                    {"platform": "linux", "version": "any", "command": "ip -s link show"},
+                ],
+            },
+            {
+                "order": 4,
+                "action": "Check IP address and default gateway: the client has a valid address (not 169.254.x.x), the right subnet, a default gateway, and the router's WAN has a public or ISP-assigned address and a default route.",
+                "expected_result": "Client addressing is valid; the router WAN has an address and a default route via the ISP.",
+                "warnings": ["A 169.254.x.x address means DHCP failed - the internet may be fine."],
+                "troubleshooting_matrix": {
+                    "apipa_169_254": "DHCP server/relay or scope exhausted: check the DHCP pool on the router or server.",
+                    "no_wan_ip": "PPPoE/DHCP with the ISP failed: check credentials and the ISP; if a static IP is expected see SOP-009.",
+                    "wan_ip_changed": "Static or dynamic IP changed (for example Starlink): see SOP-006.",
+                    "no_default_route": "Routing problem on the edge device: check the static route or DHCP-learnt route.",
+                },
+                "commands": [
+                    {"platform": "windows", "version": "any", "command": "ipconfig /all"},
+                    {"platform": "linux", "version": "any", "command": "ip addr; ip route"},
+                    {"platform": "cisco_ios", "version": "any", "command": "show ip route 0.0.0.0"},
+                    {"platform": "fortios", "version": "any", "command": "get router info routing-table all"},
+                ],
+            },
+            {
+                "order": 5,
+                "action": "Test connectivity outward with ping, one hop at a time: the default gateway, then a public IP address (for example 8.8.8.8 or 1.1.1.1), then a traceroute to see where it stops. Note packet loss and latency.",
+                "expected_result": "Gateway and public IP answer with no loss.",
+                "warnings": ["Some networks block ICMP: if ping fails, also test TCP (for example `Test-NetConnection 1.1.1.1 -Port 443`)."],
+                "troubleshooting_matrix": {
+                    "gateway_fails": "LAN problem between client and router: steps 2-4 on the LAN side.",
+                    "gateway_ok_public_ip_fails": "Problem at the edge or beyond: router WAN, firewall policy/NAT, or the ISP (step 7).",
+                    "public_ip_ok": "IP connectivity works: the problem is name resolution, a proxy or the application - go to step 6.",
+                    "intermittent_loss": "Congestion or a failing link: collect loss over time (step 8 evidence).",
+                },
+                "commands": [
+                    {"platform": "windows", "version": "any", "command": "ping <gateway>; ping -n 20 8.8.8.8; tracert -d 8.8.8.8"},
+                    {"platform": "linux", "version": "any", "command": "ping -c 20 <gateway>; ping -c 20 8.8.8.8; traceroute -n 8.8.8.8"},
+                    {"platform": "cisco_ios", "version": "any", "command": "ping 8.8.8.8 source <wan_interface> repeat 20"},
+                    {"platform": "fortios", "version": "any", "command": "execute ping 8.8.8.8"},
+                ],
+            },
+            {
+                "order": 6,
+                "action": "Check DNS resolution: resolve a well-known name with the configured DNS server and with a public resolver. If ping to a public IP works but websites do not open, DNS is the first suspect.",
+                "expected_result": "Names resolve with the configured server.",
+                "warnings": ["Do not leave clients permanently on a public DNS server if the site needs internal DNS (Active Directory)."],
+                "troubleshooting_matrix": {
+                    "fails_on_configured_works_on_public": "Internal/forwarding DNS problem: check the DNS server, its forwarders and firewall rules for port 53.",
+                    "fails_everywhere": "Outbound DNS blocked or no IP connectivity: back to step 5.",
+                    "resolves_but_sites_fail": "Proxy, TLS inspection, captive portal or application issue.",
+                },
+                "commands": [
+                    {"platform": "windows", "version": "any", "command": "nslookup example.com; nslookup example.com 8.8.8.8"},
+                    {"platform": "linux", "version": "any", "command": "dig example.com; dig @8.8.8.8 example.com"},
+                    {"platform": "fortios", "version": "any", "command": "execute ping example.com"},
+                ],
+            },
+            {
+                "order": 7,
+                "action": "If the site uses an ISP fibre (GPON) or other access device, check the access layer: ONU/ONT power, PON/LOS lights, registration on the OLT (ISP side), and optical receive (Rx) and transmit (Tx) levels.",
+                "expected_result": "PON light steady, LOS off, the ONU registered, optical Rx within the ISP's range (typically about -8 to -27 dBm for GPON).",
+                "warnings": [
+                    "OLT checks are done by the ISP or by staff with ISP access only.",
+                    "Never look into a fibre connector or a disconnected port.",
+                ],
+                "troubleshooting_matrix": {
+                    "los_red_or_pon_off": "Fibre cut, dirty or loose connector, or ONU not provisioned: ISP fault - escalate (step 8).",
+                    "rx_too_low": "Dirty connector, bent or damaged fibre: ISP or field visit.",
+                    "onu_ok_no_ip": "Provisioning or authentication at the ISP: escalate with the ONU serial number.",
+                },
+                "commands": [
+                    {"platform": "onu_web", "version": "any", "command": "ONU/ONT web UI > Status > PON/Optical information"},
+                    {"platform": "olt", "version": "any", "command": "Vendor OLT: display ONU state and optical info for the subscriber port", "authorized_provider_only": True},
+                ],
+            },
+            {
+                "order": 8,
+                "action": "Escalate to the ISP when the fault is beyond the customer edge. Open the ticket with evidence, not a description: affected sites, start time, WAN IP and gateway, ping/traceroute output, optical levels, ONU serial number, and what has been ruled out.",
+                "expected_result": "An ISP ticket number recorded on the incident, with the evidence attached.",
+                "warnings": ["Record the ISP ticket number and promised time on the incident so the SLA clock is visible."],
+                "troubleshooting_matrix": {
+                    "isp_confirms_outage": "Track the ISP ETA; consider failover to a backup WAN or cellular link if the site has one.",
+                    "isp_reports_no_fault": "Re-run steps 2-6 with the ISP on the line; ask for a line test from their side.",
+                },
+            },
+            {
+                "order": 9,
+                "action": "Verify recovery and record the root cause: users can browse, WAN and ping sensors are green in HSDEEP for at least 15 minutes, and the incident notes say WHY it happened, not only that it is fixed.",
+                "expected_result": "Service restored and stable; root cause, evidence and the fix are on the incident.",
+                "warnings": ["Do not close the incident on the first successful ping - wait for stable sensors."],
+                "troubleshooting_matrix": {
+                    "recurs_within_24h": "Reopen the incident and treat it as a problem record with the ISP or vendor.",
+                },
+            },
+        ],
+        "possible_causes": [
+            "Cable, connector or SFP fault",
+            "ONU/ONT or modem without power or fibre signal (LOS)",
+            "Low optical receive level (dirty connector, damaged fibre)",
+            "ISP outage or provisioning/authentication failure",
+            "WAN IP address changed or static IP missing",
+            "DHCP failure (client on 169.254.x.x)",
+            "Missing default route on the edge device",
+            "Firewall policy or NAT change",
+            "DNS server or forwarder failure",
+            "Uplink congestion",
+        ],
     },
 ]
 
