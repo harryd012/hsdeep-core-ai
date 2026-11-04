@@ -212,10 +212,11 @@
 .lx-sso {
   display: inline-flex; align-items: center; justify-content: center; gap: 10px; height: 52px; border-radius: 11px;
   font: inherit; font-size: 15.5px; font-weight: 600; color: var(--lx-ink);
-  background: rgba(2, 8, 23, 0.45); border: 1px solid var(--lx-line); cursor: not-allowed;
+  background: rgba(2, 8, 23, 0.45); border: 1px solid var(--lx-line); cursor: pointer;
 }
+.lx-sso:hover:not(:disabled) { border-color: rgba(56, 189, 248, 0.6); background: rgba(8, 47, 73, 0.45); }
 .lx-sso svg { color: #38bdf8; }
-.lx-sso:disabled { opacity: 0.7; }
+.lx-sso:disabled { opacity: 0.7; cursor: not-allowed; }
 .lx-card__hint { margin: -4px 0 0; text-align: center; font-size: 12.5px; color: var(--lx-muted); }
 .lx-card__hint--left { margin: -6px 0 2px; text-align: left; }
 

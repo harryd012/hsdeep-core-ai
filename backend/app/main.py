@@ -32,6 +32,8 @@ from app.api.routes import mfa as mfa_routes
 from app.api.routes import network_access
 from app.api.routes import admin_security
 from app.api.routes import privacy as privacy_routes
+from app.api.routes import identity as identity_routes
+from app.api.routes import scim as scim_routes
 from app.api.routes import sensor_library
 from app.api.routes import network as network_center
 from app.api.routes import saved_dashboards
@@ -620,6 +622,8 @@ app.include_router(mfa_routes.router, prefix="/api")
 app.include_router(network_access.router, prefix="/api")
 app.include_router(admin_security.router, prefix="/api")
 app.include_router(privacy_routes.router, prefix="/api")
+app.include_router(identity_routes.router, prefix="/api")
+app.include_router(scim_routes.router, prefix="/api")
 app.include_router(sensor_library.router, prefix="/api")
 app.include_router(network_center.router, prefix="/api")
 app.include_router(saved_dashboards.router, prefix="/api")

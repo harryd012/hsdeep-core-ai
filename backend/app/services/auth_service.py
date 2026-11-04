@@ -53,6 +53,10 @@ class EmailNotVerified(AuthError):
     """Correct password, but a self-service sign-up has not confirmed its email."""
 
 
+class SsoRequired(AuthError):
+    """The tenant requires single sign-on for this user's email domain."""
+
+
 class NetworkNotAllowed(AuthError):
     """The right password (or a live session), from a network outside the
     tenant's IP allowlist. Carries the user for the audit trail."""
@@ -214,6 +218,8 @@ class AuthService:
         # Only reached with the right password, so this reveals nothing new.
         if user.requires_email_verification and user.email_verified_at is None:
             raise EmailNotVerified("Confirm your email address before signing in. Check your inbox for the link.")
+        if await self._sso_required(user):
+            raise SsoRequired("Your organization signs in with single sign-on. Use \"Sign in with SSO\".")
         if not await ip_allowed(user.tenant_id, ip_address):
             # Only after the password checked out, so the answer reveals nothing
             # to someone without it; the account's own users see why.
@@ -340,6 +346,21 @@ class AuthService:
                 auth.forget_session(s["session_id"])
                 ended += 1
         return ended
+
+    async def _sso_required(self, user: User) -> bool:
+        """Require-SSO policy (S6): password sign-in is refused for users on the
+        tenant's verified domains, except Owners (the break-glass accounts that
+        can still fix a broken identity provider)."""
+        from app.models.identity import TenantSsoConfig
+        from app.services.identity.domains import email_domain, verified_domains
+
+        config = await self.users.db.get(TenantSsoConfig, user.tenant_id)
+        if config is None or not (config.enabled and config.require_sso):
+            return False
+        if email_domain(user.email) not in await verified_domains(self.users.db, user.tenant_id):
+            return False
+        loaded = await self.users.get_by_id(user.id, user.tenant_id)
+        return not any(r.name == "Owner" for r in (loaded.roles if loaded else []))
 
     async def _check_password(self, tenant_id: uuid.UUID, password: str, email: str | None) -> None:
         """Raise PasswordPolicyError when the password breaks the tenant's policy."""

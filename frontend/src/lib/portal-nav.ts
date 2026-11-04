@@ -119,6 +119,7 @@ export const PORTAL_NAV: NavSection[] = [
       { id: "adm-security", label: "Security Settings", route: "/settings/security" },
       { id: "adm-audit", label: "Audit Log", route: "/settings/audit-log" },
       { id: "adm-privacy", label: "Privacy & Data", route: "/settings/privacy" },
+      { id: "adm-sso", label: "Single Sign-On", route: "/settings/sso" },
     ],
   },
 ];

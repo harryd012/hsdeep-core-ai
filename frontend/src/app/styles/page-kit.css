@@ -273,6 +273,14 @@ a.pk-tile:hover { border-color: var(--ecc-accent); }
 .sec-sessions__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .sec-sessions__main b { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
 .sec-stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.sso-copy { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 4px 0; }
+.sso-copy code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; padding: 4px 8px; border-radius: 6px; background: var(--ecc-surface-raised); border: 1px solid var(--ecc-border); }
+.sso-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sso-domain { align-items: flex-start; }
+.sso-form { display: flex; flex-direction: column; gap: 8px; }
+.sso-field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 600; }
+.sso-field > span { display: inline-flex; align-items: center; gap: 8px; }
+.sso-field .pk-input { height: 32px; font-weight: 400; }
 .priv-danger { border-color: color-mix(in srgb, var(--ecc-bad) 45%, var(--ecc-border)); }
 .priv-delete { display: flex; flex-direction: column; gap: 8px; }
 .ai-integrity { display: flex; flex-direction: column; gap: 8px; }

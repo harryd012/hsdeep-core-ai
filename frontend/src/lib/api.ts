@@ -202,6 +202,26 @@ export class MfaRequiredError extends Error {
   }
 }
 
+/** Single sign-on: trade the one-time handoff code from /sso/complete for a session. */
+export async function completeSsoLogin(code: string): Promise<LoginResponse> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}/api/auth/sso/exchange`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+      cache: "no-store",
+    });
+  } catch (err) {
+    throw new ApiError("/api/auth/sso/exchange", 0, err instanceof Error ? `Can't reach the server (${err.message}).` : "Can't reach the server.");
+  }
+  if (!res.ok) throw new ApiError("/api/auth/sso/exchange", res.status, await readErrorDetail(res));
+  const data = (await res.json()) as LoginResponse;
+  setAuthSession(data);
+  clearActiveTenantOverride();
+  return data;
+}
+
 /** Second sign-in step: the challenge from MfaRequiredError plus an app or recovery code. */
 export async function completeMfaLogin(mfaToken: string, code: string): Promise<LoginResponse> {
   let res: Response;

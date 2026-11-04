@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import SecretCrypto
+from app.models.identity import TenantSsoConfig
 from app.models.itsm import ITSMConnection
 from app.models.monitoring_source import MonitoringSource
 from app.models.servicenow import ServiceNowConnection
@@ -55,6 +56,7 @@ ENCRYPTED_FIELDS: tuple[EncryptedField, ...] = (
     EncryptedField(ITSMConnection, "credentials_encrypted", "json"),
     EncryptedField(ITSMConnection, "webhook_secret_encrypted"),
     EncryptedField(UserMfa, "secret_encrypted"),
+    EncryptedField(TenantSsoConfig, "client_secret_encrypted"),
 )
 
 

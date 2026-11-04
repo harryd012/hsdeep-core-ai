@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     email_from: str = ""
     # Public web origin used to build links in emails (never the request Host).
     app_public_url: str = "http://localhost:3000"
+    # Public base URL of this API, for callbacks that identity providers
+    # redirect to (OIDC single sign-on: {api_public_url}/api/auth/sso/oidc/callback).
+    api_public_url: str = "http://localhost:8000"
 
     # Server
     host: str = "0.0.0.0"

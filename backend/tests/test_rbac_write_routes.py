@@ -40,6 +40,15 @@ PUBLIC_WRITE_ROUTES = {
     ("POST", "/api/auth/mfa/confirm"),
     ("POST", "/api/auth/mfa/recovery-codes"),
     ("POST", "/api/auth/mfa/disable"),
+    # SSO sign-in (S6): public, rate limited; authorised by the verified domain
+    # and a one-time handoff code.
+    ("POST", "/api/auth/sso/start"),
+    ("POST", "/api/auth/sso/exchange"),
+    # SCIM (S6): authorised by the tenant's SCIM bearer token (scim_tenant).
+    ("POST", "/api/scim/v2/Users"),
+    ("PUT", "/api/scim/v2/Users/{user_id}"),
+    ("PATCH", "/api/scim/v2/Users/{user_id}"),
+    ("DELETE", "/api/scim/v2/Users/{user_id}"),
     # Break-glass support grants: opening needs a superuser; revoking needs the
     # grant holder or the customer tenant's users.update. Checked in the
     # handler and covered by tests/test_support_access.py.

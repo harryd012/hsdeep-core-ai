@@ -58,6 +58,7 @@ from app.services.auth_service import (
     MfaRequired,
     NetworkNotAllowed,
     NotFound,
+    SsoRequired,
 )
 from app.services.audit_service import AuditService
 from app.services.email.outbox import EmailDisabled
@@ -153,6 +154,9 @@ async def login(
         )
     except EmailNotVerified as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except SsoRequired as exc:
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"SSO_REQUIRED: {exc}") from exc
     except NetworkNotAllowed as exc:
         if exc.user is not None:
             await AuditService(db).record(

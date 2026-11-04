@@ -1,6 +1,6 @@
 # Enterprise security, privacy and compliance programme
 
-Status: **S1–S5 implemented and tested** (2026-11-03 / 04). S6 approved as the plan, not built.
+Status: **S1–S6 implemented and tested** (2026-11-03 / 04), except SAML 2.0 (see S6).
 
 Every item is labelled by its real state. Nothing here claims a certification: HSDEEP CORE AI
 holds no SOC 2, ISO 27001 or similar attestation.
@@ -240,8 +240,49 @@ green (2820 passed).
 object store is needed with several API replicas); deletion is not yet surfaced to platform
 admins on the Customers page; redaction does not cover free-text personal data such as names.
 
-## Approved plan, not built yet
+## S6: enterprise identity (implemented, SAML deferred)
 
-| Phase | Scope |
+Migration `c9e7a3b5d1f6`; Settings > Single sign-on (`security.manage`); `app/api/routes/identity.py`,
+`app/api/routes/scim.py`, `app/services/identity/`.
+
+- **Verified domains**: a tenant adds an email domain and publishes
+  `_hsdeep-challenge.<domain> TXT "hsdeep-verify=<token>"`; verification looks it up (dnspython,
+  pinned). A verified domain belongs to one tenant only (partial unique index), so one customer
+  can never route another's employees to its identity provider.
+- **OIDC single sign-on** (Authorization Code + PKCE S256, state, nonce) against any OpenID Connect
+  provider (Entra ID, Okta, Google Workspace, Auth0, Ping …): issuer discovery, the client secret
+  encrypted with the platform key (and in the S4 rotation registry), ID token signature checked
+  against the provider's JWKS (RS/PS/ES algorithms only, unknown key id re-fetched once), issuer,
+  audience, expiry and nonce checked, email on a verified domain required. The browser gets a
+  one-time 60-second handoff code, never tokens in a URL (`/sso/complete`). Users are matched by
+  linked subject, then email; just-in-time creation with a default role is optional. SSO sign-ins
+  do not add the platform MFA step (the identity provider handles it). Audited (`auth.sso_login`).
+- **Require SSO**: password sign-in is refused (403 `SSO_REQUIRED`) for users on the tenant's
+  verified domains, except Owners (break-glass accounts to repair a broken identity provider);
+  users on other domains (contractors) keep passwords.
+- **SCIM 2.0** at `{API_PUBLIC_URL}/api/scim/v2` with a per-tenant bearer token (stored as a hash,
+  shown once, replace / revoke): ServiceProviderConfig and Users (list with `userName` /
+  `externalId` / `emails.value eq` filters, get, create, replace, patch in both the Entra and
+  Okta forms, delete). Deactivating or deleting a user ends their sessions at once; new users get
+  the default role and no password. Audited with actor type `scim`. Groups are not provisioned
+  (roles are assigned in the platform). SCIM errors use the standard status codes; the body is
+  wrapped in FastAPI's `detail`.
+- **Login page**: "Sign in with SSO" uses the email typed in the form to find the organization's
+  provider; a `SSO_REQUIRED` refusal shows the reason.
+- **Configuration**: `API_PUBLIC_URL` (the callback base, default `http://localhost:8000`) and
+  `APP_PUBLIC_URL` (where the browser lands) must be the public URLs in each deployment.
+
+**SAML 2.0 is not implemented.** Verifying SAML assertions safely needs an XML-signature library
+(`signxml` + `lxml`) and careful protection against signature-wrapping attacks; that is a separate
+step. Every major identity provider supports OpenID Connect, which is available now.
+
+Tests: `tests/test_security_s6_identity.py` (a fake identity provider with real RSA keys, JWKS and
+a token endpoint).
+
+## Not built yet
+
+| Item | Scope |
 |---|---|
-| S6 Enterprise identity | OIDC (Entra ID, Okta, Google), SAML 2.0, SCIM provisioning, domain verification, require SSO |
+| SAML 2.0 | Assertion consumer service with signxml-based verification, IdP metadata import |
+| SCIM Groups | Map identity-provider groups to platform roles |
+| Per-tenant keys | Envelope encryption and customer-managed keys (design in S4) |

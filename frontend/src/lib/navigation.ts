@@ -154,6 +154,7 @@ export const NAV_CONFIG: NavGroup[] = [
       { label: "General", route: "/settings/general" },
       { label: "Security", route: "/settings/security", keywords: "password policy sessions sign out lockout timeout mfa" },
       { label: "Audit Log", route: "/settings/audit-log", keywords: "audit history compliance who changed export" },
+      { label: "Single Sign-On", route: "/settings/sso", keywords: "sso oidc saml okta entra azure ad google scim provisioning domain" },
       { label: "Privacy & Data", route: "/settings/privacy", keywords: "privacy gdpr ai retention export delete organization" },
       { label: "Users & Roles", route: "/settings/users-roles", keywords: "rbac permissions" },
       { label: "Notifications", route: "/settings/notifications", keywords: "email slack pagerduty" },

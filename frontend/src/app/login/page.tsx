@@ -20,6 +20,7 @@ import AuthScene, { useHydrated } from "@/components/auth/AuthScene";
 import MfaCodeStep from "@/components/auth/MfaCodeStep";
 import PasswordField from "@/components/auth/PasswordField";
 import { ApiError, MfaRequiredError } from "@/lib/api";
+import { startSso } from "@/lib/identity";
 import { useAuth } from "@/lib/auth-context";
 
 function safeNextPath(raw: string | null): string {
@@ -42,6 +43,28 @@ function LoginForm() {
   const [invalid, setInvalid] = useState<{ email?: boolean; password?: boolean }>({});
   /** Set when the password was accepted and the account has MFA (code step). */
   const [challenge, setChallenge] = useState<string | null>(null);
+  const [ssoBusy, setSsoBusy] = useState(false);
+
+  /** Single sign-on (S6): the work email's verified domain finds the organization's identity provider. */
+  async function signInWithSso() {
+    const trimmed = email.trim();
+    if (!trimmed) {
+      setError("Enter your work email, then choose Sign in with SSO.");
+      setInvalid({ email: true });
+      document.getElementById("email")?.focus();
+      return;
+    }
+    setSsoBusy(true);
+    setError(null);
+    try {
+      window.location.assign(await startSso(trimmed, next));
+    } catch (err) {
+      setError(err instanceof ApiError && err.status === 404
+        ? "Single sign-on isn't set up for your email domain. Sign in with your password."
+        : err instanceof Error ? err.message : "Single sign-on could not start.");
+      setSsoBusy(false);
+    }
+  }
 
   // Already signed in (e.g. dev bootstrap, or navigated here by mistake)?
   // Bounce straight to the destination rather than showing the form.
@@ -96,7 +119,7 @@ function LoginForm() {
         } else if (err.status === 403) {
           // e.g. "Confirm your email address before signing in." or a blocked network.
           setError(
-            (err.message || "Your account is not permitted to sign in. Contact your administrator.").replace(/^IP_NOT_ALLOWED:\s*/, ""),
+            (err.message || "Your account is not permitted to sign in. Contact your administrator.").replace(/^(IP_NOT_ALLOWED|SSO_REQUIRED):\s*/, ""),
           );
         } else if (err.status === 429) {
           setError("Too many attempts. Please wait a moment and try again.");
@@ -193,11 +216,11 @@ function LoginForm() {
           <span>or</span>
         </div>
 
-        <button type="button" className="lx-sso" disabled title="Single sign-on is set up per organization by your administrator">
+        <button type="button" className="lx-sso" disabled={!hydrated || ssoBusy || submitting} onClick={signInWithSso}>
           <Building2 size={18} aria-hidden="true" />
           Sign in with SSO
         </button>
-        <p className="lx-card__hint">SSO is enabled per organization by your administrator.</p>
+        <p className="lx-card__hint">{ssoBusy ? "Opening your identity provider…" : "Enter your work email above, then choose SSO."}</p>
       </form>
 
       <p className="lx-card__foot">

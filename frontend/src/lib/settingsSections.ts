@@ -13,7 +13,7 @@
  */
 
 import type { LucideIcon } from "lucide-react";
-import { Settings, ShieldCheck, Bell, Users, Key, History, Lock } from "lucide-react";
+import { Settings, ShieldCheck, Bell, Users, Key, History, Lock, Fingerprint } from "lucide-react";
 
 export interface SettingsSection {
   /** Stable key for React rendering and analytics. */
@@ -82,6 +82,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description: "AI data use, retention, export, deleting your organization",
     icon: Lock,
     href: "/settings/privacy",
+  },
+  {
+    id: "sso",
+    title: "Single Sign-On",
+    description: "Identity provider, verified domains, SCIM provisioning",
+    icon: Fingerprint,
+    href: "/settings/sso",
+    permission: "security.manage",
   },
   {
     id: "notifications",
