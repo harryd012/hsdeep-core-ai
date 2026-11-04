@@ -33,7 +33,6 @@ class ServiceNowSyncJobRepository:
         stmt = select(ServiceNowSyncJob).where(
             ServiceNowSyncJob.id == job_id,
             ServiceNowSyncJob.tenant_id == tenant_id,
-            ServiceNowSyncJob.is_deleted.is_(False),
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
@@ -49,7 +48,6 @@ class ServiceNowSyncJobRepository:
         target = now or datetime.now(timezone.utc)
         stmt = select(ServiceNowSyncJob).where(
             ServiceNowSyncJob.tenant_id == tenant_id,
-            ServiceNowSyncJob.is_deleted.is_(False),
             ServiceNowSyncJob.status.in_(("pending", "failed")),
             ServiceNowSyncJob.next_attempt_at <= target,
         ).order_by(ServiceNowSyncJob.created_at.asc()).limit(limit)
@@ -110,7 +108,6 @@ class ServiceNowSyncJobRepository:
         """List dead-lettered jobs for manual inspection/retry."""
         stmt = select(ServiceNowSyncJob).where(
             ServiceNowSyncJob.tenant_id == tenant_id,
-            ServiceNowSyncJob.is_deleted.is_(False),
             ServiceNowSyncJob.status == "dead_letter",
         ).order_by(ServiceNowSyncJob.created_at.desc()).limit(limit)
         result = await self.db.execute(stmt)

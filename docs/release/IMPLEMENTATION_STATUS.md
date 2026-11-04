@@ -58,7 +58,7 @@ on any branch; they need the owner's commit before they can be released.
 | --- | --- | --- | --- |
 | R1.1 | Tenant identity: no frontend fallback tenant | VERIFIED | `9e979cbc4`. Backend reads no tenant from the query (0 matches for `tenant_id ... Query(` in routes). `tsc` clean; 121 frontend tests pass. Not yet checked in a signed-in browser session. |
 | R1.2 | Scoped, time-bound, audited support access | VERIFIED | Break-glass grants (owner decision). `tests/test_support_access.py` 11 passed; `test_auth_tenants` updated; full backend suite 2,553 passed (+ RBAC guard list updated, 26 passed); frontend 121 passed. Browser check on a throwaway tenant: the switch asked for a reason, opened a 60 min grant, wrote `support_access.granted` in the customer's audit log; after revocation the app returned to the home tenant by itself. Migration `d2b8e6f1a4c9` round-tripped. |
-| R1.3 | Cross-tenant isolation suite | NOT_STARTED | |
+| R1.3 | Cross-tenant isolation suite | VERIFIED | `backend/tests/test_cross_tenant_leak_scan.py`: seeds tenant A (site, source, device, sensor, alert, incident, ticket, SOP + version, runbook, integration, task, user, API key, audit event) with a unique marker and calls every GET route (228) as tenant B, both with an all-permission session token and an all-scope API key, filling path ids with A's real ids. No route returns A's data; a positive control proves the markers are found for A's own user. Found and fixed one crash: `ServiceNowSyncJobRepository` filtered on a non-existent `is_deleted` column, breaking the worker's ServiceNow sync, job list and retry (`tests/test_servicenow_sync_job_repository.py`). Not covered: write routes (guarded by `test_rbac_write_routes` and per-feature tests), background jobs, enterprise business units (no model yet, R4). |
 | R1.4 | Server-side session revocation | VERIFIED | `431b85c85`, `fe7af585f`; migration `c7f1a9d3e5b2` round-tripped; `tests/test_session_revocation.py` 8 passed; auth/email/pilot/security suites 64 passed; full backend suite 2,542 passed + RBAC guard fixed (15 passed). |
 | R1.5 | RBAC per-role tests | NOT_STARTED | Write routes already guarded (`test_rbac_write_routes`). Role changes now end the user's sessions (R1.4). |
 | R1.6 | Unified security audit | NOT_STARTED | |
@@ -66,11 +66,29 @@ on any branch; they need the owner's commit before they can be released.
 | R1.8 | API key expiry/last-used as timestamps, enforcement tests | NOT_STARTED | |
 | R1.9 | Security configuration review | NOT_STARTED | |
 
+### R1 follow-ups found by the leak scan (performance, R5.5)
+
+- `GET /api/command-center/overview`: about 3 s per request whenever Redis is
+  unreachable, because it probed Redis and Ollama one after the other on every
+  call (the dashboard polls it every 5 s). Fixed in #6:
+  probes run concurrently and are reused for 15 s.
+- The 25 s and ~55 s stalls during the API-key scan were the rate limiter, not
+  the routes: API-key traffic is limited per client IP at 60 requests/min and
+  the middleware waits for a free slot instead of answering 429
+  (`app/main.py`, `_RateLimiter.acquire`). The scan now skips that wait.
+  Decision for the owner: answer API-key callers over the limit with 429 and
+  `Retry-After` (as session traffic already is) instead of holding the
+  request open, which ties up server capacity under load.
+
+Overlap: the S1-S6 security programme (session in the main checkout) covers
+R1.6 (security audit), R1.8 (API key scopes, S3) and parts of R1.5; those are
+left to it to avoid two implementations.
+
 ## R2: runtime and reliable event processing
 
 | ID | Task | Status | Evidence |
 | --- | --- | --- | --- |
-| R2.1 | Shared event transport (Redis Streams) | CODE_COMPLETE | `feat/event-transport-r2`: `app/services/events/redis_transport.py`, `EventBus(transport=...)`, `EVENT_TRANSPORT=redis` in `render.yaml`; production refuses split roles without it. `tests/test_event_transport.py`: API bus publishes, worker bus consumes; consumer-group, retry, dead-letter, reclaim of a dead consumer's messages. Design: `docs/architecture/event-transport.md`. Real-Redis test runs in CI only (`EVENT_TRANSPORT_TEST_REDIS_URL`). |
+| R2.1 | Shared event transport (Redis Streams) | CODE_COMPLETE | `feat/event-transport-r2`: `app/services/events/redis_transport.py`, `EventBus(transport=...)`, `EVENT_TRANSPORT=redis` in `render.yaml`; production refuses split roles without it. `tests/test_event_transport.py`: API bus publishes, worker bus consumes; consumer-group, retry, dead-letter, reclaim of a dead consumer's messages. Design: `docs/architecture/event-transport.md`. Real-Redis test runs in CI (`EVENT_TRANSPORT_TEST_REDIS_URL`): passed in run 41866497077 (2,722 passed, 1 skipped). |
 | R2.2 | Versioned event envelope | CODE_COMPLETE | `schema_version` 1 with event_id, type, tenant, source, created_at, correlation_id, trace_id, payload; invalid envelopes dead-lettered. |
 | R2.3 | At-least-once + idempotent handling | CODE_COMPLETE | Ack after all handlers succeed; per-handler done records skip already-succeeded handlers on redelivery. Exactly-once not claimed. |
 | R2.4 | Worker reliability | IN_PROGRESS | Consumer loop backs off on Redis errors and resumes; graceful stop. Not done: health/metrics exposure, concurrency limits. |
