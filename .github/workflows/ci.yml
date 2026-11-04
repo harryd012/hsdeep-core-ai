@@ -46,6 +46,8 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/hsdeep
       TEST_DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/hsdeep_test
       REDIS_URL: redis://localhost:6379/0
+      # The event-transport suite also runs against this real Redis (db 15).
+      EVENT_TRANSPORT_TEST_REDIS_URL: redis://localhost:6379/15
       # CI-only placeholder. Real secrets are injected by the deployment's secret
       # manager; ci/secret_scan.py fails the build if credential material is
       # committed to a shipping path.

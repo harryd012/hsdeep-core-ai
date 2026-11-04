@@ -66,7 +66,22 @@ on any branch; they need the owner's commit before they can be released.
 | R1.8 | API key expiry/last-used as timestamps, enforcement tests | NOT_STARTED | |
 | R1.9 | Security configuration review | NOT_STARTED | |
 
-## R2 to R5
+## R2: runtime and reliable event processing
+
+| ID | Task | Status | Evidence |
+| --- | --- | --- | --- |
+| R2.1 | Shared event transport (Redis Streams) | CODE_COMPLETE | `feat/event-transport-r2`: `app/services/events/redis_transport.py`, `EventBus(transport=...)`, `EVENT_TRANSPORT=redis` in `render.yaml`; production refuses split roles without it. `tests/test_event_transport.py`: API bus publishes, worker bus consumes; consumer-group, retry, dead-letter, reclaim of a dead consumer's messages. Design: `docs/architecture/event-transport.md`. Real-Redis test runs in CI only (`EVENT_TRANSPORT_TEST_REDIS_URL`). |
+| R2.2 | Versioned event envelope | CODE_COMPLETE | `schema_version` 1 with event_id, type, tenant, source, created_at, correlation_id, trace_id, payload; invalid envelopes dead-lettered. |
+| R2.3 | At-least-once + idempotent handling | CODE_COMPLETE | Ack after all handlers succeed; per-handler done records skip already-succeeded handlers on redelivery. Exactly-once not claimed. |
+| R2.4 | Worker reliability | IN_PROGRESS | Consumer loop backs off on Redis errors and resumes; graceful stop. Not done: health/metrics exposure, concurrency limits. |
+| R2.5 | Scheduler coordination | NOT_STARTED | Existing single-owner tick (Postgres advisory lock, `test_scheduler_single_owner`) to be reviewed. |
+| R2.6-R2.9 | Database review, Redis responsibilities, observability, backup/restore | NOT_STARTED | Redis responsibilities documented in `docs/architecture/event-transport.md`. |
+
+Known gap: an event published while Redis is unreachable, from a process that
+runs no consumers (the API), is logged and lost. A transactional outbox would
+close it.
+
+## R3 to R5
 
 NOT_STARTED; plan in `ROADMAP.md`.
 

@@ -10,7 +10,7 @@ only pilot-blocking ones are repeated here.
 | BLK-R0-02 | Uncommitted paths in the main checkout (168 on 2026-10-30, down from ~245 after the r0 capture branches) | Work not on a branch is not releasable; the edge agent is needed for customer-site collection | R0 | Owner to commit or discard |
 | BLK-R1-01 | ~~No server-side access-token revocation~~ | Resolved in `431b85c85` (R1.4) | R1 | - |
 | BLK-R1-02 | ~~Support override not scoped or time-bound~~ | Resolved (R1.2, break-glass grants) | R1 | - |
-| BLK-R2-01 | Event bus is in-process (`backend/app/services/events/event_bus.py`) | Events raised in the API process never reach a separate worker | R2 | Engineering |
+| BLK-R2-01 | Event bus was in-process (`backend/app/services/events/event_bus.py`) | Code complete on `feat/event-transport-r2` (Redis Streams); open until merged, deployed with `EVENT_TRANSPORT=redis` and verified across two processes on real Redis (CI test) | R2 | Merge + CI |
 | BLK-R3-01 | No collector has a successful live run in the dev database (78 PRTG sources, 0 successes) | The PRTG end-to-end workflow cannot be demonstrated | R3 | Reachable PRTG instance + credentials |
 | BLK-R3-02 | ServiceNow integration has no tests and no instance | Ticketing claims unverified | R3 | ServiceNow developer instance |
 | BLK-R4-01 | No provider → customer or business-unit hierarchy | MSP and enterprise pilots need it | R4 | Engineering (design approval) |
