@@ -189,6 +189,14 @@ class Settings(BaseSettings):
     # guarantees a single owner per tick across replicas; this setting stops API
     # replicas from even attempting it.
     runtime_mode: str = "all"
+    # Event transport (R2): "memory" keeps events in the publishing process
+    # (single-process development); "redis" carries them over a Redis stream
+    # so the API and a separate worker share them. Split runtime roles in
+    # production require "redis".
+    event_transport: str = "memory"
+    event_stream_maxlen: int = 100_000
+    event_claim_idle_seconds: int = 30
+    event_max_deliveries: int = 5
 
     # Bounded shutdown drain budget (seconds) for queued background work, so a
     # slow/hung handler can never block a rolling deploy indefinitely.
@@ -320,11 +328,18 @@ class Settings(BaseSettings):
                 f"LOG_FORMAT={self.log_format!r} is not one of "
                 f"{', '.join(self.VALID_LOG_FORMATS)}."
             )
+        if self.event_transport not in ("memory", "redis"):
+            problems.append(f"EVENT_TRANSPORT={self.event_transport!r} is not one of memory, redis.")
 
         if self.app_env != "production":
             return problems
 
         # --- production-only contract (Phase 9A) --------------------------
+        if self.runtime_mode in ("api", "worker", "scheduler") and self.event_transport != "redis":
+            problems.append(
+                f"RUNTIME_MODE={self.runtime_mode} with EVENT_TRANSPORT={self.event_transport}: in a split "
+                "deployment events raised in the API never reach the worker. Set EVENT_TRANSPORT=redis."
+            )
         if self.email_transport == "log":
             problems.append(
                 "EMAIL_TRANSPORT=log only logs messages; in production password "

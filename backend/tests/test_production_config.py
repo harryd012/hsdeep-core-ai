@@ -32,6 +32,8 @@ def _base_kwargs(**overrides):
         debug=False,
         # Production must choose email explicitly ("log" is refused).
         email_transport="none",
+        # Split roles share events over Redis Streams (R2).
+        event_transport="redis",
     )
     kwargs.update(overrides)
     return kwargs
@@ -97,3 +99,17 @@ def test_multiple_problems_are_all_reported_not_just_the_first():
     ))
     problems = s.validate_for_production()
     assert len(problems) >= 3
+
+
+def test_split_roles_require_the_shared_event_transport():
+    for mode in ("api", "worker", "scheduler"):
+        problems = Settings(**_base_kwargs(runtime_mode=mode, event_transport="memory")).validate_for_production()
+        assert any("EVENT_TRANSPORT=redis" in p for p in problems), mode
+    # A single all-in-one process may keep events in memory.
+    problems = Settings(**_base_kwargs(runtime_mode="all", event_transport="memory")).validate_for_production()
+    assert not any("EVENT_TRANSPORT" in p for p in problems)
+
+
+def test_unknown_event_transport_is_rejected_everywhere():
+    s = Settings(app_env="development", secret_encryption_key="dev", event_transport="kafka")
+    assert any("EVENT_TRANSPORT='kafka'" in p for p in s.validate_for_production())
