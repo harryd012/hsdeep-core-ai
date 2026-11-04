@@ -45,7 +45,7 @@ Earlier audits: `docs/REPOSITORY_AUDIT.md`, `docs/PLATFORM_LEDGER.md` (batches 1
 | P4 Network Monitoring Center | Interface traffic / errors / utilization pages from `interfaces` + metrics, top-N bandwidth, VPN tunnels (FortiGate / Palo Alto data already collected) | **Slice 1 implemented and tested**: per-interface history (traffic, utilisation, error rates), network overview / interface list / interface history API, Network Monitoring and interface pages (`tests/test_network_center.py`) |
 | P5 Infrastructure monitoring | Windows / Linux / VMware host views from existing collectors | **Slice 1 implemented and tested**: server fleet page (`tests/test_server_fleet.py`); per-host detail already existed |
 | P6 Dashboards & topology | Widget registry over aggregated APIs, saved dashboards per tenant / role; topology already exists, add drill-down to sensors | **Slice 1 implemented** (frontend only): topology drill-down to sensors, alerts, host tabs and interface pages; **slice 2**: saved dashboards and the widget registry (`tests/test_saved_dashboards.py`) |
-| P7 Metrics / logs | Syslog receiver on the edge agent → normalized events, Logs Explorer over events | planned (needs agent work) |
+| P7 Metrics / logs | Syslog receiver on the edge agent → normalized events, Logs Explorer over events | **Slice 1 implemented and tested**: syslog receiver (separate process), log-to-device linking at ingest, Logs Explorer API and page (`tests/test_logs_explorer.py`); not verified in a browser |
 | P8 APM / tracing | OTLP/HTTP ingest of traces → spans table, service map from span parent/child | planned (new ingestion path) |
 | P9 Alerting | Dynamic baselines, notification policies, Teams channel | planned (engine exists) |
 | P10 AI RCA / copilot | Copilot tools over the new sensor / history APIs | planned (engine exists) |
@@ -368,3 +368,44 @@ saved dashboards and the widget registry follow as slice 2 once S3's migration i
   reporting resources; 34 PRTG sensors, 5 down; no measurements in the chart window), then
   deleted the test dashboard.
 - **Not in this slice**: drag-and-drop layout, role-default dashboards, a widget for alerts.
+
+## 11. P7 slice 1: syslog receiver and Logs Explorer
+
+Before this slice a collector could post log lines to `POST /api/v1/ingest/events` as events
+with `telemetry_type = LOG`, but nothing produced them (no syslog listener; the repository has
+no edge agent program) and nothing could search them (the ingest schema stated "no full-text
+log search").
+
+- **Syslog parsing** (`app/services/logs/syslog.py`, pure): RFC 5424 (with structured data) and
+  RFC 3164 (BSD) into an ingest event: message, platform severity (syslog 0-2 critical, 3-4
+  warning, 5-7 info), category by facility (auth / authpriv / audit security; kern, daemon,
+  syslog, cron, ntp, clock system; otherwise application), `event_type = syslog.<facility>`,
+  attributes (sender address, host, app, procid, msgid, facility, syslog severity, format,
+  structured data). Nothing is invented: a missing field stays absent, a message without PRI is
+  kept as user.notice and flagged `pri_missing`, an unreadable timestamp falls back to the receive
+  time and says so (`timestamp_source`). RFC 3164 has no year: the receive year is used, the
+  previous one around New Year.
+- **Syslog receiver** (`python -m app.edge.syslog_receiver`): a separate process for the
+  customer's network, never part of the central API process. UDP (default port 5514), batches of
+  up to 500 to the existing ingest API with a collector credential from the environment (never
+  logged; https required except for localhost). A failed batch (network error, 429, 5xx) is
+  retried in order with backoff; a bounded buffer (default 20,000) drops the oldest beyond its
+  limit and counts every drop; a status line every minute. Smoke-tested over a real UDP socket
+  against a stand-in ingest server: 4 datagrams, 2 batched requests, credential header present,
+  nothing dropped.
+- **Log to device** (ingest): a LOG event without a device is linked to the device of the
+  tenant whose IP address, hostname or name equals the line's syslog host (else its sender
+  address), only when exactly one device matches; an ambiguous or unknown host stays unlinked.
+- **Logs Explorer API** (`/api/logs`, `/api/logs/stats`, `monitoring.read`, tenant-scoped):
+  window defaults to the last hour and is capped at 7 days; text search is a case-insensitive
+  substring match over the message (wildcards in the search text are literal); filters for
+  severity (several), host, app, event type and device; newest first, paged; stats give volume
+  per bucket by severity and the top hosts, apps, types and severities (a facet ignores its own
+  filter). No full-text index: `pg_trgm` needs a database superuser, so search stays bounded to
+  the window.
+- **UI** (`/logs`, "Logs" under Observe): time range, refresh, stacked volume chart, severity
+  toggles and host / app / type facets, search, log lines (device link when linked; click a line
+  for its attributes), paging, and a note on how to get logs in when the window is empty.
+  Type-checked and linted; **not verified in a browser** (the dev servers were stopped).
+- **Not in this slice**: syslog over TCP / TLS, a log retention job for LOG events, saved log
+  searches, log-based alert rules, and a log widget for dashboards.

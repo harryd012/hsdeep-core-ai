@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import hash_refresh_token
@@ -71,6 +71,42 @@ def _value_error(sample: MetricSample) -> str | None:
     if sample.value_type == "boolean" and sample.boolean_value is None:
         return "missing_value"
     return None
+
+
+def _log_host(event) -> str | None:
+    """The host a log line names (syslog HOSTNAME), else the address it came from."""
+    attributes = event.attributes or {}
+    value = attributes.get("host") or attributes.get("sender")
+    return str(value).strip()[:255] if value else None
+
+
+async def _log_device_map(db: AsyncSession, tenant_id: uuid.UUID, events) -> dict[str, uuid.UUID]:
+    """Host -> device for LOG events without a device (observability plan P7): a
+    host is linked only when exactly one device of the tenant has that IP
+    address, hostname or name; an ambiguous or unknown host stays unlinked."""
+    hosts = {
+        h for h in (_log_host(e) for e in events if e.telemetry_type == "LOG" and e.device_id is None) if h
+    }
+    if not hosts:
+        return {}
+    lowered = {h.lower() for h in hosts}
+    rows = (
+        await db.execute(
+            select(Device.id, Device.ip_address, Device.hostname, Device.name).where(
+                Device.tenant_id == tenant_id,
+                Device.is_deleted.is_(False),
+                (Device.ip_address.in_(hosts))
+                | (func.lower(Device.hostname).in_(lowered))
+                | (func.lower(Device.name).in_(lowered)),
+            )
+        )
+    ).all()
+    matches: dict[str, set[uuid.UUID]] = {}
+    for device_id, ip, hostname, name in rows:
+        for host in hosts:
+            if host == ip or host.lower() in {(hostname or "").lower(), (name or "").lower()}:
+                matches.setdefault(host, set()).add(device_id)
+    return {host: next(iter(ids)) for host, ids in matches.items() if len(ids) == 1}
 
 
 async def _device_owned_by(db: AsyncSession, device_id: uuid.UUID, tenant_id: uuid.UUID) -> bool:
@@ -160,6 +196,7 @@ async def ingest_events(
     results: list[ItemResult] = []
     accepted = rejected = duplicates = 0
     seen_event_ids: set[str] = set()
+    log_devices = await _log_device_map(db, tenant_id, payload.events)
 
     for index, event in enumerate(payload.events):
         if event.event_id and event.event_id in seen_event_ids:
@@ -179,11 +216,14 @@ async def ingest_events(
             results.append(ItemResult(index=index, ok=False, id=event.event_id, error=error))
             continue
 
+        device_id = event.device_id
+        if device_id is None and event.telemetry_type == "LOG":
+            device_id = log_devices.get(_log_host(event))
         db.add(
             NormalizedEvent(
                 tenant_id=tenant_id,
                 site_id=event.site_id,
-                device_id=event.device_id,
+                device_id=device_id,
                 integration_id=event.integration_id,
                 source_event_id=event.source_event_id,
                 event_signature=event.event_signature,
