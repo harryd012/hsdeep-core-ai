@@ -76,6 +76,8 @@ export default function InfrastructurePage() {
       }, { total: 0, healthy: 0, warning: 0, critical: 0, unknown: 0 })
     : null;
   const h = data?.health;
+  // health.critical_alerts is all-time; the tile pairs active alerts with the active critical ones.
+  const activeCritical = typeof data?.alerts.active_critical === "number" ? data.alerts.active_critical : null;
   const families = Object.keys(byCategory).filter((f) => f !== "cloud");
   const extraProviders = Object.keys(providers).filter((p) => !PROVIDERS.some((x) => x.key === p));
 
@@ -94,8 +96,10 @@ export default function InfrastructurePage() {
           info="Every device and cloud resource, bucketed by its reported status." />
         <StatTile label="Sites" value={h ? String(h.total_sites) : "—"} loading={loading} sub={h && h.critical_sites ? `${h.critical_sites} critical` : undefined} info="Sites with their device health." />
         <StatTile label="Sensors down" value={h ? String(h.down_sensors) : "—"} loading={loading} sub={h ? `of ${h.total_sensors.toLocaleString("en-US")} sensors` : undefined} info="Sensors whose last reading is down or critical." />
-        <StatTile label="Active alerts" value={h ? String(h.active_alerts) : "—"} loading={loading} sub={h ? `${h.critical_alerts} critical` : undefined} info="Open or acknowledged alerts." />
-        <StatTile label="Open incidents" value={h ? String(h.open_incidents) : "—"} loading={loading} info="Incidents not yet resolved or closed." />
+        <StatTile label="Active alerts" value={h ? h.active_alerts.toLocaleString("en-US") : "—"} loading={loading}
+          sub={activeCritical != null ? `${activeCritical.toLocaleString("en-US")} critical` : undefined} info="Open or acknowledged alerts; critical counts only the active ones." />
+        <StatTile label="Open incidents" value={h ? h.open_incidents.toLocaleString("en-US") : "—"} loading={loading}
+          sub={h ? `of ${h.total_incidents.toLocaleString("en-US")} incidents` : undefined} info="Incidents not yet resolved or closed." />
         <StatTile label="Failing sources" value={sources?.failing != null ? String(sources.failing) : "—"} loading={loading}
           sub={sources?.total != null ? `of ${sources.total} data sources` : undefined} info="Sources whose latest collection failed or that keep failing." />
       </StatStrip>
