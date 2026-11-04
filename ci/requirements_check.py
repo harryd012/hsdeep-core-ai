@@ -52,7 +52,10 @@ ALIASES = {
     "kubernetes": "kubernetes",
     "google": "google-cloud-compute",
     "dotenv": "python-dotenv",
+    # QR codes for authenticator-app enrolment (security S2).
+    "segno": "segno",
     # Import-name aliases that differ from the distribution name:
+    "dns": "dnspython",  # verified-domain TXT lookups (security S6)
     "email_validator": "email-validator",
     "pyVim": "pyvmomi",
     # starlette is a declared direct dependency (see requirements.txt).
