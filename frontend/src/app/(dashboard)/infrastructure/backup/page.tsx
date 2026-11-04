@@ -1,28 +1,41 @@
 "use client";
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DatabaseBackup } from "lucide-react";
 import {
   getBackupCoverage,
+  getBackupFailures,
   getBackupOverview,
+  getBackupSecurity,
+  getBackupStorageHistory,
   listBackupItems,
   listBackupJobs,
   listBackupVaults,
+  updateBackupSettings,
   type BackupCoverage,
   type BackupCoverageState,
+  type BackupFailureGroup,
+  type BackupFilters,
   type BackupItem,
   type BackupJob,
   type BackupOverview,
   type BackupRpoState,
+  type BackupSecurityPosture,
+  type BackupStatusGroup,
   type BackupVault,
+  type BackupWorkloadSummary,
 } from "@/lib/api";
 import { downloadCsv, formatBytes, type CsvColumn } from "@/lib/csv";
 import { useSiteHealth } from "@/hooks/useSiteHealth";
+import { useAuth } from "@/lib/auth-context";
 import { createMonitoringSource, syncMonitoringSource } from "@/lib/monitoringApi";
 import { DonutRing, Legend } from "@/components/command-center/primitives";
+import { instancesHref } from "./instancesHref";
+import { CHECK_TEXT, CHECK_TONE, FilterBar, StorageTrend, duration, flag, hours, jobTone, posture, retention, workloadLabel } from "./ui";
 import {
   Banner,
+  BarList,
   DataTable,
   DayColumns,
   PageShell,
@@ -57,42 +70,150 @@ const JOB_SERIES = [
   { key: "other", label: "Other", color: "var(--ecc-unknown)" },
 ];
 
-function jobTone(status: string): Tone {
-  if (status === "completed") return "good";
-  if (status === "completed_with_warnings") return "warn";
-  if (status === "failed") return "bad";
-  if (status === "in_progress") return "info";
-  return "neutral";
-}
-
-function hours(h: number | null): string {
-  if (h === null) return "—";
-  if (h < 1) return `${Math.round(h * 60)} min`;
-  if (h < 48) return `${h.toFixed(1)} h`;
-  return `${Math.round(h / 24)} d`;
-}
-
 /** Site filter: "all", "none" (no site assigned) or a site id. */
 function inSite(siteId: string | null, filter: string): boolean {
   return filter === "all" || (filter === "none" ? siteId === null : siteId === filter);
 }
 
-function retention(days: number | null): string {
-  if (days === null) return "—";
-  return days % 365 === 0 ? `${days / 365} y` : days % 7 === 0 && days >= 14 ? `${days / 7} wk` : `${days} d`;
+/** The tenant's RPO target. Everyone sees it; backup.write can change it or
+ *  return it to the platform default. Alerts use the new value from the next poll. */
+function RpoTarget({ overview, onSaved }: { overview: BackupOverview; onSaved: () => void }) {
+  const { user } = useAuth();
+  const canEdit = !!user && (user.is_superuser || user.permissions.includes("backup.write"));
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(String(overview.rpo_hours));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const hoursValue = Number(value);
+  const valid = Number.isInteger(hoursValue) && hoursValue >= 1 && hoursValue <= 720;
+
+  async function save(rpoHours: number | null) {
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await updateBackupSettings(rpoHours);
+      setValue(String(saved.rpo_hours));
+      setEditing(false);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the RPO.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <div className="pk-toolbar">
+        <span className="pk-help">
+          Target: <strong>{overview.rpo_hours} h</strong> {overview.rpo_is_default ? "(platform default)" : "(set for this customer)"}
+        </span>
+        {canEdit && (
+          <button type="button" className="pk-button" onClick={() => { setValue(String(overview.rpo_hours)); setEditing(true); }}>
+            Change
+          </button>
+        )}
+      </div>
+    );
+  }
+  return (
+    <form className="pk-toolbar" onSubmit={(e) => { e.preventDefault(); if (valid) void save(hoursValue); }}>
+      <label htmlFor="bk-rpo" className="pk-help">RPO (hours)</label>
+      <input id="bk-rpo" className="pk-input" type="number" min={1} max={720} step={1} value={value} onChange={(e) => setValue(e.target.value)} style={{ width: 90 }} />
+      <button type="submit" className="pk-button pk-button--primary" disabled={!valid || busy}>{busy ? "Saving…" : "Save"}</button>
+      {!overview.rpo_is_default && <button type="button" className="pk-button" disabled={busy} onClick={() => void save(null)}>Use default</button>}
+      <button type="button" className="pk-button" disabled={busy} onClick={() => setEditing(false)}>Cancel</button>
+      {!valid && <span className="pk-help">1 to 720 hours.</span>}
+      {error && <Banner tone="bad">{error}</Banner>}
+    </form>
+  );
 }
 
-function duration(s: number | null): string {
-  if (s === null) return "—";
-  if (s < 60) return `${Math.round(s)} s`;
-  if (s < 3600) return `${Math.round(s / 60)} min`;
-  return `${(s / 3600).toFixed(1)} h`;
+/** Connect a Veeam Backup & Replication server: creates a `veeam_backup`
+ *  monitoring source, then runs one collection immediately. */
+function ConnectVeeam({ onDone }: { onDone: () => void }) {
+  const [form, setForm] = useState({ name: "Veeam Backup", hostname: "", port: "9419", username: "", secret: "" });
+  const [verifyTls, setVerifyTls] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ tone: "good" | "bad" | "warn"; text: string } | null>(null);
+  const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const port = Number(form.port);
+  const ready = form.name && form.hostname && form.username && form.secret && Number.isInteger(port) && port > 0 && port < 65536;
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!ready) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const source = await createMonitoringSource({
+        name: form.name,
+        source_type: "veeam_backup",
+        hostname: form.hostname.trim(),
+        port,
+        protocol: "https",
+        username: form.username.trim(),
+        verify_ssl: verifyTls,
+        is_active: true,
+        poll_interval_seconds: 900,
+        credential: form.secret,
+      });
+      setForm((f) => ({ ...f, secret: "" }));
+      const sync = await syncMonitoringSource(source.id).catch((err: unknown) => ({ status: "error", error: err instanceof Error ? err.message : String(err) }));
+      setMessage(
+        sync.status === "error"
+          ? { tone: "warn", text: `Source saved, but the first collection failed: ${sync.error ?? "unknown error"}. Check the server name, port 9419 is reachable, and the user's password.` }
+          : { tone: "good", text: "Connected. The first collection finished; it repeats every 15 minutes." },
+      );
+      onDone();
+    } catch (err) {
+      setMessage({ tone: "bad", text: err instanceof Error ? err.message : "Could not save the source." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="pk-form pk-form--wide" onSubmit={submit}>
+      <p className="pk-help">
+        Read-only. Uses the Veeam Backup &amp; Replication REST API (version 12 or later, port 9419). Create a Veeam user with the
+        built-in <strong>Veeam Backup Viewer</strong> role and enter it below. The password is encrypted at rest and never shown again.
+      </p>
+      <div className="pk-field"><label htmlFor="vb-name">Name</label><input id="vb-name" className="pk-input" value={form.name} onChange={set("name")} required /></div>
+      <div className="pk-field"><label htmlFor="vb-host">Backup server</label><input id="vb-host" className="pk-input" value={form.hostname} onChange={set("hostname")} placeholder="vbr01.corp.local" required /></div>
+      <div className="pk-field"><label htmlFor="vb-port">REST API port</label><input id="vb-port" className="pk-input" type="number" min={1} max={65535} value={form.port} onChange={set("port")} required /></div>
+      <div className="pk-field"><label htmlFor="vb-user">Username</label><input id="vb-user" className="pk-input" value={form.username} onChange={set("username")} placeholder="svc-veeam" autoComplete="off" required /></div>
+      <div className="pk-field"><label htmlFor="vb-secret">Password</label><input id="vb-secret" className="pk-input" type="password" autoComplete="new-password" value={form.secret} onChange={set("secret")} required /></div>
+      <div className="pk-field">
+        <label htmlFor="vb-tls">TLS certificate</label>
+        <span className="pk-help"><input id="vb-tls" type="checkbox" checked={verifyTls} onChange={(e) => setVerifyTls(e.target.checked)} /> Verify (leave off for Veeam&apos;s default self-signed certificate)</span>
+      </div>
+      <div>
+        <button type="submit" className="pk-button pk-button--primary" disabled={!ready || busy}>{busy ? "Connecting…" : "Connect and collect"}</button>
+      </div>
+      {message && <Banner tone={message.tone}>{message.text}</Banner>}
+    </form>
+  );
 }
 
-/** Posture label + tone: what Azure reported, never a guess. */
-function posture(value: string | null, good: string[], label = titleCaseWords): { text: string; tone: Tone } {
-  if (!value) return { text: "Not reported", tone: "neutral" };
-  return { text: label(value), tone: good.includes(value) ? "good" : "warn" };
+type Provider = "azure" | "veeam";
+
+/** Provider choice, then that provider's connect form. */
+function ConnectBackup({ onDone }: { onDone: () => void }) {
+  const [provider, setProvider] = useState<Provider>("azure");
+  return (
+    <>
+      <div className="pk-toolbar">
+        <Tabs<Provider>
+          value={provider}
+          onChange={setProvider}
+          label="Backup provider"
+          tabs={[{ key: "azure", label: "Azure Backup" }, { key: "veeam", label: "Veeam Backup & Replication" }]}
+        />
+      </div>
+      {provider === "azure" ? <ConnectAzureBackup onDone={onDone} /> : <ConnectVeeam onDone={onDone} />}
+    </>
+  );
 }
 
 /** Connect an Azure subscription: creates an `azure_backup` monitoring source
@@ -152,20 +273,137 @@ function ConnectAzureBackup({ onDone }: { onDone: () => void }) {
   );
 }
 
+type BackupTab = "items" | "coverage" | "jobs" | "failures" | "vaults" | "security";
+const TAB_KEYS: readonly string[] = ["items", "coverage", "jobs", "failures", "vaults", "security"];
+/** The open tab lives in the URL hash (#jobs ...), so KPIs and other pages can link to it. */
+function subscribeHash(onChange: () => void) {
+  window.addEventListener("hashchange", onChange);
+  return () => window.removeEventListener("hashchange", onChange);
+}
+const RANGES = [
+  { days: 1, label: "Last 24 hours" },
+  { days: 7, label: "Last 7 days" },
+  { days: 14, label: "Last 14 days" },
+  { days: 30, label: "Last 30 days" },
+  { days: 90, label: "Last 90 days" },
+];
+const AGE_COLORS: Record<string, string> = {
+  lt_24h: "var(--ecc-good)",
+  "1_3d": "var(--ecc-warn)",
+  "3_7d": "var(--ecc-warn)",
+  "7_30d": "var(--ecc-bad)",
+  gt_30d: "var(--ecc-bad)",
+  never: "var(--ecc-unknown)",
+};
+
+function statusGroupColumns(header: string, notReported: string): Column<BackupStatusGroup>[] {
+  return [
+    { key: "key", header, sortValue: (g) => g.key, render: (g) => (g.key ? <span className="pk-truncate" title={g.key}>{g.key}</span> : <span className="pk-muted">{notReported}</span>) },
+    { key: "items", header: "Items", numeric: true, sortValue: (g) => g.items_total, render: (g) => g.items_total },
+    { key: "within", header: "Within RPO", numeric: true, sortValue: (g) => (g.items_protected ? g.items_within_rpo / g.items_protected : null), render: (g) => (g.items_protected ? `${Math.round((g.items_within_rpo / g.items_protected) * 100)}%` : <span className="pk-muted">—</span>) },
+    { key: "breached", header: "Breached", numeric: true, sortValue: (g) => g.items_breaching_rpo + g.items_never_backed_up, render: (g) => { const v = g.items_breaching_rpo + g.items_never_backed_up; return v ? <span style={{ color: "var(--ecc-bad)" }} title={`${g.items_breaching_rpo} outside the RPO, ${g.items_never_backed_up} never backed up`}>{v}</span> : "0"; } },
+    { key: "failed", header: "Failed", numeric: true, sortValue: (g) => g.items_last_failed, render: (g) => (g.items_last_failed ? <span style={{ color: "var(--ecc-bad)" }}>{g.items_last_failed}</span> : "0") },
+  ];
+}
+const subscriptionColumns = statusGroupColumns("Subscription", "Not reported (on-premises)");
+const regionColumns = statusGroupColumns("Region", "Not reported (on-premises)");
+const TAB_TITLES: Record<BackupTab, string> = {
+  items: "Protected items",
+  coverage: "Backup coverage",
+  jobs: "Backup jobs (7 days)",
+  failures: "Failure analysis (7 days)",
+  vaults: "Backup storage",
+  security: "Security & compliance",
+};
+
+const workloadColumns: Column<BackupWorkloadSummary>[] = [
+  { key: "workload", header: "Workload", sortValue: (w) => workloadLabel(w.workload_type), render: (w) => <span title={w.workload_type ?? undefined}>{workloadLabel(w.workload_type)}</span> },
+  { key: "items", header: "Items", numeric: true, sortValue: (w) => w.items_total, render: (w) => w.items_total.toLocaleString("en-US") },
+  { key: "protected", header: "Protected", numeric: true, sortValue: (w) => w.items_protected, render: (w) => w.items_protected.toLocaleString("en-US") },
+  {
+    key: "within", header: "Within RPO", numeric: true,
+    sortValue: (w) => (w.items_protected ? w.items_within_rpo / w.items_protected : null),
+    render: (w) => (w.items_protected ? `${w.items_within_rpo} (${Math.round((w.items_within_rpo / w.items_protected) * 100)}%)` : <span className="pk-muted">—</span>),
+  },
+  { key: "breached", header: "RPO breached", numeric: true, sortValue: (w) => w.items_breaching_rpo, render: (w) => (w.items_breaching_rpo ? <span style={{ color: "var(--ecc-bad)" }}>{w.items_breaching_rpo}</span> : "0") },
+  { key: "never", header: "Never backed up", numeric: true, sortValue: (w) => w.items_never_backed_up, render: (w) => (w.items_never_backed_up ? <span style={{ color: "var(--ecc-warn)" }}>{w.items_never_backed_up}</span> : "0") },
+  { key: "failed", header: "Last backup failed", numeric: true, sortValue: (w) => w.items_last_failed, render: (w) => (w.items_last_failed ? <span style={{ color: "var(--ecc-bad)" }}>{w.items_last_failed}</span> : "0") },
+  { key: "stopped", header: "Not protected", numeric: true, sortValue: (w) => w.items_not_protected, render: (w) => w.items_not_protected },
+  { key: "points", header: "Restore points", numeric: true, sortValue: (w) => w.recovery_points_total, render: (w) => (w.recovery_points_total === null ? <span className="pk-muted">—</span> : w.recovery_points_total.toLocaleString("en-US")) },
+  { key: "size", header: "Backup size", numeric: true, sortValue: (w) => w.size_bytes, render: (w) => (w.size_bytes === null ? <span className="pk-muted">Not reported</span> : formatBytes(w.size_bytes)) },
+];
+
+const failureColumns: Column<BackupFailureGroup>[] = [
+  { key: "code", header: "Error code", sortValue: (g) => g.error_code, render: (g) => (g.error_code ? <code>{g.error_code}</code> : <span className="pk-muted">Not reported</span>) },
+  { key: "jobs", header: "Failed jobs", numeric: true, sortValue: (g) => g.failed_jobs, render: (g) => g.failed_jobs },
+  {
+    key: "items", header: "Items", numeric: true, sortValue: (g) => g.items_affected,
+    render: (g) => <span title={g.items.join(", ") + (g.items_affected > g.items.length ? ` and ${g.items_affected - g.items.length} more` : "")}>{g.items_affected}</span>,
+  },
+  { key: "message", header: "Latest message", render: (g) => (g.sample_message ? <span className="pk-truncate" style={{ display: "inline-block", maxWidth: 460 }} title={g.sample_message}>{g.sample_message}</span> : <span className="pk-muted">—</span>) },
+  { key: "storage", header: "Storage", render: (g) => g.vaults.join(", ") },
+  { key: "last", header: "Last seen", sortValue: (g) => g.last_seen, render: (g) => <span className="pk-muted" title={g.last_seen ?? undefined}>{ago(g.last_seen)}</span> },
+];
+
+function SecurityView({ posture }: { posture: BackupSecurityPosture }) {
+  if (posture.locations.length === 0) return <p className="pk-muted pk-empty-note">No backup storage reported.</p>;
+  type Location = BackupSecurityPosture["locations"][number];
+  const columns: Column<Location>[] = [
+    {
+      key: "name", header: "Storage", sortValue: (l) => l.name,
+      render: (l) => (
+        <>
+          {l.name}
+          <div className="pk-muted">{[titleCaseWords(l.provider), titleCaseWords(l.kind), l.location].filter(Boolean).join(" · ")}</div>
+        </>
+      ),
+    },
+    ...posture.locations[0].checks.map((check, i): Column<Location> => ({
+      key: check.key,
+      header: check.label,
+      sortValue: (l) => l.checks[i]?.status ?? null,
+      render: (l) => {
+        const c = l.checks[i];
+        if (!c) return <span className="pk-muted">—</span>;
+        const verdict = c.status === "pass" || c.status === "warn" || c.status === "fail";
+        return <span title={c.value ?? CHECK_TEXT[c.status]}><Pill tone={CHECK_TONE[c.status]}>{verdict ? c.value ?? CHECK_TEXT[c.status] : CHECK_TEXT[c.status]}</Pill></span>;
+      },
+    })),
+    { key: "passed", header: "Passed", numeric: true, sortValue: (l) => (l.evaluated ? l.passed / l.evaluated : null), render: (l) => (l.evaluated ? `${l.passed} of ${l.evaluated}` : "—") },
+  ];
+  return (
+    <>
+      <p className="pk-help">
+        Each storage location&apos;s settings as the provider reports them. A setting the provider does not report is shown as
+        &nbsp;<em>Not reported</em>; it never counts as a pass.
+        {posture.score !== null && <> {posture.score}% of the checks with a verdict pass.</>}
+      </p>
+      <DataTable caption="Security checks per storage location" columns={columns} rows={posture.locations} rowKey={(l) => l.vault_id} defaultSort={{ key: "passed", dir: "asc" }} maxHeight={480} emptyText="No backup storage reported." />
+    </>
+  );
+}
+
 export default function BackupPage() {
   const qc = useQueryClient();
-  const [tab, setTab] = useState<"items" | "coverage" | "jobs" | "vaults">("items");
+  const hash = useSyncExternalStore(subscribeHash, () => window.location.hash.slice(1), () => "");
+  const tab: BackupTab = TAB_KEYS.includes(hash) ? (hash as BackupTab) : "items";
+  const setTab = (t: BackupTab) => { window.location.hash = t; };
+  const [range, setRange] = useState(14);
   const [rpoFilter, setRpoFilter] = useState<BackupRpoState | "all">("all");
   const [coverageFilter, setCoverageFilter] = useState<BackupCoverageState | "all">("all");
   const [siteFilter, setSiteFilter] = useState<string>("all");
   const [showConnect, setShowConnect] = useState(false);
+  const [filters, setFilters] = useState<BackupFilters>({});
 
-  const overview = useQuery({ queryKey: ["backup", "overview"], queryFn: getBackupOverview, refetchInterval: 60_000 });
+  const overview = useQuery({ queryKey: ["backup", "overview", filters, range], queryFn: () => getBackupOverview(filters, range), refetchInterval: 60_000, placeholderData: (prev) => prev });
   const o: BackupOverview | undefined = overview.data;
   const configured = !!o?.configured;
-  const items = useQuery({ queryKey: ["backup", "items"], queryFn: () => listBackupItems(), enabled: configured, refetchInterval: 60_000 });
-  const jobs = useQuery({ queryKey: ["backup", "jobs"], queryFn: () => listBackupJobs({ days: 7, limit: 500 }), enabled: configured, refetchInterval: 60_000 });
-  const vaults = useQuery({ queryKey: ["backup", "vaults"], queryFn: listBackupVaults, enabled: configured, refetchInterval: 120_000 });
+  const items = useQuery({ queryKey: ["backup", "items", filters], queryFn: () => listBackupItems({}, filters), enabled: configured, refetchInterval: 60_000 });
+  const jobs = useQuery({ queryKey: ["backup", "jobs", filters], queryFn: () => listBackupJobs({ days: 7, limit: 500 }, filters), enabled: configured, refetchInterval: 60_000 });
+  const vaults = useQuery({ queryKey: ["backup", "vaults", filters], queryFn: () => listBackupVaults(filters), enabled: configured, refetchInterval: 120_000 });
+  const failures = useQuery({ queryKey: ["backup", "failures", filters], queryFn: () => getBackupFailures(7, filters), enabled: configured, refetchInterval: 120_000 });
+  const security = useQuery({ queryKey: ["backup", "security", filters], queryFn: () => getBackupSecurity(filters), enabled: configured, refetchInterval: 300_000 });
+  const history = useQuery({ queryKey: ["backup", "storage-history", filters], queryFn: () => getBackupStorageHistory(30, filters), enabled: configured, refetchInterval: 300_000 });
   const coverage = useQuery({ queryKey: ["backup", "coverage"], queryFn: getBackupCoverage, enabled: configured, refetchInterval: 120_000 });
   const siteHealth = useSiteHealth();
   const refresh = () => qc.invalidateQueries({ queryKey: ["backup"] });
@@ -308,20 +546,34 @@ export default function BackupPage() {
   const vaultColumns: Column<BackupVault>[] = [
     {
       key: "name",
-      header: "Vault",
+      header: "Storage location",
       sortValue: (v) => v.name,
       render: (v) => (
         <>
           <span className="pk-cell-main">{v.name}</span>
-          <span className="pk-cell-sub">{[v.resource_group, v.location].filter(Boolean).join(" · ")}</span>
+          <span className="pk-cell-sub">{[titleCaseWords(v.provider), v.resource_group, v.location].filter(Boolean).join(" · ")}</span>
         </>
       ),
     },
+    { key: "kind", header: "Type", sortValue: (v) => v.kind, render: (v) => titleCaseWords(v.kind) },
     { key: "items", header: "Items", numeric: true, sortValue: (v) => v.items_total, render: (v) => v.items_total },
     { key: "breach", header: "Outside RPO", numeric: true, sortValue: (v) => v.items_breaching_rpo, render: (v) => (v.items_breaching_rpo ? <span style={{ color: "var(--ecc-bad)" }}>{v.items_breaching_rpo}</span> : "0") },
     { key: "soft", header: "Soft delete", sortValue: (v) => v.soft_delete_state, render: (v) => { const p = posture(v.soft_delete_state, ["enabled", "always_on"]); return <Pill tone={p.tone}>{p.text}</Pill>; } },
     { key: "immut", header: "Immutability", sortValue: (v) => v.immutability_state, render: (v) => { const p = posture(v.immutability_state, ["locked", "unlocked"]); return <Pill tone={p.tone}>{p.text}</Pill>; } },
+    { key: "offsite", header: "Off-site copy", sortValue: (v) => (v.offsite === null ? null : Number(v.offsite)), render: (v) => { const f = flag(v.offsite); return <Pill tone={f.tone}>{f.text}</Pill>; } },
     { key: "redundancy", header: "Storage redundancy", sortValue: (v) => v.storage_redundancy, render: (v) => titleCaseWords(v.storage_redundancy) || <span className="pk-muted">Not reported</span> },
+    {
+      key: "free",
+      header: "Free space",
+      numeric: true,
+      sortValue: (v) => (v.capacity_bytes && v.free_bytes !== null ? v.free_bytes / v.capacity_bytes : null),
+      render: (v) => {
+        if (!v.capacity_bytes || v.free_bytes === null) return <span className="pk-muted">—</span>;
+        const pct = (v.free_bytes / v.capacity_bytes) * 100;
+        const color = pct < 5 ? "var(--ecc-bad)" : pct < 15 ? "var(--ecc-warn)" : undefined;
+        return <span style={color ? { color } : undefined} title={`${formatBytes(v.free_bytes)} free of ${formatBytes(v.capacity_bytes)}`}>{Math.round(pct)}%</span>;
+      },
+    },
     { key: "storage", header: "Storage used", numeric: true, sortValue: (v) => v.storage_used_bytes, render: (v) => (v.storage_used_bytes === null ? <span className="pk-muted">Not reported</span> : formatBytes(v.storage_used_bytes)) },
     { key: "policies", header: "Policies", numeric: true, sortValue: (v) => v.policies, render: (v) => v.policies },
     { key: "seen", header: "Last collected", sortValue: (v) => v.observed_at, render: (v) => <span className="pk-muted">{ago(v.observed_at)}</span> },
@@ -345,14 +597,14 @@ export default function BackupPage() {
 
   return (
     <PageShell
-      title="Backup"
+      title="Backup Overview"
       icon={DatabaseBackup}
-      crumbs={[{ label: "Infrastructure", href: "/infrastructure" }, { label: "Backup" }]}
-      subtitle="Azure Backup: whether every workload has a recent good backup, which servers have none, what failed, how long restore points are kept and how the vaults are secured."
+      crumbs={[{ label: "Backup Center" }, { label: "Overview" }]}
+      subtitle={`${o?.providers.length ? o.providers.map((p) => titleCaseWords(p)).join(", ") : "Azure"} Backup: whether every workload has a recent good backup, which servers have none, what failed, how long restore points are kept and how the backup storage is secured.`}
       actions={
         configured ? (
           <button type="button" className="pk-button" onClick={() => setShowConnect((s) => !s)}>
-            {showConnect ? "Close" : "Add subscription"}
+            {showConnect ? "Close" : "Add source"}
           </button>
         ) : undefined
       }
@@ -363,31 +615,44 @@ export default function BackupPage() {
       {configured && !failingSource && stale && <Banner tone="warn">The last successful collection was {ago(o!.observed_at)}. Figures may be out of date.</Banner>}
 
       {o && !configured && (
-        <Panel title="Connect Azure Backup" info="Adds an Azure Backup monitoring source for one subscription." state="ready" className="pk-col-12">
-          <ConnectAzureBackup onDone={refresh} />
+        <Panel title="Connect a backup provider" info="Adds a backup monitoring source: one Azure subscription or one Veeam backup server." state="ready" className="pk-col-12">
+          <ConnectBackup onDone={refresh} />
         </Panel>
       )}
       {configured && showConnect && (
-        <Panel title="Add an Azure subscription" info="Each subscription is one source; vaults from every source are combined below." state="ready" className="pk-col-12">
-          <ConnectAzureBackup onDone={() => { refresh(); }} />
+        <Panel title="Add a backup source" info="Each Azure subscription or Veeam server is one source; storage from every source is combined below." state="ready" className="pk-col-12">
+          <ConnectBackup onDone={refresh} />
         </Panel>
       )}
 
+      {configured && (
+        <div className="pk-toolbar">
+          <select className="pk-input" aria-label="Time range" value={range} onChange={(e) => setRange(Number(e.target.value))} style={{ width: "auto" }}>
+            {RANGES.map((r) => <option key={r.days} value={r.days}>{r.label}</option>)}
+          </select>
+          <button type="button" className="pk-button" onClick={refresh} disabled={overview.isFetching}>{overview.isFetching ? "Refreshing…" : "Refresh"}</button>
+          {o && <span className="pk-muted">Updated {ago(o.generated_at)}</span>}
+          <a className="pk-button" href={instancesHref(filters)}>Open backup instances</a>
+        </div>
+      )}
+      {configured && o?.filter_options && <FilterBar options={o.filter_options} value={filters} onChange={setFilters} />}
+      {configured && o?.filtered && <Banner tone="info">Filtered view: every figure below covers only the selected storage and workloads. Coverage of VMs is not filtered and is left out of the tiles.</Banner>}
+
       <StatStrip>
-        <StatTile label="Protected items" value={n(o?.items_protected)} info="Items under active backup protection." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
-        <StatTile label="Within RPO" value={n(o?.items_within_rpo)} tone="good" sub={o && configured && o.items_protected ? `${Math.round((o.items_within_rpo / o.items_protected) * 100)}% of protected` : undefined} info={`Protected items with a backup in the last ${o?.rpo_hours ?? 24} hours.`} loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
-        <StatTile label="RPO breached" value={n(o?.items_breaching_rpo)} alarm={(o?.items_breaching_rpo ?? 0) > 0} info={`Protected items whose last backup is older than ${o?.rpo_hours ?? 24} hours.`} loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
-        <StatTile label="Never backed up" value={n(o?.items_never_backed_up)} tone="warn" info="Protected items with no backup yet (for example, initial backup pending)." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
-        <StatTile label="Last backup failed" value={n(o?.items_last_failed)} alarm={(o?.items_last_failed ?? 0) > 0} info="Items whose most recent backup failed." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
-        <StatTile label="Job success" badge="24h" value={configured && o?.success_rate_24h !== null && o?.success_rate_24h !== undefined ? `${o.success_rate_24h}%` : "—"} naText={configured ? "No job finished in 24h" : "Not configured"} sub={o && configured ? `${o.jobs_24h.failed} failed of ${o.jobs_24h.total}` : undefined} info="Completed (including with warnings) over finished jobs in the last 24 hours." loading={loadingOverview} />
-        <StatTile label="Unprotected VMs" value={configured && o?.unprotected_resources !== null && o?.unprotected_resources !== undefined ? o.unprotected_resources.toLocaleString("en-US") : "—"} alarm={(o?.unprotected_resources ?? 0) > 0} info="Azure VMs in a connected subscription that no backup item protects. VMs in subscriptions without a backup source are listed as not monitored in Coverage." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
-        <StatTile label="Storage used" value={configured && o?.storage_used_bytes !== null && o?.storage_used_bytes !== undefined ? formatBytes(o.storage_used_bytes) : "—"} sub={o && configured && o.recovery_points_total !== null ? `${o.recovery_points_total.toLocaleString("en-US")} restore points` : undefined} info="Backup storage the vaults report (all redundancy tiers)." loading={loadingOverview} naText={configured ? "Not reported" : "Not configured"} />
-        <StatTile label="Vaults" value={n(o?.vaults)} sub={o && configured && o.vaults_soft_delete_off ? `${o.vaults_soft_delete_off} with soft delete off` : undefined} alarm={(o?.vaults_soft_delete_off ?? 0) > 0} info="Recovery Services vaults read from the connected subscriptions." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="Protected items" href={configured ? instancesHref(filters, { protection: "active" }) : undefined} value={n(o?.items_protected)} info="Items under active backup protection." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="Within RPO" href={configured ? instancesHref(filters, { rpo: "within" }) : undefined} value={n(o?.items_within_rpo)} tone="good" sub={o && configured && o.items_protected ? `${Math.round((o.items_within_rpo / o.items_protected) * 100)}% of protected` : undefined} info={`Protected items with a backup in the last ${o?.rpo_hours ?? 24} hours.`} loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="RPO breached" href={configured ? instancesHref(filters, { rpo: "breached" }) : undefined} value={n(o?.items_breaching_rpo)} alarm={(o?.items_breaching_rpo ?? 0) > 0} info={`Protected items whose last backup is older than ${o?.rpo_hours ?? 24} hours.`} loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="Never backed up" href={configured ? instancesHref(filters, { rpo: "never" }) : undefined} value={n(o?.items_never_backed_up)} tone="warn" info="Protected items with no backup yet (for example, initial backup pending)." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="Last backup failed" href={configured ? instancesHref(filters, { result: "failed" }) : undefined} value={n(o?.items_last_failed)} alarm={(o?.items_last_failed ?? 0) > 0} info="Items whose most recent backup failed." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="Job success" badge="24h" href={configured ? "#jobs" : undefined} value={configured && o?.success_rate_24h !== null && o?.success_rate_24h !== undefined ? `${o.success_rate_24h}%` : "—"} naText={configured ? "No job finished in 24h" : "Not configured"} sub={o && configured ? `${o.jobs_24h.failed} failed of ${o.jobs_24h.total}` : undefined} info="Completed (including with warnings) over finished jobs in the last 24 hours." loading={loadingOverview} />
+        <StatTile label="Unprotected VMs" href={configured ? "#coverage" : undefined} value={configured && o?.unprotected_resources !== null && o?.unprotected_resources !== undefined ? o.unprotected_resources.toLocaleString("en-US") : "—"} alarm={(o?.unprotected_resources ?? 0) > 0} info="Azure VMs in a connected subscription that no backup item protects. VMs in subscriptions without a backup source are listed as not monitored in Coverage." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
+        <StatTile label="Storage used" href={configured ? "#vaults" : undefined} value={configured && o?.storage_used_bytes !== null && o?.storage_used_bytes !== undefined ? formatBytes(o.storage_used_bytes) : "—"} sub={o && configured && o.recovery_points_total !== null ? `${o.recovery_points_total.toLocaleString("en-US")} restore points` : undefined} info="Backup storage the vaults report (all redundancy tiers)." loading={loadingOverview} naText={configured ? "Not reported" : "Not configured"} />
+        <StatTile label="Storage" href={configured ? "#security" : undefined} value={n(o?.vaults)} sub={o && configured ? (o.vaults_soft_delete_off ? `${o.vaults_soft_delete_off} with soft delete off` : `${o.vaults_offsite} off-site · ${o.vaults_immutable} immutable`) : undefined} alarm={(o?.vaults_soft_delete_off ?? 0) > 0} info="Backup storage locations read from the connected sources. Off-site: a copy is kept in another region or site. Immutable: restore points are locked against deletion until they expire." loading={loadingOverview} naText={configured ? undefined : "Not configured"} />
       </StatStrip>
 
       {configured && (
         <div className="pk-grid">
-          <Panel title="Job outcomes" info="Backup jobs per day by outcome, last 14 days." aside="last 14 days" state={overview.isLoading ? "loading" : o!.jobs_7d.total === 0 && o!.daily.every((d) => d.completed + d.completed_with_warnings + d.failed + d.other === 0) ? "empty" : "ready"} emptyText="No backup job has run in the last 14 days." className="pk-col-8">
+          <Panel title="Job outcomes" info={`Backup jobs per day by outcome over the selected range${o!.jobs_range ? `: ${o!.jobs_range.total} jobs, ${o!.jobs_range.failed} failed` : ""}.`} aside={RANGES.find((r) => r.days === o!.range_days)?.label.toLowerCase() ?? `last ${o!.range_days} days`} state={overview.isLoading ? "loading" : o!.daily.every((d) => d.completed + d.completed_with_warnings + d.failed + d.other === 0) ? "empty" : "ready"} emptyText="No backup job has run in this time range." className="pk-col-8">
             <DayColumns
               label="Backup jobs per day"
               buckets={o!.daily.map((d) => ({ key: d.day, label: new Date(`${d.day}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" }), values: { completed: d.completed, completed_with_warnings: d.completed_with_warnings, failed: d.failed, other: d.other } }))}
@@ -402,13 +667,31 @@ export default function BackupPage() {
                 <Legend total={o!.items_total} rows={RPO.map((r) => ({ key: r.key, label: r.label, value: rpoCounts[r.key], color: r.color }))} />
               </div>
             )}
+            <RpoTarget overview={o!} onSaved={refresh} />
+          </Panel>
+
+          <Panel title="Workloads" info="Protected items by workload type, as each provider reports it, against the RPO." state={o!.workloads.length === 0 ? "empty" : "ready"} emptyText="No protected items reported yet." className="pk-col-12">
+            <DataTable caption="Workloads" columns={workloadColumns} rows={o!.workloads} rowKey={(w) => w.workload_type ?? "_none"} rowHref={(w) => (w.workload_type ? instancesHref({ ...filters, workload_type: w.workload_type }) : null)} defaultSort={{ key: "items", dir: "desc" }} maxHeight={320} emptyText="No protected items reported yet." />
+          </Panel>
+
+          <Panel title="By subscription" info="Items by the subscription of their storage. Veeam and other on-premises storage reports none." state={o!.by_subscription.length === 0 ? "empty" : "ready"} emptyText="No protected items reported yet." className="pk-col-4">
+            <DataTable caption="Backup status by subscription" columns={subscriptionColumns} rows={o!.by_subscription} rowKey={(g) => g.key ?? "_none"} rowHref={(g) => (g.key ? instancesHref({ ...filters, subscription_id: g.key }) : null)} defaultSort={{ key: "items", dir: "desc" }} maxHeight={260} emptyText="—" />
+          </Panel>
+          <Panel title="By region" info="Items by the region of their storage." state={o!.by_region.length === 0 ? "empty" : "ready"} emptyText="No protected items reported yet." className="pk-col-4">
+            <DataTable caption="Backup status by region" columns={regionColumns} rows={o!.by_region} rowKey={(g) => g.key ?? "_none"} rowHref={(g) => (g.key ? instancesHref({ ...filters, location: g.key }) : null)} defaultSort={{ key: "items", dir: "desc" }} maxHeight={260} emptyText="—" />
+          </Panel>
+          <Panel title="Recovery point age" info="Protected items by the age of their newest backup." state={o!.items_protected === 0 ? "empty" : "ready"} emptyText="No protected items reported yet." className="pk-col-4">
+            <BarList
+              rows={o!.recovery_point_age.map((b) => ({ key: b.key, label: b.label, value: b.items, color: AGE_COLORS[b.key] }))}
+              valueLabel={(v) => `${v} item${v === 1 ? "" : "s"}`}
+            />
           </Panel>
 
           <Panel
-            title={tab === "items" ? "Protected items" : tab === "coverage" ? "Backup coverage" : tab === "jobs" ? "Backup jobs (7 days)" : "Vaults"}
-            info="Select a tab for protected items, coverage of your VMs, jobs or vault security posture. Select an item to see its policy, restore points and job history."
+            title={TAB_TITLES[tab]}
+            info="Select a tab for protected items, coverage of your VMs, jobs, failures grouped by cause, storage or its security settings. Select an item to see its policy, restore points and job history."
             aside={
-              <Tabs<"items" | "coverage" | "jobs" | "vaults">
+              <Tabs<BackupTab>
                 value={tab}
                 onChange={setTab}
                 label="Backup view"
@@ -416,11 +699,13 @@ export default function BackupPage() {
                   { key: "items", label: "Items", count: items.data?.length },
                   { key: "coverage", label: "Coverage", count: coverage.data?.total },
                   { key: "jobs", label: "Jobs", count: jobs.data?.length },
-                  { key: "vaults", label: "Vaults", count: vaults.data?.length },
+                  { key: "failures", label: "Failures", count: failures.data?.failed_jobs },
+                  { key: "vaults", label: "Storage", count: vaults.data?.length },
+                  { key: "security", label: "Security" },
                 ]}
               />
             }
-            state={(tab === "items" ? items : tab === "coverage" ? coverage : tab === "jobs" ? jobs : vaults).isLoading ? "loading" : "ready"}
+            state={({ items, coverage, jobs, failures, vaults, security } as const)[tab].isLoading ? "loading" : "ready"}
             className="pk-col-12"
           >
             {tab === "items" && (
@@ -469,9 +754,26 @@ export default function BackupPage() {
                 <DataTable caption="Backup jobs" columns={jobColumns} rows={jobs.data ?? []} rowKey={(j) => j.id} defaultSort={{ key: "started", dir: "desc" }} maxHeight="max(420px, calc(100vh - 480px))" emptyText="No backup job in the last 7 days." />
               </>
             )}
-            {tab === "vaults" && (
-              <DataTable caption="Vaults" columns={vaultColumns} rows={vaults.data ?? []} rowKey={(v) => v.id} rowHref={(v) => (v.device_id ? `/infrastructure/hosts/${v.device_id}` : null)} maxHeight={480} emptyText="No vault reported." />
+            {tab === "failures" && failures.data && (
+              failures.data.failed_jobs === 0 ? (
+                <p className="pk-muted pk-empty-note">No backup job failed in the last 7 days.</p>
+              ) : (
+                <>
+                  <p className="pk-help">
+                    {failures.data.failed_jobs} failed job{failures.data.failed_jobs === 1 ? "" : "s"} across {failures.data.items_affected} item{failures.data.items_affected === 1 ? "" : "s"},
+                    grouped by the error code the provider reported. Hover the item count to see which items.
+                  </p>
+                  <DataTable caption="Failures by error code" columns={failureColumns} rows={failures.data.groups} rowKey={(g) => g.error_code ?? "_none"} defaultSort={{ key: "jobs", dir: "desc" }} maxHeight="max(420px, calc(100vh - 520px))" emptyText="No failed job." />
+                </>
+              )
             )}
+            {tab === "vaults" && (
+              <>
+                {history.data && <StorageTrend history={history.data} asOf={o!.generated_at} />}
+                <DataTable caption="Backup storage" columns={vaultColumns} rows={vaults.data ?? []} rowKey={(v) => v.id} rowHref={(v) => `/infrastructure/backup/vaults/${v.id}`} maxHeight={480} emptyText="No backup storage reported." />
+              </>
+            )}
+            {tab === "security" && security.data && <SecurityView posture={security.data} />}
           </Panel>
         </div>
       )}

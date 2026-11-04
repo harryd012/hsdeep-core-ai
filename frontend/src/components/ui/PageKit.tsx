@@ -161,8 +161,9 @@ export interface Column<T> {
 }
 
 /**
- * DataTable — sticky header, optional client-side sorting, row links, and
- * an explicit empty row. Rows are rendered as given; paging is the caller's.
+ * DataTable — sticky header, optional client-side sorting, row links (or a
+ * row click handler), and an explicit empty row. With `pageSize`, rows are
+ * paged after sorting, with a pager below the table.
  */
 export function DataTable<T>({
   columns,
@@ -173,6 +174,8 @@ export function DataTable<T>({
   maxHeight = 560,
   caption,
   defaultSort,
+  onRowClick,
+  pageSize,
 }: {
   columns: Column<T>[];
   rows: T[];
@@ -182,9 +185,14 @@ export function DataTable<T>({
   maxHeight?: number | string;
   caption: string;
   defaultSort?: { key: string; dir: "asc" | "desc" };
+  /** Called when a row is clicked or activated with Enter (instead of rowHref). */
+  onRowClick?: (row: T) => void;
+  /** Rows per page; all rows when unset. */
+  pageSize?: number;
 }) {
   const router = useRouter();
   const [sort, setSort] = useState(defaultSort ?? null);
+  const [pageIndex, setPageIndex] = useState(0);
   const sorted = useMemo(() => {
     if (!sort) return rows;
     const col = columns.find((c) => c.key === sort.key);
@@ -201,7 +209,11 @@ export function DataTable<T>({
     });
   }, [rows, sort, columns]);
 
-  return (
+  const pages = pageSize ? Math.max(1, Math.ceil(sorted.length / pageSize)) : 1;
+  const current = Math.min(pageIndex, pages - 1);
+  const visible = pageSize ? sorted.slice(current * pageSize, (current + 1) * pageSize) : sorted;
+
+  const table = (
     <div className="pk-table-wrap" style={{ maxHeight }}>
       <table className="pk-table">
         <caption className="ecc-sr-only">{caption}</caption>
@@ -233,20 +245,23 @@ export function DataTable<T>({
           </tr>
         </thead>
         <tbody>
-          {sorted.length === 0 ? (
+          {visible.length === 0 ? (
             <tr>
               <td colSpan={columns.length} style={{ textAlign: "center", padding: 28, color: "var(--ecc-text-muted)" }}>
                 {emptyText}
               </td>
             </tr>
           ) : (
-            sorted.map((row) => {
+            visible.map((row) => {
               const href = rowHref?.(row) ?? null;
+              const activate = onRowClick ? () => onRowClick(row) : href ? () => router.push(href) : undefined;
               return (
                 <tr
                   key={rowKey(row)}
-                  className={href ? "pk-row--link" : undefined}
-                  onClick={href ? () => router.push(href) : undefined}
+                  className={activate ? "pk-row--link" : undefined}
+                  onClick={activate}
+                  tabIndex={onRowClick ? 0 : undefined}
+                  onKeyDown={onRowClick ? (e) => { if (e.key === "Enter") onRowClick(row); } : undefined}
                 >
                   {columns.map((c) => (
                     <td key={c.key} className={c.numeric ? "pk-num" : undefined}>
@@ -260,6 +275,19 @@ export function DataTable<T>({
         </tbody>
       </table>
     </div>
+  );
+  if (pages <= 1) return table;
+  return (
+    <>
+      {table}
+      <div className="pk-toolbar" style={{ justifyContent: "flex-end", marginTop: 8 }}>
+        <button type="button" className="pk-button" disabled={current === 0} onClick={() => setPageIndex(current - 1)}>Previous</button>
+        <span className="pk-muted">
+          {current * pageSize! + 1}–{Math.min(sorted.length, (current + 1) * pageSize!)} of {sorted.length.toLocaleString("en-US")}
+        </span>
+        <button type="button" className="pk-button" disabled={current >= pages - 1} onClick={() => setPageIndex(current + 1)}>Next</button>
+      </div>
+    </>
   );
 }
 
@@ -330,11 +358,14 @@ export function DayColumns({
   series,
   height = 140,
   label,
+  format = (v: number) => v.toLocaleString("en-US"),
 }: {
   buckets: { key: string; label: string; values: Record<string, number> }[];
   series: { key: string; label: string; color: string }[];
   height?: number;
   label: string;
+  /** Tooltip value format (default: a plain number). */
+  format?: (v: number) => string;
 }) {
   const totals = buckets.map((b) => series.reduce((sum, s) => sum + (b.values[s.key] ?? 0), 0));
   const max = Math.max(...totals, 1);
@@ -346,7 +377,7 @@ export function DayColumns({
           <div
             key={b.key}
             className="pk-daycols__col"
-            title={`${b.label}\n${series.map((s) => `${s.label}: ${(b.values[s.key] ?? 0).toLocaleString("en-US")}`).join("\n")}`}
+            title={`${b.label}\n${series.map((s) => `${s.label}: ${format(b.values[s.key] ?? 0)}`).join("\n")}`}
           >
             {series.map((s) => {
               const v = b.values[s.key] ?? 0;

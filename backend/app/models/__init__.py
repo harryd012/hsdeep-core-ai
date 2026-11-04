@@ -19,7 +19,16 @@ from app.models.account_token import AccountToken
 from app.models.incident_notification import IncidentNotification
 from app.models.firewall import FirewallStatus, VpnTunnel
 from app.models.support_access_grant import SupportAccessGrant
-from app.models.backup import BackupItem, BackupJob, BackupPolicy, BackupVault
+from app.models.backup import (
+    BackupItem,
+    BackupJob,
+    BackupPolicy,
+    BackupRecoveryPlan,
+    BackupReplicatedItem,
+    BackupSettings,
+    BackupStorageSnapshot,
+    BackupVault,
+)
 from app.models.sensor import Sensor
 from app.models.event import Event
 from app.models.metric import Metric
@@ -147,6 +156,10 @@ ___all__ = [
     "IncidentNotification",
     "FirewallStatus",
     "BackupPolicy",
+    "BackupRecoveryPlan",
+    "BackupReplicatedItem",
+    "BackupSettings",
+    "BackupStorageSnapshot",
     "BackupVault",
     "BackupItem",
     "BackupJob",

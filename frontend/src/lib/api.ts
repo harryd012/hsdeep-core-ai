@@ -3555,12 +3555,19 @@ export interface BackupJobCounts {
 }
 
 export interface BackupOverview {
-  /** False until an Azure Backup source exists; counts are real zeros only when true. */
+  /** False until a backup source exists; counts are real zeros only when true. */
   configured: boolean;
   generated_at: string;
+  /** The tenant's RPO (its own, or the platform default when rpo_is_default). */
   rpo_hours: number;
-  sources: { id: string; name: string; status: string; is_active: boolean; last_sync_at: string | null; last_error: string | null }[];
+  rpo_is_default: boolean;
+  sources: { id: string; name: string; status: string; is_active: boolean; last_sync_at: string | null; last_error: string | null; provider: string | null }[];
+  /** Providers with at least one storage location, e.g. ["azure"]. */
+  providers: string[];
   vaults: number;
+  /** Storage locations that keep an off-site copy / are irreversibly immutable. */
+  vaults_offsite: number;
+  vaults_immutable: number;
   vaults_soft_delete_off: number;
   items_total: number;
   items_protected: number;
@@ -3580,8 +3587,74 @@ export interface BackupOverview {
   storage_used_bytes: number | null;
   /** Restore points across items that report a count; null if none do. */
   recovery_points_total: number | null;
-  /** Azure VMs in a connected subscription with no backup; null when no source is configured. */
+  /** Azure VMs in a connected subscription with no backup; null when no source is configured or filters are applied. */
   unprotected_resources: number | null;
+  /** Days covered by `daily` and `jobs_range` (time-range filter). */
+  range_days: number;
+  jobs_range: BackupJobCounts | null;
+  /** Items by workload type (filters applied). */
+  workloads: BackupWorkloadSummary[];
+  /** Items by subscription / region of their storage. */
+  by_subscription: BackupStatusGroup[];
+  by_region: BackupStatusGroup[];
+  /** Protected items by age of their newest backup. */
+  recovery_point_age: { key: string; label: string; items: number }[];
+  /** True when a filter narrowed the figures. */
+  filtered: boolean;
+  filter_options: BackupFilterOptions | null;
+}
+
+export interface BackupStatusGroup {
+  /** Subscription id / region; null when not reported. */
+  key: string | null;
+  items_total: number;
+  items_protected: number;
+  items_within_rpo: number;
+  items_breaching_rpo: number;
+  items_never_backed_up: number;
+  items_not_protected: number;
+  items_last_failed: number;
+}
+
+export interface BackupWorkloadSummary {
+  /** As the provider reports it; null when it does not. */
+  workload_type: string | null;
+  items_total: number;
+  items_protected: number;
+  items_within_rpo: number;
+  items_breaching_rpo: number;
+  items_never_backed_up: number;
+  items_not_protected: number;
+  items_last_failed: number;
+  size_bytes: number | null;
+  recovery_points_total: number | null;
+}
+
+export interface BackupFilterOptions {
+  providers: string[];
+  subscriptions: string[];
+  resource_groups: string[];
+  locations: string[];
+  workload_types: string[];
+  /** Storage locations: value = id, label = name. */
+  vaults: { value: string; label: string }[];
+}
+
+/** Command Center filters, shared by overview, storage, items, jobs, failures, security and storage history. */
+export interface BackupFilters {
+  provider?: string;
+  subscription_id?: string;
+  resource_group?: string;
+  location?: string;
+  storage_id?: string;
+  workload_type?: string;
+}
+
+function backupFilterParams(filters: BackupFilters = {}, base: Record<string, string> = {}): string {
+  const qs = new URLSearchParams(base);
+  for (const [k, v] of Object.entries(filters)) if (v) qs.set(k, v);
+  const q = qs.toString();
+  return q ? `?${q}` : "";
 }
 
 export interface BackupVault {
@@ -3589,6 +3662,11 @@ export interface BackupVault {
   device_id: string | null;
   name: string;
   provider: string;
+  /** vault | repository | bucket */
+  kind: string;
+  /** null when the provider does not report it. */
+  offsite: boolean | null;
+  immutable: boolean | null;
   location: string | null;
   resource_group: string | null;
   subscription_id: string | null;
@@ -3599,6 +3677,16 @@ export interface BackupVault {
   items_total: number;
   items_breaching_rpo: number;
   storage_used_bytes: number | null;
+  /** Size and free space of a fixed-size location (Veeam repository); null otherwise. */
+  capacity_bytes: number | null;
+  free_bytes: number | null;
+  /** enabled | disabled; null when not reported. */
+  multi_user_authorization: string | null;
+  /** customer_managed | platform_managed; null when not reported. */
+  encryption: string | null;
+  cross_region_restore: boolean | null;
+  /** enabled | disabled; null when not reported. */
+  public_network_access: string | null;
   policies: number;
 }
 
@@ -3618,6 +3706,8 @@ export interface BackupItem {
   source_resource_id: string | null;
   recovery_point_count: number | null;
   oldest_recovery_point_at: string | null;
+  /** Backup data held for this item, bytes; null when the provider does not report it. */
+  size_bytes: number | null;
   /** Daily restore points kept by the item's policy, days; null if not reported. */
   retention_days: number | null;
   /** Inventory device this item protects (matched by resource id). */
@@ -3678,27 +3768,254 @@ export interface BackupJob {
   error_message: string | null;
 }
 
-export function getBackupOverview(): Promise<BackupOverview> {
-  return apiFetch<BackupOverview>("/api/backup/overview");
+export function getBackupOverview(filters: BackupFilters = {}, days?: number): Promise<BackupOverview> {
+  return apiFetch<BackupOverview>(`/api/backup/overview${backupFilterParams(filters, days ? { days: String(days) } : {})}`);
 }
 
-export function listBackupVaults(): Promise<BackupVault[]> {
-  return apiFetch<BackupVault[]>("/api/backup/vaults");
+export function listBackupVaults(filters: BackupFilters = {}): Promise<BackupVault[]> {
+  return apiFetch<BackupVault[]>(`/api/backup/vaults${backupFilterParams(filters)}`);
 }
 
-export function listBackupItems(params: { vaultId?: string; rpoState?: BackupRpoState; siteId?: string } = {}): Promise<BackupItem[]> {
-  const qs = new URLSearchParams();
-  if (params.vaultId) qs.set("vault_id", params.vaultId);
-  if (params.rpoState) qs.set("rpo_state", params.rpoState);
-  if (params.siteId) qs.set("site_id", params.siteId);
-  const q = qs.toString();
-  return apiFetch<BackupItem[]>(`/api/backup/items${q ? `?${q}` : ""}`);
+export function listBackupItems(
+  params: { vaultId?: string; rpoState?: BackupRpoState; siteId?: string } = {},
+  filters: BackupFilters = {},
+): Promise<BackupItem[]> {
+  const base: Record<string, string> = {};
+  if (params.vaultId) base.vault_id = params.vaultId;
+  if (params.rpoState) base.rpo_state = params.rpoState;
+  if (params.siteId) base.site_id = params.siteId;
+  return apiFetch<BackupItem[]>(`/api/backup/items${backupFilterParams(filters, base)}`);
 }
 
-export function listBackupJobs(params: { days?: number; status?: string; limit?: number } = {}): Promise<BackupJob[]> {
-  const qs = new URLSearchParams({ days: String(params.days ?? 7), limit: String(params.limit ?? 200) });
-  if (params.status) qs.set("status", params.status);
-  return apiFetch<BackupJob[]>(`/api/backup/jobs?${qs.toString()}`);
+export function listBackupJobs(
+  params: { days?: number; status?: string; limit?: number; operation?: string; q?: string } = {},
+  filters: BackupFilters = {},
+): Promise<BackupJob[]> {
+  const base: Record<string, string> = { days: String(params.days ?? 7), limit: String(params.limit ?? 200) };
+  if (params.status) base.status = params.status;
+  if (params.operation) base.operation = params.operation;
+  if (params.q) base.q = params.q;
+  return apiFetch<BackupJob[]>(`/api/backup/jobs${backupFilterParams(filters, base)}`);
+}
+
+export interface BackupJobDetail {
+  job: BackupJob;
+  provider: string;
+  /** The item the job ran for (same storage, same name); null if not found. */
+  item_id: string | null;
+  /** The item's other recent jobs, newest first. */
+  item_jobs: BackupJob[];
+}
+
+export function getBackupJob(id: string): Promise<BackupJobDetail> {
+  return apiFetch<BackupJobDetail>(`/api/backup/jobs/${encodeURIComponent(id)}`);
+}
+
+export function getBackupVault(id: string): Promise<BackupVault> {
+  return apiFetch<BackupVault>(`/api/backup/vaults/${encodeURIComponent(id)}`);
+}
+
+export interface BackupPolicyRow extends BackupPolicy {
+  id: string;
+  vault_id: string;
+  vault_name: string;
+  provider: string;
+  /** Items stored with this policy name in its storage location. */
+  items_assigned: number;
+  observed_at: string | null;
+}
+
+export function listBackupPolicies(filters: BackupFilters = {}): Promise<BackupPolicyRow[]> {
+  return apiFetch<BackupPolicyRow[]>(`/api/backup/policies${backupFilterParams(filters)}`);
+}
+
+/** ready | not_ready | failed_over (running in the recovery location). Platform rule; see docs. */
+export type DrReadiness = "ready" | "not_ready" | "failed_over";
+
+export interface ReplicatedItem {
+  id: string;
+  vault_id: string;
+  vault_name: string;
+  name: string;
+  source_resource_id: string | null;
+  /** A2A | HyperVReplicaAzure | InMageRcm ... */
+  replication_type: string | null;
+  protected_item_type: string | null;
+  source_location: string | null;
+  target_location: string | null;
+  protection_state: string | null;
+  protection_state_description: string | null;
+  /** normal | warning | critical; null when not reported. */
+  replication_health: string | null;
+  failover_health: string | null;
+  /** primary | recovery */
+  active_location: string | null;
+  test_failover_state: string | null;
+  last_failover_at: string | null;
+  last_test_failover_at: string | null;
+  /** Replication lag Site Recovery last calculated, seconds. */
+  rpo_seconds: number | null;
+  rpo_calculated_at: string | null;
+  policy_name: string | null;
+  recovery_vm_name: string | null;
+  current_scenario: string | null;
+  allowed_operations: string[];
+  health_errors: { code: string | null; message: string | null; level: string | null; recommended_action: string | null; created_at: string | null }[];
+  observed_at: string | null;
+  readiness: DrReadiness;
+  readiness_reasons: string[];
+  recovery_plans: string[];
+  device_id: string | null;
+}
+
+export interface RecoveryPlan {
+  id: string;
+  vault_id: string;
+  vault_name: string;
+  name: string;
+  primary_location: string | null;
+  recovery_location: string | null;
+  failover_deployment_model: string | null;
+  replication_providers: string[];
+  allowed_operations: string[];
+  current_scenario: string | null;
+  current_scenario_status: string | null;
+  last_planned_failover_at: string | null;
+  last_unplanned_failover_at: string | null;
+  last_test_failover_at: string | null;
+  groups: number;
+  items_total: number;
+  items_found: number;
+  items_ready: number;
+  readiness: DrReadiness;
+  readiness_reasons: string[];
+  observed_at: string | null;
+}
+
+export interface ReplicationOverview {
+  configured: boolean;
+  /** collected | empty | failed | null (not read yet). failed: usually the Site Recovery Reader role is missing. */
+  replication_status: string | null;
+  generated_at: string;
+  dr_test_max_age_days: number;
+  items_total: number;
+  health_normal: number;
+  health_warning: number;
+  health_critical: number;
+  health_not_reported: number;
+  failover_health_warning: number;
+  failover_health_critical: number;
+  failed_over: number;
+  never_tested: number;
+  test_overdue: number;
+  ready: number;
+  readiness_pct: number | null;
+  max_rpo_seconds: number | null;
+  plans_total: number;
+  plans_ready: number;
+  by_region: { source_location: string | null; target_location: string | null; items: number; ready: number; unhealthy: number }[];
+}
+
+export function getReplicationOverview(filters: BackupFilters = {}): Promise<ReplicationOverview> {
+  return apiFetch<ReplicationOverview>(`/api/backup/replication/overview${backupFilterParams(filters)}`);
+}
+
+export function listReplicatedItems(filters: BackupFilters = {}): Promise<ReplicatedItem[]> {
+  return apiFetch<ReplicatedItem[]>(`/api/backup/replication/items${backupFilterParams(filters)}`);
+}
+
+export function listRecoveryPlans(filters: BackupFilters = {}): Promise<RecoveryPlan[]> {
+  return apiFetch<RecoveryPlan[]>(`/api/backup/replication/plans${backupFilterParams(filters)}`);
+}
+
+export interface BackupFailureGroup {
+  /** null when the provider did not report a code. */
+  error_code: string | null;
+  failed_jobs: number;
+  items_affected: number;
+  /** Up to 10 item names, most recent failure first. */
+  items: string[];
+  vaults: string[];
+  operations: string[];
+  first_seen: string | null;
+  last_seen: string | null;
+  sample_message: string | null;
+}
+
+export interface BackupFailureAnalysis {
+  days: number;
+  failed_jobs: number;
+  items_affected: number;
+  groups: BackupFailureGroup[];
+}
+
+export interface BackupHealth {
+  alerts_critical: number;
+  alerts_warning: number;
+  alerts_info: number;
+  /** Open alerts someone acknowledged (included above). */
+  alerts_acknowledged: number;
+  /** Protected items inside the RPO whose last backup did not fail. */
+  items_healthy: number;
+  strike_window_days: number;
+  /** Items whose latest backups failed in a row: 1, 2, 3+. First row is "All items", then per workload type. */
+  strikes: { label: string; one: number; two: number; three_plus: number }[];
+  strike_items: { item_name: string; vault_id: string; vault_name: string; strikes: number; last_failed_at: string | null; last_error_code: string | null; last_error_message: string | null }[];
+  /** Items by how far back their policy keeps restore points. */
+  retention: { key: string; label: string; items: number }[];
+}
+
+export function getBackupHealth(filters: BackupFilters = {}): Promise<BackupHealth> {
+  return apiFetch<BackupHealth>(`/api/backup/health${backupFilterParams(filters)}`);
+}
+
+export function getBackupFailures(days = 7, filters: BackupFilters = {}): Promise<BackupFailureAnalysis> {
+  return apiFetch<BackupFailureAnalysis>(`/api/backup/failures${backupFilterParams(filters, { days: String(days) })}`);
+}
+
+export type BackupCheckStatus = "pass" | "warn" | "fail" | "not_reported" | "not_applicable";
+
+export interface BackupSecurityCheck {
+  key: string;
+  label: string;
+  status: BackupCheckStatus;
+  /** What the provider reported; null when not reported. */
+  value: string | null;
+}
+
+export interface BackupSecurityPosture {
+  locations: {
+    vault_id: string;
+    name: string;
+    provider: string;
+    kind: string;
+    location: string | null;
+    checks: BackupSecurityCheck[];
+    passed: number;
+    /** Checks with a verdict (pass, warn or fail). */
+    evaluated: number;
+  }[];
+  summary: { key: string; label: string; passed: number; warned: number; failed: number; not_reported: number; not_applicable: number }[];
+  /** Passed / evaluated checks, %; null when none evaluated. */
+  score: number | null;
+}
+
+export function getBackupSecurity(filters: BackupFilters = {}): Promise<BackupSecurityPosture> {
+  return apiFetch<BackupSecurityPosture>(`/api/backup/security${backupFilterParams(filters)}`);
+}
+
+export interface BackupStorageHistory {
+  days: number;
+  points: { day: string; storage_used_bytes: number | null; capacity_bytes: number | null; free_bytes: number | null; locations_reporting: number }[];
+  history_days: number;
+  min_history_days: number;
+  /** Least-squares growth, bytes/day: an estimate; null until min_history_days are recorded. */
+  growth_bytes_per_day: number | null;
+  projected_used_bytes_30d: number | null;
+}
+
+export function getBackupStorageHistory(days = 30, filters: BackupFilters = {}): Promise<BackupStorageHistory> {
+  return apiFetch<BackupStorageHistory>(`/api/backup/storage/history${backupFilterParams(filters, { days: String(days) })}`);
 }
 
 export function getBackupItem(id: string): Promise<BackupItemDetail> {
@@ -3707,6 +4024,25 @@ export function getBackupItem(id: string): Promise<BackupItemDetail> {
 
 export function getBackupCoverage(): Promise<BackupCoverage> {
   return apiFetch<BackupCoverage>("/api/backup/coverage");
+}
+
+export interface BackupSettings {
+  /** The RPO every verdict and alert for this tenant uses. */
+  rpo_hours: number;
+  rpo_is_default: boolean;
+  default_rpo_hours: number;
+}
+
+export function getBackupSettings(): Promise<BackupSettings> {
+  return apiFetch<BackupSettings>("/api/backup/settings");
+}
+
+/** Set the tenant RPO (1-720 h); null returns it to the platform default. Needs backup.write. */
+export function updateBackupSettings(rpoHours: number | null): Promise<BackupSettings> {
+  return apiFetch<BackupSettings>("/api/backup/settings", {
+    method: "PUT",
+    body: JSON.stringify({ rpo_hours: rpoHours }),
+  });
 }
 
 // ---------------------------------------------------------------------------

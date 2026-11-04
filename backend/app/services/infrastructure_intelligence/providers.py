@@ -88,6 +88,8 @@ PROVIDER_CAPABILITIES: dict[str, frozenset[str]] = {
         }
     ),
     V.PROVIDER_SNMP: frozenset(_SNMP),
+    # Backup repositories: reachability and size/free space only.
+    V.PROVIDER_VEEAM: frozenset(_ALL_COLLECTOR | {V.CAP_HEALTH, V.CAP_STORAGE, V.CAP_STORAGE_CAPACITY}),
     V.PROVIDER_PNETLAB: frozenset(_TOPOLOGY_CONTROLLER),
     V.PROVIDER_ICMP: frozenset(_ALL_COLLECTOR | {V.CAP_HEALTH}),
     V.PROVIDER_WINRM: frozenset(_SERVER_AGENT),
@@ -135,6 +137,8 @@ SOURCE_TYPE_TO_PROVIDER: dict[str, str] = {
     "kubernetes": V.PROVIDER_KUBERNETES,
     "datadog": V.PROVIDER_DATADOG,
     "paloalto": V.PROVIDER_PALOALTO,
+    # A Veeam backup server: its repositories are the resources it reports.
+    "veeam_backup": V.PROVIDER_VEEAM,
 }
 
 PROVIDER_KINDS: dict[str, str] = {
@@ -156,6 +160,7 @@ PROVIDER_KINDS: dict[str, str] = {
     V.PROVIDER_KUBERNETES: KIND_CONTROLLER,
     V.PROVIDER_DATADOG: KIND_PLATFORM,
     V.PROVIDER_PALOALTO: KIND_NETWORK,
+    V.PROVIDER_VEEAM: KIND_PLATFORM,
     V.PROVIDER_MANUAL: KIND_MANUAL,
 }
 
@@ -203,6 +208,7 @@ PROVIDER_RESOURCE_TYPES: dict[str, tuple[str, ...]] = {
     V.PROVIDER_KUBERNETES: ("container_host", "service", "application"),
     V.PROVIDER_DATADOG: ("server", "virtual_machine", "container_host", "network_device"),
     V.PROVIDER_PALOALTO: ("firewall", "security_gateway"),
+    V.PROVIDER_VEEAM: ("storage_system",),
     V.PROVIDER_MANUAL: (),
 }
 
@@ -322,6 +328,7 @@ PROVIDER_EVIDENCE_CLASSIFICATION: dict[str, str] = {
     V.PROVIDER_WINRM: V.EVIDENCE_ACTIVE,
     V.PROVIDER_DATADOG: V.EVIDENCE_API,
     V.PROVIDER_PALOALTO: V.EVIDENCE_API,
+    V.PROVIDER_VEEAM: V.EVIDENCE_API,
 }
 
 

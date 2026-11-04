@@ -169,6 +169,8 @@ def _arm_transport(*, items_fail=False, vaults_fail=False, seen: list | None = N
             return httpx.Response(200, json={"value": POLICIES})
         if path.endswith("/usages"):
             return httpx.Response(200, json={"value": USAGES})
+        if path.endswith(("/replicationProtectedItems", "/replicationRecoveryPlans")):
+            return httpx.Response(200, json={"value": []})  # vault without Site Recovery
         return httpx.Response(404)
 
     return httpx.MockTransport(handler)
@@ -214,6 +216,7 @@ async def test_collect_reads_every_page_and_only_issues_gets():
     assert sum(1 for r in seen if r.url.path.endswith("/backupProtectedItems")) == 2  # followed nextLink
     assert bundle.backup_status == {
         "vaults": "collected", "items": "collected", "jobs": "collected", "policies": "collected", "usage": "collected",
+        "replication": "empty",
     }
 
     vault = bundle.backup_vaults[0]
@@ -450,9 +453,9 @@ async def other_tenant(seeded_subscription):
         await s.commit()
 
 
-def _client(tenant_id, permissions=frozenset({"backup.read"})):
+def _client(tenant_id, permissions=frozenset({"backup.read"}), user_id: uuid.UUID | None = None):
     token = create_access_token(
-        user_id=uuid.uuid4(), tenant_id=tenant_id, email="noc@hsdeep.local",
+        user_id=user_id or uuid.uuid4(), tenant_id=tenant_id, email="noc@hsdeep.local",
         is_superuser=False, permissions=permissions,
     )
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test",
@@ -638,3 +641,609 @@ async def test_coverage_item_detail_site_filter_and_isolation(db, monitoring_sou
     async with _client(source.tenant_id, permissions=frozenset({"devices.read"})) as client:
         for path in ("/api/backup/coverage", f"/api/backup/items/{web['id']}"):
             assert (await client.get(path)).status_code == 403, path
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: provider-neutral model, status vocabulary, per-tenant RPO
+# ---------------------------------------------------------------------------
+
+
+def test_vocabulary_maps_unknown_vendor_terms_to_other():
+    from app.collectors.backup_vocabulary import JOB_STATUSES, PROTECTION_STATES, canonical
+    from app.collectors.base import NormalizedBackupJob
+    from app.services.monitoring.backup_saver import canonical_item, canonical_job
+
+    assert canonical("protected", PROTECTION_STATES) == "protected"
+    assert canonical("invalid", PROTECTION_STATES) == "other"
+    assert canonical(None, JOB_STATUSES) is None
+    item = canonical_item(NormalizedBackupItem(
+        external_id="x", vault_external_id="v", name="x", protection_state="soft_deleted", last_backup_status="partial",
+    ))
+    assert (item.protection_state, item.last_backup_status) == ("other", "other")
+    job = canonical_job(NormalizedBackupJob(external_id="j", vault_external_id="v", item_name=None, operation=None,
+                                            status="queued"))
+    assert job.status == "other"
+
+
+@pytest.mark.parametrize(
+    ("redundancy", "immutability", "offsite", "immutable"),
+    [("GeoRedundant", "Locked", True, True), ("LocallyRedundant", "Unlocked", False, False),
+     ("ZoneRedundant", "Disabled", False, False)],
+)
+async def test_azure_vault_reports_offsite_and_immutable(redundancy, immutability, offsite, immutable):
+    def handler(request):
+        if request.url.path.endswith("/vaults"):
+            return httpx.Response(200, json={"value": [_vault(immutability=immutability, redundancy=redundancy)]})
+        return httpx.Response(200, json={"value": []})
+
+    collector = _collector(httpx.MockTransport(handler))
+    vault = collector.normalize(await collector.collect()).backup_vaults[0]
+    assert (vault.kind, vault.offsite, vault.immutable) == ("vault", offsite, immutable)
+
+
+def test_backup_sources_come_from_the_collector_registry():
+    from app.services.backup_service import backup_source_types
+
+    assert backup_source_types()["azure_backup"] == "azure"
+    assert backup_source_types("azure") == {"azure_backup": "azure"}
+    assert backup_source_types("veeam") == {"veeam_backup": "veeam"}
+    assert backup_source_types("nobody") == {}
+
+
+async def test_tenant_rpo_drives_alerts_and_verdicts(db, monitoring_source_factory):
+    from app.services.backup_service import BackupService
+    from app.services.backup_settings import set_tenant_rpo
+
+    source = await monitoring_source_factory(source_type="azure_backup")
+    # db-01's last backup is 40 h old: breached at the default 24 h, within at 48 h.
+    await set_tenant_rpo(db, source.tenant_id, 48)
+    await db.commit()
+    result = await _saver(db).save(source, await _bundle())
+    await db.commit()
+    open_titles = [a.title for a in await _evaluate(db, result) if a.status == "open"]
+    await db.commit()
+    # The alert rule uses the tenant RPO too: no backup-age alert for db-01.
+    assert not any("db-01" in t and "backup age" in t for t in open_titles)
+    assert any("new-vm" in t and "backup age" in t for t in open_titles)
+    items = {i.name: i for i in await BackupService(db).items(source.tenant_id)}
+    assert items["db-01"].rpo_state == "within"
+    overview = await BackupService(db).overview(source.tenant_id)
+    assert (overview.rpo_hours, overview.rpo_is_default) == (48, False)
+    assert (overview.vaults_offsite, overview.vaults_immutable, overview.providers) == (1, 1, ["azure"])
+
+    await set_tenant_rpo(db, source.tenant_id, None)
+    await db.commit()
+    items = {i.name: i for i in await BackupService(db).items(source.tenant_id)}
+    assert items["db-01"].rpo_state == "breached"
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_settings_api_rbac_validation_audit_and_isolation(db, monitoring_source_factory, other_tenant):
+    from app.core.config import get_settings
+    from app.models.knowledge_audit import AuditEvent
+
+    source = await monitoring_source_factory(source_type="azure_backup")
+    default = get_settings().backup_rpo_hours
+
+    async with _client(source.tenant_id) as client:
+        assert (await client.get("/api/backup/settings")).json() == {
+            "rpo_hours": default, "rpo_is_default": True, "default_rpo_hours": default,
+        }
+        # backup.read alone cannot change targets.
+        assert (await client.put("/api/backup/settings", json={"rpo_hours": 12})).status_code == 403
+
+    writer = frozenset({"backup.read", "backup.write"})
+    async with _client(source.tenant_id, permissions=writer, user_id=uuid.UUID(int=0)) as client:
+        for bad in (0, 721, "x"):
+            assert (await client.put("/api/backup/settings", json={"rpo_hours": bad})).status_code == 422, bad
+        body = (await client.put("/api/backup/settings", json={"rpo_hours": 12})).json()
+        assert (body["rpo_hours"], body["rpo_is_default"]) == (12, False)
+        assert (await client.get("/api/backup/overview")).json()["rpo_hours"] == 12
+
+    async with _client(other_tenant) as client:
+        assert (await client.get("/api/backup/settings")).json()["rpo_is_default"] is True
+
+    async with _client(source.tenant_id, permissions=writer, user_id=uuid.UUID(int=0)) as client:
+        body = (await client.put("/api/backup/settings", json={"rpo_hours": None})).json()
+        assert (body["rpo_hours"], body["rpo_is_default"]) == (default, True)
+
+    events = (
+        await db.execute(
+            select(AuditEvent)
+            .where(AuditEvent.tenant_id == source.tenant_id, AuditEvent.action == "backup.settings.updated")
+            .order_by(AuditEvent.created_at)
+        )
+    ).scalars().all()
+    assert [(e.old_values, e.new_values) for e in events] == [
+        ({"rpo_hours": None}, {"rpo_hours": 12}), ({"rpo_hours": 12}, {"rpo_hours": None}),
+    ]
+    assert events[0].actor_email == "noc@hsdeep.local"
+
+
+# ---------------------------------------------------------------------------
+# BR-1 Backup Command Center: filters, workloads, failures, security, history
+# ---------------------------------------------------------------------------
+
+
+async def test_azure_vault_security_settings_are_read_as_reported():
+    vault = _vault()
+    vault["properties"]["securitySettings"]["multiUserAuthorization"] = "Enabled"
+    vault["properties"]["redundancySettings"]["crossRegionRestore"] = "Disabled"
+    vault["properties"]["publicNetworkAccess"] = "Enabled"
+    vault["properties"]["encryption"] = {"keyVaultProperties": {"keyUri": "https://kv.vault.azure.net/keys/k/1"}}
+
+    def handler(request):
+        if request.url.path.endswith("/vaults"):
+            return httpx.Response(200, json={"value": [vault, {**_vault(), "id": VAULT_ID + "-2", "name": "vault-2"}]})
+        return httpx.Response(200, json={"value": []})
+
+    collector = _collector(httpx.MockTransport(handler))
+    first, second = collector.normalize(await collector.collect()).backup_vaults
+    assert (first.multi_user_authorization, first.encryption, first.cross_region_restore, first.public_network_access) == (
+        "enabled", "customer_managed", False, "enabled",
+    )
+    # Not in the response: not reported - except encryption, which Azure always applies.
+    assert (second.multi_user_authorization, second.cross_region_restore, second.public_network_access) == (None, None, None)
+    assert second.encryption == "platform_managed"
+
+
+def _sv(**kw):
+    base = dict(
+        provider="azure", soft_delete_state=None, immutable=None, immutability_state=None, offsite=None,
+        storage_redundancy=None, multi_user_authorization=None, cross_region_restore=None, encryption=None,
+        public_network_access=None,
+    )
+    return SimpleNamespace(**{**base, **kw})
+
+
+def test_security_checks_never_pass_what_is_not_reported():
+    from app.services.backup_service import security_checks
+
+    status = lambda v: {c.key: c.status for c in security_checks(v)}  # noqa: E731
+    assert set(status(_sv(provider="veeam")).values()) == {"not_reported"}
+    hardened = status(_sv(
+        soft_delete_state="always_on", immutable=True, immutability_state="locked", offsite=True,
+        storage_redundancy="geo_redundant", multi_user_authorization="enabled", cross_region_restore=True,
+        encryption="customer_managed", public_network_access="disabled",
+    ))
+    assert set(hardened.values()) == {"pass"}
+    weak = status(_sv(
+        soft_delete_state="disabled", immutable=False, immutability_state="unlocked", offsite=False,
+        storage_redundancy="locally_redundant", multi_user_authorization="disabled", encryption="platform_managed",
+        public_network_access="enabled",
+    ))
+    assert weak == {
+        "soft_delete": "fail", "immutability": "warn", "offsite": "warn", "multi_user_authorization": "warn",
+        "cross_region_restore": "not_applicable", "encryption": "pass", "public_network_access": "warn",
+    }
+    assert status(_sv(immutable=False, immutability_state="disabled"))["immutability"] == "fail"
+
+
+def test_growth_estimate_is_a_least_squares_slope():
+    from datetime import date
+
+    from app.services.backup_service import _growth_per_day
+
+    start = date(2026, 1, 1)
+    assert _growth_per_day([(start + timedelta(days=d), 1000 + 50 * d) for d in range(14)]) == pytest.approx(50.0)
+    assert _growth_per_day([(start, 1), (start, 2)]) is None
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_command_center_filters_failures_security_and_isolation(db, monitoring_source_factory, other_tenant):
+    source = await monitoring_source_factory(source_type="azure_backup")
+    bundle = await _bundle()
+    for item in bundle.backup_items:
+        if item.name == "db-01":
+            item.workload_type = "SQLDataBase"
+    await _saver(db).save(source, bundle)
+    await db.commit()
+    vault_id = (await db.execute(select(BackupVault.id).where(BackupVault.tenant_id == source.tenant_id))).scalar_one()
+
+    async with _client(source.tenant_id) as client:
+        overview = (await client.get("/api/backup/overview")).json()
+        assert overview["filtered"] is False
+        workloads = {w["workload_type"]: w for w in overview["workloads"]}
+        assert workloads["SQLDataBase"]["items_total"] == 1 and workloads["SQLDataBase"]["items_last_failed"] == 1
+        assert sum(w["items_total"] for w in overview["workloads"]) == 4
+        options = overview["filter_options"]
+        assert options["subscriptions"] == [SUB] and options["resource_groups"] == ["rg-backup"]
+        assert options["locations"] == ["westeurope"] and "SQLDataBase" in options["workload_types"]
+        assert options["vaults"] == [{"value": str(vault_id), "label": "vault-prod"}]
+
+        # Workload filter narrows items and, through them, jobs.
+        sql = (await client.get("/api/backup/overview", params={"workload_type": "SQLDataBase"})).json()
+        assert sql["filtered"] is True and sql["items_total"] == 1 and sql["unprotected_resources"] is None
+        assert sql["jobs_7d"]["total"] == 1 and sql["jobs_7d"]["failed"] == 1
+        names = [i["name"] for i in (await client.get("/api/backup/items", params={"workload_type": "SQLDataBase"})).json()]
+        assert names == ["db-01"]
+        assert len((await client.get("/api/backup/jobs", params={"workload_type": "SQLDataBase"})).json()) == 1
+
+        # Storage filters: a region with no storage shows nothing.
+        empty = (await client.get("/api/backup/overview", params={"location": "eastus"})).json()
+        assert (empty["vaults"], empty["items_total"], empty["jobs_7d"]["total"]) == (0, 0, 0)
+        same = (await client.get("/api/backup/overview", params={"storage_id": str(vault_id), "resource_group": "RG-BACKUP"})).json()
+        assert (same["vaults"], same["items_total"]) == (1, 4)
+        assert (await client.get("/api/backup/vaults", params={"location": "eastus"})).json() == []
+
+        failures = (await client.get("/api/backup/failures")).json()
+        assert (failures["failed_jobs"], failures["items_affected"]) == (1, 1)
+        group = failures["groups"][0]
+        assert (group["error_code"], group["items"], group["vaults"]) == ("UserErrorVmNotFound", ["db-01"], ["vault-prod"])
+        assert group["sample_message"] == "The VM was not found."
+        assert (await client.get("/api/backup/failures", params={"workload_type": "VM"})).json()["failed_jobs"] == 0
+
+        security = (await client.get("/api/backup/security")).json()
+        checks = {c["key"]: c["status"] for c in security["locations"][0]["checks"]}
+        # Fixture vault: soft delete on, locked, geo-redundant; MUA / CRR / network not in the response.
+        assert (checks["soft_delete"], checks["immutability"], checks["offsite"]) == ("pass", "pass", "pass")
+        assert (checks["multi_user_authorization"], checks["public_network_access"]) == ("not_reported", "not_reported")
+        assert security["score"] == 100.0
+
+        history = (await client.get("/api/backup/storage/history")).json()
+        assert history["history_days"] == 1 and history["growth_bytes_per_day"] is None
+        assert history["points"][0]["storage_used_bytes"] == 2_000_000_000
+
+        assert (await client.get("/api/backup/storage/history", params={"days": 3})).status_code == 422
+
+    async with _client(other_tenant) as client:
+        assert (await client.get("/api/backup/failures")).json()["failed_jobs"] == 0
+        assert (await client.get("/api/backup/security")).json() == {"locations": [], "summary": [], "score": None}
+        assert (await client.get("/api/backup/storage/history")).json()["points"] == []
+        assert (await client.get("/api/backup/overview")).json()["filter_options"]["vaults"] == []
+
+    async with _client(source.tenant_id, permissions=frozenset({"devices.read"})) as client:
+        for path in ("/api/backup/failures", "/api/backup/security", "/api/backup/storage/history"):
+            assert (await client.get(path)).status_code == 403, path
+
+
+async def test_storage_snapshots_are_daily_and_give_a_growth_estimate(db, monitoring_source_factory):
+    from app.models.backup import BackupStorageSnapshot
+    from app.services.backup_service import BackupService
+
+    source = await monitoring_source_factory(source_type="azure_backup")
+    saver = _saver(db)
+    await saver.save(source, await _bundle())
+    await saver.save(source, await _bundle())  # same day: one row, updated
+    await db.commit()
+    vault = (await db.execute(select(BackupVault).where(BackupVault.tenant_id == source.tenant_id))).scalar_one()
+    rows = (await db.execute(select(BackupStorageSnapshot).where(BackupStorageSnapshot.vault_id == vault.id))).scalars().all()
+    assert len(rows) == 1 and (rows[0].storage_used_bytes, rows[0].items_total) == (2_000_000_000, 4)
+
+    today = datetime.now(timezone.utc).date()
+    for back in range(1, 20):
+        db.add(BackupStorageSnapshot(
+            tenant_id=source.tenant_id, vault_id=vault.id, day=today - timedelta(days=back),
+            storage_used_bytes=2_000_000_000 - back * 10_000_000,
+        ))
+    await db.commit()
+
+    now = datetime.now(timezone.utc)
+    short = await BackupService(db).storage_history(source.tenant_id, days=7, now=now)
+    assert short.history_days == 7 and short.growth_bytes_per_day is None
+    history = await BackupService(db).storage_history(source.tenant_id, days=30, now=now)
+    assert history.history_days == 20 and history.points[0].day == today - timedelta(days=19)
+    assert history.growth_bytes_per_day == pytest.approx(10_000_000)
+    assert history.projected_used_bytes_30d == 2_000_000_000 + 300_000_000
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_overview_time_range_breakdowns_age_and_item_search(db, monitoring_source_factory):
+    source = await monitoring_source_factory(source_type="azure_backup")
+    await _saver(db).save(source, await _bundle())
+    await db.commit()
+
+    async with _client(source.tenant_id) as client:
+        default = (await client.get("/api/backup/overview")).json()
+        assert default["range_days"] == 14 and len(default["daily"]) == 14
+        month = (await client.get("/api/backup/overview", params={"days": 30})).json()
+        assert month["range_days"] == 30 and len(month["daily"]) == 30
+        assert month["jobs_range"]["total"] == 4
+        day = (await client.get("/api/backup/overview", params={"days": 1})).json()
+        # job-3 started 26 h ago: outside a 1-day range.
+        assert day["jobs_range"]["total"] == 3 and len(day["daily"]) == 1
+        for bad in (0, 91):
+            assert (await client.get("/api/backup/overview", params={"days": bad})).status_code == 422
+
+        # Every item sits in one subscription and one region.
+        assert [(g["key"], g["items_total"], g["items_breaching_rpo"]) for g in default["by_subscription"]] == [(SUB, 4, 1)]
+        assert [(g["key"], g["items_within_rpo"]) for g in default["by_region"]] == [("westeurope", 1)]
+        # Protected items only: web-01 (3 h), db-01 (40 h), new-vm (never); old-app is stopped.
+        ages = {b["key"]: b["items"] for b in default["recovery_point_age"]}
+        assert ages == {"lt_24h": 1, "1_3d": 1, "3_7d": 0, "7_30d": 0, "gt_30d": 0, "never": 1}
+
+        search = lambda **p: client.get("/api/backup/items", params=p)  # noqa: E731
+        assert [i["name"] for i in (await search(q="DB-0")).json()] == ["db-01"]
+        assert [i["name"] for i in (await search(q="virtualmachines/web")).json()] == ["web-01"]
+        assert (await search(q="%")).json() == []  # wildcards are literal
+        assert [i["name"] for i in (await search(protection_state="protection_stopped")).json()] == ["old-app"]
+        assert [i["name"] for i in (await search(last_backup_status="failed")).json()] == ["db-01"]
+        assert len((await search(policy_name="DailyPolicy")).json()) == 4
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_job_controller_vault_and_policy_reads_with_isolation(db, monitoring_source_factory, other_tenant):
+    source = await monitoring_source_factory(source_type="azure_backup")
+    await _saver(db).save(source, await _bundle())
+    await db.commit()
+    vault_id = (await db.execute(select(BackupVault.id).where(BackupVault.tenant_id == source.tenant_id))).scalar_one()
+    db01 = (await db.execute(select(BackupItem.id).where(BackupItem.vault_id == vault_id, BackupItem.name == "db-01"))).scalar_one()
+
+    async with _client(source.tenant_id) as client:
+        jobs = lambda **p: client.get("/api/backup/jobs", params=p)  # noqa: E731
+        assert len((await jobs(operation="backup")).json()) == 4  # case-insensitive
+        assert (await jobs(operation="Restore")).json() == []
+        assert [j["item_name"] for j in (await jobs(q="vmnotfound")).json()] == ["db-01"]  # error code
+        assert [j["item_name"] for j in (await jobs(q="was not found")).json()] == ["db-01"]  # message
+        failed = (await jobs(status="failed")).json()[0]
+
+        detail = (await client.get(f"/api/backup/jobs/{failed['id']}")).json()
+        assert detail["job"]["error_code"] == "UserErrorVmNotFound" and detail["provider"] == "azure"
+        assert detail["item_id"] == str(db01) and detail["item_jobs"] == []
+        web = next(j for j in (await jobs()).json() if j["item_name"] == "web-01")
+        web_detail = (await client.get(f"/api/backup/jobs/{web['id']}")).json()
+        assert len(web_detail["item_jobs"]) == 2 and all(j["id"] != web["id"] for j in web_detail["item_jobs"])
+        assert (await client.get(f"/api/backup/jobs/{uuid.uuid4()}")).status_code == 404
+
+        vault = (await client.get(f"/api/backup/vaults/{vault_id}")).json()
+        assert (vault["name"], vault["items_total"], vault["policies"]) == ("vault-prod", 4, 2)
+        assert (await client.get(f"/api/backup/vaults/{uuid.uuid4()}")).status_code == 404
+
+        policies = {p["name"]: p for p in (await client.get("/api/backup/policies")).json()}
+        daily = policies["DailyPolicy"]
+        assert (daily["vault_name"], daily["provider"], daily["items_assigned"]) == ("vault-prod", "azure", 4)
+        assert (daily["daily_retention_days"], daily["weekly_retention_weeks"], daily["protected_items_count"]) == (30, 12, 3)
+        assert policies["SqlPolicy"]["items_assigned"] == 0
+        assert (await client.get("/api/backup/policies", params={"location": "eastus"})).json() == []
+
+    async with _client(other_tenant) as client:
+        assert (await client.get(f"/api/backup/jobs/{failed['id']}")).status_code == 404
+        assert (await client.get(f"/api/backup/vaults/{vault_id}")).status_code == 404
+        assert (await client.get("/api/backup/policies")).json() == []
+
+    async with _client(source.tenant_id, permissions=frozenset({"devices.read"})) as client:
+        for path in (f"/api/backup/jobs/{failed['id']}", f"/api/backup/vaults/{vault_id}", "/api/backup/policies"):
+            assert (await client.get(path)).status_code == 403, path
+
+
+# ---------------------------------------------------------------------------
+# Master brief P3: Site Recovery replicated items and recovery plans
+# ---------------------------------------------------------------------------
+
+CONTAINER = f"{VAULT_ID}/replicationFabrics/asr-a2a-default-westeurope/replicationProtectionContainers/asr-a2a-default-westeurope-container"
+
+
+def _replicated(name, *, health="Normal", failover="Normal", active="Primary", tested_days_ago=30, errors=None):
+    return {
+        "id": f"{CONTAINER}/replicationProtectedItems/{name}-guid",
+        "name": f"{name}-guid",
+        "type": "Microsoft.RecoveryServices/vaults/replicationFabrics/replicationProtectionContainers/replicationProtectedItems",
+        "properties": {
+            "friendlyName": name,
+            "protectedItemType": "AzureVmDiskDetails",
+            "primaryFabricFriendlyName": "West Europe",
+            "recoveryFabricFriendlyName": "North Europe",
+            "protectionState": "Protected" if active == "Primary" else "FailedOver",
+            "protectionStateDescription": "Protected" if active == "Primary" else "Failover completed",
+            "activeLocation": active,
+            "testFailoverState": "None",
+            "allowedOperations": ["PlannedFailover", "UnplannedFailover", "TestFailover", "DisableProtection"],
+            "replicationHealth": health,
+            "failoverHealth": failover,
+            "healthErrors": errors or [],
+            "lastSuccessfulTestFailoverTime": _iso(NOW - timedelta(days=tested_days_ago)) if tested_days_ago is not None else None,
+            "policyFriendlyName": "24-hour-retention-policy",
+            "currentScenario": {"scenarioName": "None", "jobId": "None", "startTime": "1753-01-01T01:01:01Z"},
+            "providerSpecificDetails": {
+                "instanceType": "A2A",
+                "fabricObjectId": f"/subscriptions/{SUB}/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/{name}",
+                "primaryFabricLocation": "westeurope",
+                "recoveryFabricLocation": "northeurope",
+                "rpoInSeconds": 45 if health == "Normal" else 5400,
+                "lastRpoCalculatedTime": _iso(NOW - timedelta(minutes=5)),
+                "recoveryAzureVMName": f"{name}-asr",
+            },
+        },
+    }
+
+
+REPLICATED = [
+    _replicated("app-01"),
+    _replicated("app-02", health="Warning", tested_days_ago=None, errors=[{
+        "errorCode": "153007", "summaryMessage": "Replication is lagging", "errorLevel": "Warning",
+        "recommendedAction": "Check the source VM's network", "creationTimeUtc": _iso(NOW - timedelta(hours=2)),
+    }]),
+    _replicated("app-03", active="Recovery"),
+]
+PLANS = [{
+    "id": f"{VAULT_ID}/replicationRecoveryPlans/rp-web",
+    "name": "rp-web",
+    "type": "Microsoft.RecoveryServices/vaults/replicationRecoveryPlans",
+    "properties": {
+        "friendlyName": "rp-web",
+        "primaryFabricFriendlyName": "West Europe",
+        "recoveryFabricFriendlyName": "North Europe",
+        "failoverDeploymentModel": "ResourceManager",
+        "replicationProviders": ["A2A"],
+        "allowedOperations": ["PlannedFailover", "UnplannedFailover", "TestFailover"],
+        "lastTestFailoverTime": _iso(NOW - timedelta(days=20)),
+        "groups": [
+            {"groupType": "Shutdown", "replicationProtectedItems": []},
+            {"groupType": "Boot", "replicationProtectedItems": [
+                {"id": REPLICATED[0]["id"], "virtualMachineId": "vm1"},
+                {"id": REPLICATED[1]["id"], "virtualMachineId": "vm2"},
+            ]},
+        ],
+    },
+}]
+
+
+def _asr_transport(*, asr_status=200):
+    base = _arm_transport()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/replicationProtectedItems"):
+            if asr_status != 200:
+                return httpx.Response(asr_status, json={"error": {"code": "AuthorizationFailed"}})
+            assert request.url.params.get("api-version") == "2025-01-01"
+            return httpx.Response(200, json={"value": REPLICATED})
+        if path.endswith("/replicationRecoveryPlans"):
+            return httpx.Response(200, json={"value": PLANS})
+        return base.handle_request(request)
+
+    return httpx.MockTransport(handler)
+
+
+async def _asr_bundle(**kw) -> NormalizedBundle:
+    collector = _collector(_asr_transport(**kw))
+    return collector.normalize(await collector.collect())
+
+
+async def test_site_recovery_items_and_plans_are_normalized():
+    bundle = await _asr_bundle()
+    assert bundle.backup_status["replication"] == "collected"
+    items = {i.name: i for i in bundle.replicated_items}
+    app1 = items["app-01"]
+    assert (app1.replication_type, app1.source_location, app1.target_location) == ("A2A", "westeurope", "northeurope")
+    assert (app1.replication_health, app1.active_location, app1.rpo_seconds) == ("normal", "primary", 45)
+    assert app1.source_resource_id.endswith("/virtualMachines/app-01") and app1.current_scenario is None
+    assert "TestFailover" in app1.allowed_operations and app1.recovery_vm_name == "app-01-asr"
+    app2 = items["app-02"]
+    assert app2.replication_health == "warning" and app2.last_test_failover_at is None
+    assert app2.health_errors[0]["code"] == "153007" and app2.health_errors[0]["recommended_action"]
+    assert items["app-03"].active_location == "recovery"
+    (plan,) = bundle.recovery_plans
+    assert (plan.name, plan.groups, plan.replication_providers) == ("rp-web", 2, ["A2A"])
+    assert plan.item_external_ids == [REPLICATED[0]["id"].lower(), REPLICATED[1]["id"].lower()]
+
+
+async def test_missing_site_recovery_role_fails_only_replication():
+    bundle = await _asr_bundle(asr_status=403)
+    assert bundle.backup_status["replication"] == "failed"
+    assert bundle.backup_status["items"] == "collected" and len(bundle.backup_items) == 4
+    assert bundle.replicated_items == [] and bundle.recovery_plans == []
+
+
+def test_dr_readiness_rule():
+    from app.services.dr_service import readiness
+
+    def item(**kw):
+        base = dict(active_location="primary", replication_health="normal", failover_health="normal",
+                    last_test_failover_at=NOW - timedelta(days=10))
+        return SimpleNamespace(**{**base, **kw})
+
+    assert readiness(item(), NOW, 180) == ("ready", [])
+    assert readiness(item(active_location="recovery"), NOW, 180)[0] == "failed_over"
+    verdict, reasons = readiness(item(replication_health=None, last_test_failover_at=None), NOW, 180)
+    assert verdict == "not_ready" and len(reasons) == 2
+    assert readiness(item(last_test_failover_at=NOW - timedelta(days=200)), NOW, 180)[1] == [
+        "Last successful test failover 200 days ago (target 180)"
+    ]
+    assert readiness(item(failover_health="critical"), NOW, 180)[0] == "not_ready"
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_replication_saved_alerts_api_and_isolation(db, monitoring_source_factory, other_tenant):
+    from app.models.backup import BackupRecoveryPlan, BackupReplicatedItem
+
+    source = await monitoring_source_factory(source_type="azure_backup")
+    saver = _saver(db)
+    result = await saver.save(source, await _asr_bundle())
+    alerts = await _evaluate(db, result)
+    await db.commit()
+    assert len((await db.execute(select(BackupReplicatedItem).where(BackupReplicatedItem.tenant_id == source.tenant_id))).scalars().all()) == 3
+    open_titles = [a.title for a in alerts if a.status == "open"]
+    assert any("app-02" in t and "replication" in t for t in open_titles)
+    assert not any("app-01" in t and "replication" in t for t in open_titles)
+
+    # A failed replication read keeps what was stored; a later read without app-03 retires it.
+    await saver.save(source, await _asr_bundle(asr_status=403))
+    await db.commit()
+    assert len((await db.execute(select(BackupReplicatedItem).where(BackupReplicatedItem.tenant_id == source.tenant_id))).scalars().all()) == 3
+    bundle = await _asr_bundle()
+    bundle.replicated_items = [i for i in bundle.replicated_items if i.name != "app-03"]
+    await saver.save(source, bundle)
+    await db.commit()
+    names = {r.name for r in (await db.execute(select(BackupReplicatedItem).where(BackupReplicatedItem.tenant_id == source.tenant_id))).scalars()}
+    assert names == {"app-01", "app-02"}
+    assert len((await db.execute(select(BackupRecoveryPlan).where(BackupRecoveryPlan.tenant_id == source.tenant_id))).scalars().all()) == 1
+    await saver.save(source, await _asr_bundle())  # app-03 back
+    await db.commit()
+
+    async with _client(source.tenant_id) as client:
+        o = (await client.get("/api/backup/replication/overview")).json()
+        assert (o["configured"], o["replication_status"], o["items_total"]) == (True, "collected", 3)
+        assert (o["health_normal"], o["health_warning"], o["failed_over"]) == (2, 1, 1)
+        assert (o["ready"], o["never_tested"], o["readiness_pct"]) == (1, 1, 33.3)
+        assert (o["max_rpo_seconds"], o["plans_total"], o["plans_ready"]) == (5400, 1, 0)
+        assert o["by_region"] == [{"source_location": "westeurope", "target_location": "northeurope", "items": 3, "ready": 1, "unhealthy": 1}]
+
+        items = {i["name"]: i for i in (await client.get("/api/backup/replication/items")).json()}
+        assert items["app-01"]["readiness"] == "ready" and items["app-01"]["recovery_plans"] == ["rp-web"]
+        assert items["app-02"]["readiness"] == "not_ready" and len(items["app-02"]["readiness_reasons"]) == 2
+        assert items["app-03"]["readiness"] == "failed_over" and items["app-03"]["recovery_plans"] == []
+        one = (await client.get(f"/api/backup/replication/items/{items['app-02']['id']}")).json()
+        assert one["health_errors"][0]["message"] == "Replication is lagging"
+        assert (await client.get(f"/api/backup/replication/items/{uuid.uuid4()}")).status_code == 404
+
+        (plan,) = (await client.get("/api/backup/replication/plans")).json()
+        assert (plan["items_total"], plan["items_found"], plan["items_ready"], plan["readiness"]) == (2, 2, 1, "not_ready")
+        assert plan["readiness_reasons"] == ["1 of 2 member item(s) not DR-ready"]
+
+        assert (await client.get("/api/backup/replication/items", params={"location": "eastus"})).json() == []
+
+    async with _client(other_tenant) as client:
+        o = (await client.get("/api/backup/replication/overview")).json()
+        assert (o["configured"], o["items_total"], o["replication_status"]) == (False, 0, None)
+        assert (await client.get(f"/api/backup/replication/items/{items['app-01']['id']}")).status_code == 404
+        assert (await client.get("/api/backup/replication/plans")).json() == []
+
+    async with _client(source.tenant_id, permissions=frozenset({"devices.read"})) as client:
+        for path in ("/api/backup/replication/overview", "/api/backup/replication/items", "/api/backup/replication/plans"):
+            assert (await client.get(path)).status_code == 403, path
+
+
+@pytest.mark.usefixtures("seeded_subscription")
+async def test_backup_health_strikes_alerts_retention_and_isolation(db, monitoring_source_factory, other_tenant):
+    from app.collectors.base import NormalizedBackupJob
+
+    source = await monitoring_source_factory(source_type="azure_backup")
+    bundle = await _bundle()
+    # db-01 failed three times in a row (newest first: job-2 at 2 h, then 26 h and 50 h ago);
+    # a restore failure in between does not count, and an older success ends the streak.
+    for jid, hours, op, status in (("s1", 26, "Backup", "failed"), ("s2", 30, "Restore", "failed"),
+                                   ("s3", 50, "Backup", "failed"), ("s4", 74, "Backup", "completed"),
+                                   ("s5", 98, "Backup", "failed")):
+        bundle.backup_jobs.append(NormalizedBackupJob(
+            external_id=f"{VAULT_ID}/backupjobs/{jid}".lower(), vault_external_id=VAULT_ID.lower(), item_name="db-01",
+            operation=op, status=status, started_at=NOW - timedelta(hours=hours),
+            error_code="UserErrorVmNotFound" if status == "failed" else None,
+        ))
+    result = await _saver(db).save(source, bundle)
+    alerts = await _evaluate(db, result)
+    await db.commit()
+    open_alerts = [a for a in alerts if a.status != "resolved"]
+
+    async with _client(source.tenant_id) as client:
+        h = (await client.get("/api/backup/health")).json()
+        assert h["strike_window_days"] == 30
+        assert h["strikes"][0] == {"label": "All items", "one": 0, "two": 0, "three_plus": 1}
+        (top,) = h["strike_items"]
+        assert (top["item_name"], top["strikes"], top["last_error_code"]) == ("db-01", 3, "UserErrorVmNotFound")
+        assert h["alerts_critical"] + h["alerts_warning"] + h["alerts_info"] == len(open_alerts) > 0
+        assert h["alerts_critical"] == sum(1 for a in open_alerts if a.severity == "critical")
+        assert h["items_healthy"] == 1  # web-01
+        # DailyPolicy keeps 30 daily + 12 weekly points: 84 days back, for all 4 items.
+        assert {b["key"]: b["items"] for b in h["retention"]} == {
+            "0_30d": 0, "30_90d": 4, "90_365d": 0, "1y_plus": 0, "not_reported": 0,
+        }
+        narrowed = (await client.get("/api/backup/health", params={"location": "eastus"})).json()
+        assert narrowed["strike_items"] == [] and narrowed["alerts_critical"] == 0
+
+    async with _client(other_tenant) as client:
+        other = (await client.get("/api/backup/health")).json()
+        assert (other["alerts_critical"], other["strike_items"], other["items_healthy"]) == (0, [], 0)
+
+    async with _client(source.tenant_id, permissions=frozenset({"devices.read"})) as client:
+        assert (await client.get("/api/backup/health")).status_code == 403

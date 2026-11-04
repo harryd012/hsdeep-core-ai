@@ -251,16 +251,26 @@ FIREWALL_TABLES = ("status", "vpn", "licences")
 
 @dataclass
 class NormalizedBackupVault:
-    """A backup vault (Azure Recovery Services vault) and its security posture.
+    """A backup storage location (Azure Recovery Services vault, Veeam
+    repository, S3 bucket ...) and its security posture.
 
-    The vault itself is also reported as a `NormalizedDevice` (cloud_resource)
-    with the same external_id, so it appears in inventory and alerts link to it.
-    Settings the provider did not report stay None.
+    The location itself is also reported as a `NormalizedDevice` with the same
+    external_id, so it appears in inventory and alerts link to it. Settings
+    the provider did not report stay None. Status values follow
+    `app.collectors.backup_vocabulary`.
     """
 
     external_id: str
     name: str
     provider: str = "azure"
+    #: vault | repository | bucket (backup_vocabulary.STORAGE_KINDS)
+    kind: str = "vault"
+    #: True when a copy is kept away from the primary site/region (3-2-1);
+    #: None when the provider does not say.
+    offsite: bool | None = None
+    #: True when restore points cannot be deleted or altered before they
+    #: expire, irreversibly (locked immutability / object lock); None if unknown.
+    immutable: bool | None = None
     location: str | None = None
     resource_group: str | None = None
     subscription_id: str | None = None
@@ -272,6 +282,20 @@ class NormalizedBackupVault:
     storage_redundancy: str | None = None
     #: Backup storage the vault reports as used, in bytes (all redundancy tiers).
     storage_used_bytes: int | None = None
+    #: Total and free space of a storage location that has a fixed size (a
+    #: Veeam repository); None for elastic storage (Azure vault, S3 bucket).
+    capacity_bytes: int | None = None
+    free_bytes: int | None = None
+    #: Whether the location is reachable; None when the provider does not say.
+    online: bool | None = None
+    #: Multi-user authorization guards destructive operations: enabled | disabled.
+    multi_user_authorization: str | None = None
+    #: Key that encrypts the backup data: customer_managed | platform_managed.
+    encryption: str | None = None
+    #: Restores can run from the secondary (paired) region.
+    cross_region_restore: bool | None = None
+    #: Inbound access from public networks: enabled | disabled.
+    public_network_access: str | None = None
 
 
 @dataclass
@@ -294,6 +318,8 @@ class NormalizedBackupItem:
     #: Restore points the provider holds for this item, and the oldest one.
     recovery_point_count: int | None = None
     oldest_recovery_point_at: datetime | None = None
+    #: Backup data held for this item, bytes; None when the provider does not report it.
+    size_bytes: int | None = None
 
 
 @dataclass
@@ -316,6 +342,66 @@ class NormalizedBackupPolicy:
     monthly_retention_months: int | None = None
     yearly_retention_years: int | None = None
     protected_items_count: int | None = None
+
+
+@dataclass
+class NormalizedReplicatedItem:
+    """A machine replicated for disaster recovery (Azure Site Recovery
+    replication protected item). Health and states as the provider reports
+    them (snake_case); anything not reported stays None."""
+
+    external_id: str
+    vault_external_id: str
+    name: str
+    #: Resource id of the source machine (Azure-to-Azure: the VM's ARM id).
+    source_resource_id: str | None = None
+    #: Replication scenario: A2A, HyperVReplicaAzure, InMageRcm ...
+    replication_type: str | None = None
+    protected_item_type: str | None = None
+    source_location: str | None = None
+    target_location: str | None = None
+    protection_state: str | None = None
+    protection_state_description: str | None = None
+    #: normal | warning | critical
+    replication_health: str | None = None
+    failover_health: str | None = None
+    #: primary | recovery
+    active_location: str | None = None
+    test_failover_state: str | None = None
+    last_failover_at: datetime | None = None
+    last_test_failover_at: datetime | None = None
+    #: Replication lag the provider last calculated (its "RPO"), seconds.
+    rpo_seconds: int | None = None
+    rpo_calculated_at: datetime | None = None
+    policy_name: str | None = None
+    recovery_vm_name: str | None = None
+    #: Operation running now (e.g. "TestFailover"); None when idle.
+    current_scenario: str | None = None
+    allowed_operations: list[str] = field(default_factory=list)
+    #: [{"code", "message", "level", "recommended_action", "created_at"}]
+    health_errors: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class NormalizedRecoveryPlan:
+    """An ordered failover plan over replicated items (Site Recovery recovery plan)."""
+
+    external_id: str
+    vault_external_id: str
+    name: str
+    primary_location: str | None = None
+    recovery_location: str | None = None
+    failover_deployment_model: str | None = None
+    replication_providers: list[str] = field(default_factory=list)
+    allowed_operations: list[str] = field(default_factory=list)
+    current_scenario: str | None = None
+    current_scenario_status: str | None = None
+    last_planned_failover_at: datetime | None = None
+    last_unplanned_failover_at: datetime | None = None
+    last_test_failover_at: datetime | None = None
+    groups: int = 0
+    #: Replicated item external ids in the plan (lower case).
+    item_external_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -375,6 +461,9 @@ class NormalizedBundle:
     backup_items: list[NormalizedBackupItem] = field(default_factory=list)
     backup_jobs: list[NormalizedBackupJob] = field(default_factory=list)
     backup_policies: list[NormalizedBackupPolicy] = field(default_factory=list)
+    #: Disaster-recovery replication (Azure Site Recovery); status key "replication".
+    replicated_items: list[NormalizedReplicatedItem] = field(default_factory=list)
+    recovery_plans: list[NormalizedRecoveryPlan] = field(default_factory=list)
     #: Outcome per backup table ("vaults", "items", "jobs"), same values and
     #: retirement rule as ``l3_status``. A missing key means not read.
     backup_status: dict[str, str] = field(default_factory=dict)
@@ -457,6 +546,10 @@ class BaseCollector(abc.ABC):
     #: Firewall tables (FIREWALL_TABLES) this collector reads, so the UI can
     #: say "not supported by this adapter" instead of "no data".
     firewall_capabilities: ClassVar[tuple[str, ...]] = ()
+    #: Set by backup collectors to the provider name they store on vaults
+    #: ("azure", "veeam" ...), so backup views find every backup source
+    #: without listing source types by hand.
+    backup_provider: ClassVar[str | None] = None
 
     def __init__(self, source: "MonitoringSourceConnectionInfo"):
         """`source` exposes the typed columns (hostname, ip_address, port,

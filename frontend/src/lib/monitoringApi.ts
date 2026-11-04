@@ -111,6 +111,8 @@ export interface MonitoringSourceInput {
   protocol?: string | null;
   snmp_version?: string | null;
   username?: string | null;
+  /** Verify the server's TLS certificate (off for self-signed certificates). */
+  verify_ssl?: boolean;
   is_active?: boolean;
   poll_interval_seconds?: number;
   /** Write-only credential material (SNMP v1/v2c community, or v3 auth key;

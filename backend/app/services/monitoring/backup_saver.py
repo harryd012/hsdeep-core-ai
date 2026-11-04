@@ -11,38 +11,72 @@ Called by `BundleSaver.save()` for bundles that carry backup tables
   - upserts `backup_jobs` by the provider's job id, then purges jobs older
     than `backup_job_retention_days`;
   - syncs `backup_policies` (schedule and retention) and the vault's storage
-    used, each only when that table was read this poll;
+    used, each only when that table was read this poll, and records the day's
+    storage in `backup_storage_snapshots` (history for storage growth);
   - turns item and vault state into sensor readings, so backup alerts open and
     auto-resolve through the existing sensor path (AlertService.evaluate_sensor),
     exactly like firewall state - no second alerting mechanism.
 
+  - syncs `backup_replicated_items` and `backup_recovery_plans` (Site
+    Recovery) per vault when the "replication" table was read.
+
 Rules (all from what the provider reported; nothing is inferred):
-  * RPO        - a protected item with no backup inside `backup_rpo_hours`.
+  * RPO        - a protected item with no backup inside the tenant's RPO
+                 (its own, or `backup_rpo_hours`).
   * last backup - the provider's last backup verdict (failed / with warnings).
   * protection - protection stopped, paused or in error.
   * soft delete - vault soft delete disabled.
+  * replication - a replicated machine whose replication health is
+                  warning or critical (Site Recovery's own verdict).
+  * free space  - a fixed-size repository with less free space than
+                  `backup_repository_free_warning_pct` / `_critical_pct`.
 Items whose protection was stopped get an "unknown" RPO reading, which
 resolves an RPO alert instead of paging about an item nobody protects.
+
+Provider-neutral: every item and job is passed through the shared status
+vocabulary (`app.collectors.backup_vocabulary`) before it is stored or
+judged, and the RPO is the tenant's own (`app.services.backup_settings`).
 """
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.collectors.backup_vocabulary import (
+    ACTIVE_PROTECTION,
+    BACKUP_RESULTS,
+    JOB_STATUSES,
+    PROTECTION_STATES,
+    STOPPED_PROTECTION,
+    STORAGE_KINDS,
+    canonical,
+)
 from app.collectors.base import (
     NormalizedBackupItem,
+    NormalizedBackupJob,
     NormalizedBackupPolicy,
     NormalizedBackupVault,
     NormalizedBundle,
+    NormalizedRecoveryPlan,
+    NormalizedReplicatedItem,
     NormalizedSensorReading,
 )
 from app.core.config import get_settings
-from app.models.backup import BackupItem, BackupJob, BackupPolicy, BackupVault
+from app.models.backup import (
+    BackupItem,
+    BackupJob,
+    BackupPolicy,
+    BackupRecoveryPlan,
+    BackupReplicatedItem,
+    BackupStorageSnapshot,
+    BackupVault,
+)
+from app.services.backup_settings import effective_rpo_hours
 
 _READ_OK = ("collected", "empty")
 #: Prefix of every sensor external_id this module produces.
@@ -51,15 +85,39 @@ SENSOR_PREFIX = "bk:"
 _ITEM_FIELDS = (
     "name", "workload_type", "protection_state", "last_backup_status", "last_backup_at",
     "source_resource_id", "policy_name", "health_status",
-    "recovery_point_count", "oldest_recovery_point_at",
+    "recovery_point_count", "oldest_recovery_point_at", "size_bytes",
+)
+_REPLICATED_FIELDS = (
+    "name", "source_resource_id", "replication_type", "protected_item_type", "source_location",
+    "target_location", "protection_state", "protection_state_description", "replication_health",
+    "failover_health", "active_location", "test_failover_state", "last_failover_at",
+    "last_test_failover_at", "rpo_seconds", "rpo_calculated_at", "policy_name", "recovery_vm_name",
+    "current_scenario", "allowed_operations", "health_errors",
+)
+_PLAN_FIELDS = (
+    "name", "primary_location", "recovery_location", "failover_deployment_model", "replication_providers",
+    "allowed_operations", "current_scenario", "current_scenario_status", "last_planned_failover_at",
+    "last_unplanned_failover_at", "last_test_failover_at", "groups", "item_external_ids",
 )
 _POLICY_FIELDS = (
     "workload_type", "schedule_frequency", "schedule_times", "daily_retention_days",
     "weekly_retention_weeks", "monthly_retention_months", "yearly_retention_years",
     "protected_items_count",
 )
-_ACTIVE_PROTECTION = ("protected", "protection_error", "ir_pending")
-_STOPPED_PROTECTION = ("protection_stopped", "protection_paused")
+
+
+def canonical_item(item: NormalizedBackupItem) -> NormalizedBackupItem:
+    """The item with its states in the shared vocabulary. Pure."""
+    return replace(
+        item,
+        protection_state=canonical(item.protection_state, PROTECTION_STATES),
+        last_backup_status=canonical(item.last_backup_status, BACKUP_RESULTS),
+    )
+
+
+def canonical_job(job: NormalizedBackupJob) -> NormalizedBackupJob:
+    """The job with its status in the shared vocabulary. Pure."""
+    return replace(job, status=canonical(job.status, JOB_STATUSES) or "other")
 
 
 @dataclass
@@ -70,6 +128,9 @@ class BackupSaveResult:
     jobs_upserted: int = 0
     jobs_purged: int = 0
     policies_upserted: int = 0
+    replicated_upserted: int = 0
+    replicated_retired: int = 0
+    plans_upserted: int = 0
     readings: list[NormalizedSensorReading] = field(default_factory=list)
 
 
@@ -82,15 +143,20 @@ def _reading(vault_ext: str, key: str, name: str, metric: str, value: float | No
     )
 
 
-def vault_readings(vault: NormalizedBackupVault) -> list[NormalizedSensorReading]:
-    """Posture readings for one vault. Pure."""
-    if vault.soft_delete_state is None:
-        return []
-    on = vault.soft_delete_state in ("enabled", "always_on")
-    return [
-        _reading(vault.external_id, "soft_delete", f"{vault.name} soft delete", "backup_soft_delete",
-                 1.0 if on else 0.0, "up" if on else "warning")
-    ]
+def vault_readings(vault: NormalizedBackupVault, warning_pct: float = 15.0,
+                   critical_pct: float = 5.0) -> list[NormalizedSensorReading]:
+    """Posture and capacity readings for one vault. Pure."""
+    out: list[NormalizedSensorReading] = []
+    if vault.soft_delete_state is not None:
+        on = vault.soft_delete_state in ("enabled", "always_on")
+        out.append(_reading(vault.external_id, "soft_delete", f"{vault.name} soft delete", "backup_soft_delete",
+                            1.0 if on else 0.0, "up" if on else "warning"))
+    if vault.capacity_bytes and vault.free_bytes is not None:
+        free_pct = round(vault.free_bytes / vault.capacity_bytes * 100, 1)
+        status = "down" if free_pct < critical_pct else "warning" if free_pct < warning_pct else "up"
+        out.append(_reading(vault.external_id, "free_space", f"{vault.name} free space", "backup_free_space_pct",
+                            free_pct, status, "%", warning=warning_pct, critical=critical_pct))
+    return out
 
 
 def item_readings(item: NormalizedBackupItem, vault_name: str, now: datetime, rpo_hours: int) -> list[NormalizedSensorReading]:
@@ -99,13 +165,13 @@ def item_readings(item: NormalizedBackupItem, vault_name: str, now: datetime, rp
     key = f"item:{item.external_id.rsplit('/', 1)[-1]}"
     out: list[NormalizedSensorReading] = []
 
-    if item.protection_state in _ACTIVE_PROTECTION:
+    if item.protection_state in ACTIVE_PROTECTION:
         age = (now - item.last_backup_at).total_seconds() / 3600 if item.last_backup_at else None
         breached = age is None or age > rpo_hours
         out.append(_reading(item.vault_external_id, f"{key}:rpo", f"{label} backup age", "backup_age_hours",
                             round(age, 1) if age is not None else None, "down" if breached else "up",
                             "h", critical=float(rpo_hours)))
-    elif item.protection_state in _STOPPED_PROTECTION:
+    elif item.protection_state in STOPPED_PROTECTION:
         # Nobody protects it any more: resolve an RPO alert rather than page.
         out.append(_reading(item.vault_external_id, f"{key}:rpo", f"{label} backup age", "backup_age_hours",
                             None, "unknown", "h", critical=float(rpo_hours)))
@@ -119,12 +185,22 @@ def item_readings(item: NormalizedBackupItem, vault_name: str, now: datetime, rp
     if item.protection_state is not None:
         status = (
             "down" if item.protection_state == "protection_error"
-            else "warning" if item.protection_state in _STOPPED_PROTECTION
+            else "warning" if item.protection_state in STOPPED_PROTECTION
             else "up"
         )
         out.append(_reading(item.vault_external_id, f"{key}:protection", f"{label} protection",
                             "backup_protection", 1.0 if status == "up" else 0.0, status))
     return out
+
+
+def replication_readings(item: NormalizedReplicatedItem, vault_name: str) -> list[NormalizedSensorReading]:
+    """Replication-health reading for one replicated machine. Pure."""
+    status, value = {"normal": ("up", 1.0), "warning": ("warning", 0.5), "critical": ("down", 0.0)}.get(
+        item.replication_health or "", ("unknown", None)
+    )
+    key = f"dr:{item.external_id.rsplit('/', 1)[-1]}"
+    return [_reading(item.vault_external_id, f"{key}:replication", f"{item.name} ({vault_name}) replication",
+                     "replication_health", value, status)]
 
 
 def _resolve_item(vault_ext: str, external_id: str, name: str, vault_name: str) -> list[NormalizedSensorReading]:
@@ -152,17 +228,23 @@ async def save_backup(
     if not tables or tables.get("vaults") not in _READ_OK:
         return result
     settings = get_settings()
-    rpo_hours = settings.backup_rpo_hours
+    rpo_hours = await effective_rpo_hours(db, tenant_id)
 
     items_by_vault: dict[str, list[NormalizedBackupItem]] = {}
     for item in bundle.backup_items:
-        items_by_vault.setdefault(item.vault_external_id, []).append(item)
+        items_by_vault.setdefault(item.vault_external_id, []).append(canonical_item(item))
     jobs_by_vault: dict[str, list] = {}
     for job in bundle.backup_jobs:
-        jobs_by_vault.setdefault(job.vault_external_id, []).append(job)
+        jobs_by_vault.setdefault(job.vault_external_id, []).append(canonical_job(job))
     policies_by_vault: dict[str, list[NormalizedBackupPolicy]] = {}
     for policy in bundle.backup_policies:
         policies_by_vault.setdefault(policy.vault_external_id, []).append(policy)
+    replicated_by_vault: dict[str, list[NormalizedReplicatedItem]] = {}
+    for rep in bundle.replicated_items:
+        replicated_by_vault.setdefault(rep.vault_external_id, []).append(rep)
+    plans_by_vault: dict[str, list[NormalizedRecoveryPlan]] = {}
+    for plan in bundle.recovery_plans:
+        plans_by_vault.setdefault(plan.vault_external_id, []).append(plan)
 
     for nv in bundle.backup_vaults:
         vault = (
@@ -177,19 +259,30 @@ async def save_backup(
         vault.monitoring_source_id = source_id
         vault.name = nv.name
         vault.provider = nv.provider
+        vault.kind = nv.kind if nv.kind in STORAGE_KINDS else "vault"
+        vault.offsite = nv.offsite
+        vault.immutable = nv.immutable
         vault.location = nv.location
         vault.resource_group = nv.resource_group
         vault.subscription_id = nv.subscription_id
         vault.soft_delete_state = nv.soft_delete_state
         vault.immutability_state = nv.immutability_state
         vault.storage_redundancy = nv.storage_redundancy
+        vault.multi_user_authorization = nv.multi_user_authorization
+        vault.encryption = nv.encryption
+        vault.cross_region_restore = nv.cross_region_restore
+        vault.public_network_access = nv.public_network_access
         if tables.get("usage") in _READ_OK:
             vault.storage_used_bytes = nv.storage_used_bytes
+            vault.capacity_bytes = nv.capacity_bytes
+            vault.free_bytes = nv.free_bytes
         vault.table_status = dict(tables)
         vault.observed_at = now
         await db.flush()
         result.vaults_updated += 1
-        result.readings.extend(vault_readings(nv))
+        result.readings.extend(vault_readings(
+            nv, settings.backup_repository_free_warning_pct, settings.backup_repository_free_critical_pct,
+        ))
 
         if tables.get("items") in _READ_OK:
             await _sync_items(db, tenant_id, vault, nv, items_by_vault.get(nv.external_id, []), now, rpo_hours, result)
@@ -197,6 +290,13 @@ async def save_backup(
             await _upsert_jobs(db, tenant_id, vault, jobs_by_vault.get(nv.external_id, []), result)
         if tables.get("policies") in _READ_OK:
             await _sync_policies(db, tenant_id, vault, policies_by_vault.get(nv.external_id, []), now, result)
+        if tables.get("usage") in _READ_OK:
+            await _snapshot(db, tenant_id, vault, now)
+        if tables.get("replication") in _READ_OK:
+            await _sync_replication(
+                db, tenant_id, vault, replicated_by_vault.get(nv.external_id, []),
+                plans_by_vault.get(nv.external_id, []), now, result,
+            )
 
     cutoff = now - timedelta(days=settings.backup_job_retention_days)
     purged = await db.execute(
@@ -207,8 +307,82 @@ async def save_backup(
         )
     )
     result.jobs_purged = purged.rowcount or 0
+    await db.execute(
+        delete(BackupStorageSnapshot).where(
+            BackupStorageSnapshot.tenant_id == tenant_id,
+            BackupStorageSnapshot.day < (now - timedelta(days=settings.backup_snapshot_retention_days)).date(),
+        )
+    )
     await db.flush()
     return result
+
+
+async def _sync_replication(db, tenant_id, vault: BackupVault, items, plans, now, result) -> None:
+    """Upsert this vault's replicated machines and recovery plans; drop what the read no longer lists."""
+    existing = {
+        row.external_id: row
+        for row in (await db.execute(select(BackupReplicatedItem).where(BackupReplicatedItem.vault_id == vault.id))).scalars()
+    }
+    seen: set[str] = set()
+    for item in items:
+        if item.external_id in seen:
+            continue
+        seen.add(item.external_id)
+        row = existing.get(item.external_id)
+        if row is None:
+            row = BackupReplicatedItem(tenant_id=tenant_id, vault_id=vault.id, external_id=item.external_id, name=item.name)
+            db.add(row)
+        for f in _REPLICATED_FIELDS:
+            setattr(row, f, getattr(item, f))
+        row.observed_at = now
+        result.replicated_upserted += 1
+        result.readings.extend(replication_readings(item, vault.name))
+    for ext, row in existing.items():
+        if ext in seen:
+            continue
+        key = f"dr:{ext.rsplit('/', 1)[-1]}"
+        result.readings.append(_reading(vault.external_id, f"{key}:replication", f"{row.name} ({vault.name}) replication",
+                                        "replication_health", None, "unknown"))
+        await db.delete(row)
+        result.replicated_retired += 1
+
+    existing_plans = {
+        row.external_id: row
+        for row in (await db.execute(select(BackupRecoveryPlan).where(BackupRecoveryPlan.vault_id == vault.id))).scalars()
+    }
+    seen_plans: set[str] = set()
+    for plan in plans:
+        if plan.external_id in seen_plans:
+            continue
+        seen_plans.add(plan.external_id)
+        row = existing_plans.get(plan.external_id)
+        if row is None:
+            row = BackupRecoveryPlan(tenant_id=tenant_id, vault_id=vault.id, external_id=plan.external_id, name=plan.name)
+            db.add(row)
+        for f in _PLAN_FIELDS:
+            setattr(row, f, getattr(plan, f))
+        row.observed_at = now
+        result.plans_upserted += 1
+    for ext, row in existing_plans.items():
+        if ext not in seen_plans:
+            await db.delete(row)
+
+
+async def _snapshot(db, tenant_id, vault: BackupVault, now: datetime) -> None:
+    """Upsert today's storage snapshot for one vault (the last poll of the day wins)."""
+    items = (
+        await db.execute(select(func.count()).select_from(BackupItem).where(BackupItem.vault_id == vault.id))
+    ).scalar_one()
+    values = {
+        "storage_used_bytes": vault.storage_used_bytes,
+        "capacity_bytes": vault.capacity_bytes,
+        "free_bytes": vault.free_bytes,
+        "items_total": items,
+    }
+    stmt = pg_insert(BackupStorageSnapshot).values(
+        id=uuid.uuid4(), tenant_id=tenant_id, vault_id=vault.id, day=now.date(), **values,
+    )
+    await db.execute(stmt.on_conflict_do_update(constraint="uq_backup_storage_snapshots_vault_day", set_=values))
 
 
 async def _sync_policies(db, tenant_id, vault: BackupVault, policies, now, result) -> None:

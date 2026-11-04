@@ -815,7 +815,7 @@ const BACKUP_RPO = [
 /** Data protection row: RPO compliance, job outcomes and failures from the
  *  Azure Backup collector. One line with a connect link until a source exists. */
 function BackupHealthCard() {
-  const q = useQuery({ queryKey: ["dashboard", "backup-overview"], queryFn: getBackupOverview, refetchInterval: POLL_MS, retry: false });
+  const q = useQuery({ queryKey: ["dashboard", "backup-overview"], queryFn: () => getBackupOverview(), refetchInterval: POLL_MS, retry: false });
   const o = q.data;
   const state: CardState = q.isLoading ? "loading" : q.error ? "error" : "ready";
   const counts = o ? { within: o.items_within_rpo, breached: o.items_breaching_rpo, never: o.items_never_backed_up, not_protected: o.items_not_protected } : null;
