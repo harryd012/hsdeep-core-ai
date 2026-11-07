@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { AlertTriangle, Users } from "lucide-react";
+import { AlertTriangle, BookOpenCheck, Users } from "lucide-react";
 import { useSocAnalysts, useSocAnalystSummary, useNocEventSummary } from "@/hooks/useNocQueries";
 import SocEventsPanel from "@/components/soc/SocEventsPanel";
 import { ANALYST_COLUMNS } from "@/components/noc/SocAnalystRoster";
@@ -27,6 +27,7 @@ export default function SocAnalysisPage() {
       actions={
         <>
           <Link className="pk-button" href="/soc-analyst-roster"><Users size={14} /> Roster</Link>
+          <Link className="pk-button" href="/soc-playbooks"><BookOpenCheck size={14} /> Playbooks</Link>
           <Link className="pk-button" href="/alerts"><AlertTriangle size={14} /> Critical alerts</Link>
         </>
       }
