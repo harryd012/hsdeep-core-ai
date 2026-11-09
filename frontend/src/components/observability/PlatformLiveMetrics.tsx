@@ -106,7 +106,7 @@ export default function PlatformLiveMetrics() {
 
       <StatStrip>
         <StatTile label="API requests" value={http.requests_total ? http.requests_total.toLocaleString("en-US") : NOT_MEASURED}
-          info="Requests handled by this process since it started (probes and /metrics excluded)."
+          info="Requests handled by this process since it started. Health probes, /metrics and CORS preflights (OPTIONS) are excluded."
           sub={rpm === null ? "Average rate needs a minute of uptime" : `${rpm.toFixed(1)} / min average`} />
         <StatTile label="5xx error rate" value={formatRatio(http.error_ratio)}
           tone={toneHigherWorse(http.error_ratio, THRESHOLDS.errorRatioWarn, THRESHOLDS.errorRatioBad)}

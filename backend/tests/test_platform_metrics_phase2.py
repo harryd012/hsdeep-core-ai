@@ -181,6 +181,9 @@ class TestSummary:
             h["req"].labels("GET", "/api/x/{id}", "200").inc()
             h["dur"].labels("GET", "/api/x/{id}").observe(0.05)
         h["req"].labels("GET", "/api/x/{id}", "503").inc()
+        for _ in range(50):  # preflights must not count
+            h["req"].labels("OPTIONS", "/api/x/{id}", "200").inc()
+            h["dur"].labels("OPTIONS", "/api/x/{id}").observe(0.001)
         h["dur"].labels("GET", "/api/x/{id}").observe(0.8)
         h["runs"].labels("prtg", "success").inc(3)
         h["runs"].labels("prtg", "error").inc(1)
@@ -194,7 +197,8 @@ class TestSummary:
         assert s["http"]["errors_total"] == 1
         assert s["http"]["error_ratio"] == pytest.approx(0.1)
         assert s["http"]["status_classes"]["5xx"] == 1
-        assert s["http"]["top_routes"][0]["route"] == "/api/x/{id}"
+        assert [(r["method"], r["route"]) for r in s["http"]["top_routes"]] == [("GET", "/api/x/{id}")]
+        assert s["http"]["p50_seconds"] == pytest.approx(0.05, abs=0.06)  # not dragged to ~1 ms
         assert s["collection"]["success_ratio"] == pytest.approx(0.75)
         assert s["collection"]["by_source_type"][0]["source_type"] == "prtg"
         assert s["scheduler"]["last_tick_age_seconds"] == pytest.approx(60.0)

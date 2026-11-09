@@ -96,10 +96,19 @@ def _round(value: float | None, digits: int = 4) -> float | None:
     return None if value is None else round(value, digits)
 
 
+# CORS preflights are answered by middleware in microseconds and arrive with
+# almost every browser call: counted in, they fill the busiest-routes list and
+# drag the percentiles down. /metrics keeps them; this summary leaves them out.
+EXCLUDED_METHODS = frozenset({"OPTIONS"})
+
+
 def _http(registry: CollectorRegistry) -> dict[str, Any]:
-    req = _samples(registry, "hsdeep_http_requests")
-    dur = _samples(registry, "hsdeep_http_request_duration_seconds")
-    progress = _samples(registry, "hsdeep_http_requests_in_progress")
+    def keep(samples: Samples) -> Samples:
+        return [s for s in samples if s[1].get("method") not in EXCLUDED_METHODS]
+
+    req = keep(_samples(registry, "hsdeep_http_requests"))
+    dur = keep(_samples(registry, "hsdeep_http_request_duration_seconds"))
+    progress = keep(_samples(registry, "hsdeep_http_requests_in_progress"))
 
     total = _sum(req, "hsdeep_http_requests_total")
     classes = {f"{c}xx": 0.0 for c in "2345"}
@@ -261,8 +270,9 @@ def build_summary(
             "version": version,
             "since": datetime.fromtimestamp(started, timezone.utc).isoformat(),
             "uptime_seconds": round(max(now - started, 0.0), 1),
-            "note": "Cumulative since this process started; this process only. "
-                    "Rates over time windows and other processes are in Prometheus/Grafana.",
+            "note": "Cumulative since this process started; this process only; CORS preflight "
+                    "(OPTIONS) requests excluded. Rates over time windows and other processes are "
+                    "in Prometheus/Grafana.",
         },
         "http": _http(registry),
         "collection": _collection(registry),
