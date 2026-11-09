@@ -236,3 +236,66 @@ def observe_http_request(method: str, route: str, status: int, duration_seconds:
 def set_build_info(version: str, runtime_mode: str) -> None:
     """Publish this process's version and runtime role (api/worker/scheduler/all)."""
     build_info.labels(version=version, runtime_mode=runtime_mode).set(1)
+
+
+# -- Dependencies ----------------------------------------------------------------
+#
+# Set by the existing /health check (which readiness probes call every few
+# seconds), so no extra polling is added. ``dependency`` is database / redis.
+
+dependency_up = Gauge(
+    name="hsdeep_dependency_up",
+    documentation="1 when the dependency answered the last health check, else 0",
+    labelnames=["dependency"],
+)
+
+dependency_last_check = Gauge(
+    name="hsdeep_dependency_last_check_timestamp_seconds",
+    documentation="Unix timestamp of the last health check of the dependency",
+    labelnames=["dependency"],
+)
+
+
+def observe_dependency(dependency: str, up: bool) -> None:
+    """Record one health-check result for a dependency."""
+    dependency_up.labels(dependency=dependency).set(1 if up else 0)
+    dependency_last_check.labels(dependency=dependency).set(time.time())
+
+
+class _DbPoolCollector:
+    """SQLAlchemy connection-pool state, read at scrape time from the pool
+    object itself (no query, no polling). Exposes nothing for pools without
+    QueuePool counters (e.g. NullPool in tests)."""
+
+    def collect(self):
+        from prometheus_client.core import GaugeMetricFamily
+
+        try:
+            from app.core.db import engine
+
+            pool = engine.pool
+            size = int(pool.size())
+            checked_out = int(pool.checkedout())
+            overflow = max(int(pool.overflow()), 0)
+            max_overflow = int(getattr(pool, "_max_overflow", 0))
+        except Exception:  # noqa: BLE001 - a scrape must never fail on pool introspection
+            return
+        capacity = size + max(max_overflow, 0)
+        for name, doc, value in (
+            ("hsdeep_db_pool_size", "Configured connection pool size", size),
+            ("hsdeep_db_pool_max_overflow", "Connections allowed above the pool size", max_overflow),
+            ("hsdeep_db_pool_checked_out", "Connections currently checked out of the pool", checked_out),
+            ("hsdeep_db_pool_overflow", "Overflow connections currently open", overflow),
+            ("hsdeep_db_pool_saturation_ratio", "Checked-out connections / (size + max_overflow)",
+             checked_out / capacity if capacity > 0 else 0.0),
+        ):
+            yield GaugeMetricFamily(name, doc, value=value)
+
+
+_db_pool_collector = _DbPoolCollector()
+try:
+    from prometheus_client import REGISTRY as _REGISTRY
+
+    _REGISTRY.register(_db_pool_collector)
+except ValueError:  # already registered (module re-executed): keep the first
+    pass

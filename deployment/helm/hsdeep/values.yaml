@@ -143,6 +143,13 @@ ingress:
 networkPolicy:
   enabled: true
   ingressNamespace: ingress-nginx
+  # Let a Prometheus in another namespace scrape backend /metrics
+  # (deployment/observability/prometheus/prometheus.production.yml).
+  metricsScrape:
+    enabled: false
+    namespace: monitoring
+    podLabels:
+      app.kubernetes.io/name: prometheus
 
 # --- PodDisruptionBudget ----------------------------------------------------
 pdb:

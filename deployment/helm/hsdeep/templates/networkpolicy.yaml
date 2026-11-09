@@ -168,4 +168,31 @@ spec:
               app.kubernetes.io/name: {{ include "hsdeep.fullname" . }}-backend
       ports:
         - { protocol: TCP, port: 8000 }
+{{- if .Values.networkPolicy.metricsScrape.enabled }}
+---
+# Platform observability: Prometheus may scrape /metrics on every backend role
+# (deployment/observability). Additive; /metrics still requires the token.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hsdeep.fullname" . }}-backend-metrics-scrape
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hsdeep.fullname" . }}-backend
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.metricsScrape.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.metricsScrape.podLabels | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8000 }
+        - { protocol: TCP, port: 8001 }
+        - { protocol: TCP, port: 8002 }
+{{- end }}
 {{- end }}

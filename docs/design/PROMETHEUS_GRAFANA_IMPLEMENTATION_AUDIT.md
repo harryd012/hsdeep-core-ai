@@ -123,7 +123,7 @@ Files modified: `backend/app/core/metrics.py`, `backend/app/main.py`.
   the real-app scrape (families and runtime role), no UUID/IP label values, the scrape
   skipping the limiter, and single registration.
 
-## 8. Phase 2 result: PARTIALLY IMPLEMENTED (wiring tested; not live-verified in Prometheus)
+## 8. Phase 2 result: IMPLEMENTED BUT NOT LIVE-VERIFIED (wiring tested; not scraped by a running Prometheus)
 
 - `CollectionOrchestrator.run()` now records each phase (`authenticate`, `collect`, `normalize`,
   `persist`) and the run's outcome. A failure is counted in the new
@@ -134,8 +134,11 @@ Files modified: `backend/app/core/metrics.py`, `backend/app/main.py`.
   `hsdeep_scheduler_tick_duration_seconds`. A tick that raises counts in
   `hsdeep_scheduler_tick_failures_total`.
 - The alert engine records `hsdeep_alert_created_total{source, severity}` when it opens an alert.
-- Remaining: DB pool and Redis gauges, and relabelling the ServiceNow metrics without
-  `connection_id`.
+- `hsdeep_dependency_up{dependency}` and `hsdeep_dependency_last_check_timestamp_seconds` are set
+  by the existing `/health` check, which readiness probes call, so no polling is added.
+  `hsdeep_db_pool_*` gauges are read from the SQLAlchemy pool at scrape time (no query).
+- The ServiceNow metrics no longer carry `connection_id`. Nothing records them yet, so the
+  module stays unloaded.
 
 ## 9. Live summary for the Next.js page
 
@@ -147,3 +150,20 @@ Percentiles are estimated from histogram buckets with the same interpolation as 
 The page lays the API figures out by the RED method (rate, errors, duration), followed by
 collection outcome and failure stage, scheduler freshness and alerts opened. Tile thresholds
 match the planned Phase 5 alert rules.
+
+## 10. Phase 3 result: IMPLEMENTED BUT NOT LIVE-VERIFIED
+
+`deployment/observability/`: a Compose file with pinned Prometheus `v3.5.0` and Grafana
+`12.1.1`, persistent volumes, retention by time and size, health checks, and both UIs bound
+to `127.0.0.1`. Secrets are read-only files under `secrets/` (git ignored). Prometheus
+authenticates with `authorization.credentials_file`. Grafana reads its admin password via
+`GF_SECURITY_ADMIN_PASSWORD__FILE` and has anonymous access and sign-up disabled.
+`prometheus.yml` scrapes a host backend in development. `prometheus.production.yml` uses
+Kubernetes pod discovery, so each api / worker / scheduler pod is a separate target with
+`job` set from its component label. The datasource and dashboard provider are provisioned
+from files. `deployment/k8s/10-networkpolicy.yaml` adds `backend-metrics-scrape`, and the Helm
+chart has the same behind `networkPolicy.metricsScrape.enabled`.
+
+Checked by `backend/tests/test_observability_deployment.py`, `helm lint` / `helm template`
+and `kubectl kustomize`. **Not run yet:** Docker was not running on the build machine, so
+`docker compose up`, a live target and Grafana's datasource connection remain to be verified.
