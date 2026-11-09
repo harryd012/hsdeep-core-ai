@@ -51,9 +51,9 @@ export const PLAN_PHASES: PlanPhase[] = [
   { id: "P1", name: "HTTP instrumentation", status: "implemented-not-live",
     work: "hsdeep_http_* request, duration, in-progress and error metrics by route template; build info with runtime role; /metrics skips the rate limiter",
     note: "Covered by backend tests; not yet scraped by a running Prometheus" },
-  { id: "P2", name: "Pipeline wiring", status: "not-implemented",
-    work: "Call the existing collection, collector-phase, scheduler and alert helpers; failure stages; DB pool and Redis gauges; relabel ServiceNow metrics without connection_id",
-    note: "Metric families are declared but stay at zero until this phase" },
+  { id: "P2", name: "Pipeline wiring", status: "partial",
+    work: "Collection phases, outcomes and failure stages; scheduler tick depth, freshness, duration and failures; alerts opened by severity; DB pool and Redis gauges; ServiceNow relabel",
+    note: "Collection, scheduler and alert wiring tested; DB pool / Redis gauges and the ServiceNow relabel remain" },
   { id: "P3", name: "Prometheus deployment", status: "not-implemented",
     work: "deployment/observability Compose with pinned images, volumes, retention, credentials_file auth; separate api / worker / scheduler jobs; K8s scrape NetworkPolicy",
     note: "Planned" },
@@ -63,9 +63,9 @@ export const PLAN_PHASES: PlanPhase[] = [
   { id: "P5", name: "Alert rules", status: "not-implemented",
     work: "Target down per role, collector failure ratio and latency, stale scheduler tick, API 5xx ratio and p95",
     note: "Notifications stay unconfigured until a receiver is set up and tested" },
-  { id: "P6", name: "Next.js page", status: "partial",
-    work: "This page: plan, scope, metric catalogue, references and a Grafana link for platform superusers",
-    note: "Plan view and Grafana link done; no live health on purpose" },
+  { id: "P6", name: "Next.js page", status: "implemented-not-live",
+    work: "This page: live RED and pipeline figures for this process (superuser summary API), plan, catalogue, references, Grafana link",
+    note: "Live section reads the in-process registry; cross-process history waits for Grafana (P3-P4)" },
   { id: "P7", name: "Security and regression tests", status: "not-implemented",
     work: "promtool config and rule checks, dashboard JSON lint, compose validation, bundle check for tokens, full suites",
     note: "Planned" },
@@ -82,7 +82,7 @@ export interface Finding {
 
 export const AUDIT_FINDINGS: Finding[] = [
   { severity: "high", title: "No hsdeep_* metric was emitted",
-    detail: "app/core/metrics.py had no importers and its observe_* helpers no callers, so /metrics only served Python process metrics. Phase 1 loads the module; Phase 2 wires the callers." },
+    detail: "app/core/metrics.py had no importers and its observe_* helpers no callers, so /metrics only served Python process metrics. Fixed: Phase 1 loads the module and Phase 2 calls the helpers from the orchestrator, scheduler and alert engine." },
   { severity: "high", title: "No HTTP request metrics existed",
     detail: "Added in Phase 1, labelled by route template (e.g. /api/incidents/{incident_id}) and never by raw path, tenant, user or IP." },
   { severity: "medium", title: "ServiceNow metrics carry tenant identifiers",
@@ -97,7 +97,7 @@ export interface CatalogueMetric {
   name: string;
   type: "counter" | "histogram" | "gauge";
   labels: string;
-  /** "emitted": recorded today. "declared": registered, stays at zero until P2. */
+  /** "emitted": recorded today. "declared": registered but nothing records it yet. */
   state: "emitted" | "declared";
 }
 
@@ -107,15 +107,18 @@ export const METRIC_CATALOGUE: CatalogueMetric[] = [
   { name: "hsdeep_http_requests_in_progress", type: "gauge", labels: "method", state: "emitted" },
   { name: "hsdeep_http_errors_total", type: "counter", labels: "method, route, status", state: "emitted" },
   { name: "hsdeep_build_info", type: "gauge", labels: "version, runtime_mode", state: "emitted" },
-  { name: "hsdeep_collection_run_total", type: "counter", labels: "source_type, status", state: "declared" },
-  { name: "hsdeep_collection_run_duration_seconds", type: "histogram", labels: "source_type, status", state: "declared" },
-  { name: "hsdeep_collection_items_upserted_total", type: "counter", labels: "entity_type, source_type", state: "declared" },
-  { name: "hsdeep_collector_execution_total", type: "counter", labels: "source_type, phase", state: "declared" },
-  { name: "hsdeep_collector_phase_duration_seconds", type: "histogram", labels: "source_type, phase", state: "declared" },
-  { name: "hsdeep_collection_skipped_total", type: "counter", labels: "source_type", state: "declared" },
-  { name: "hsdeep_scheduler_queue_depth", type: "gauge", labels: "-", state: "declared" },
-  { name: "hsdeep_scheduler_last_tick_timestamp_seconds", type: "gauge", labels: "-", state: "declared" },
-  { name: "hsdeep_alert_created_total", type: "counter", labels: "source, severity", state: "declared" },
+  { name: "hsdeep_collection_run_total", type: "counter", labels: "source_type, status", state: "emitted" },
+  { name: "hsdeep_collection_run_duration_seconds", type: "histogram", labels: "source_type, status", state: "emitted" },
+  { name: "hsdeep_collection_items_upserted_total", type: "counter", labels: "entity_type, source_type", state: "emitted" },
+  { name: "hsdeep_collector_execution_total", type: "counter", labels: "source_type, phase", state: "emitted" },
+  { name: "hsdeep_collector_phase_duration_seconds", type: "histogram", labels: "source_type, phase", state: "emitted" },
+  { name: "hsdeep_collection_skipped_total", type: "counter", labels: "source_type", state: "emitted" },
+  { name: "hsdeep_scheduler_queue_depth", type: "gauge", labels: "-", state: "emitted" },
+  { name: "hsdeep_scheduler_last_tick_timestamp_seconds", type: "gauge", labels: "-", state: "emitted" },
+  { name: "hsdeep_alert_created_total", type: "counter", labels: "source, severity", state: "emitted" },
+  { name: "hsdeep_collection_failures_total", type: "counter", labels: "source_type, stage", state: "emitted" },
+  { name: "hsdeep_scheduler_tick_duration_seconds", type: "histogram", labels: "-", state: "emitted" },
+  { name: "hsdeep_scheduler_tick_failures_total", type: "counter", labels: "-", state: "emitted" },
 ];
 
 export const APPROVED_DECISIONS: string[] = [

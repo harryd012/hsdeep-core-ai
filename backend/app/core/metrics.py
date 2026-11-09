@@ -18,6 +18,10 @@ from datetime import datetime, timezone
 
 from prometheus_client import Counter, Gauge, Histogram
 
+# When this process loaded its metrics (Unix seconds). The standard
+# process_start_time_seconds is Linux-only, so the summary API uses this.
+PROCESS_STARTED_AT = time.time()
+
 # -- Collection Pipeline -----------------------------------------------------
 
 # Duration of each collection run in seconds, bucketed for SLO tracking.
@@ -84,6 +88,28 @@ scheduler_last_tick_timestamp = Gauge(
     documentation="Unix timestamp of the last scheduler tick",
 )
 
+# Failed collection runs by the stage that failed: authenticate (credentials
+# rejected), collect (vendor call), normalize (payload shape) or persist
+# (saving / alert evaluation).
+collection_failures_total = Counter(
+    name="hsdeep_collection_failures_total",
+    documentation="Failed collection runs by source type and failing stage",
+    labelnames=["source_type", "stage"],
+)
+
+# Wall time of one scheduler tick that held the lock (all due sources).
+scheduler_tick_duration = Histogram(
+    name="hsdeep_scheduler_tick_duration_seconds",
+    documentation="Duration of a scheduler tick in seconds",
+    buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, float("inf")),
+)
+
+# Scheduler ticks that raised before finishing.
+scheduler_tick_failures_total = Counter(
+    name="hsdeep_scheduler_tick_failures_total",
+    documentation="Scheduler ticks that raised an exception",
+)
+
 # Number of sources skipped due to concurrent-run guard.
 collection_skipped_total = Counter(
     name="hsdeep_collection_skipped_total",
@@ -137,10 +163,22 @@ def observe_collection_skipped(source_type: str) -> None:
     collection_skipped_total.labels(source_type=source_type).inc()
 
 
-def observe_scheduler_tick(queue_depth: int) -> None:
-    """Record scheduler tick metrics."""
+def observe_collection_failure(source_type: str, stage: str) -> None:
+    """Record a failed collection run and the stage it failed in."""
+    collection_failures_total.labels(source_type=source_type, stage=stage).inc()
+
+
+def observe_scheduler_tick(queue_depth: int, duration_seconds: float | None = None) -> None:
+    """Record a completed scheduler tick."""
     scheduler_queue_depth.set(queue_depth)
     scheduler_last_tick_timestamp.set(datetime.now(timezone.utc).timestamp())
+    if duration_seconds is not None:
+        scheduler_tick_duration.observe(duration_seconds)
+
+
+def observe_scheduler_tick_failure() -> None:
+    """Record a scheduler tick that raised."""
+    scheduler_tick_failures_total.inc()
 
 # -- HTTP API ----------------------------------------------------------------
 #

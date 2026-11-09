@@ -122,3 +122,28 @@ Files modified: `backend/app/core/metrics.py`, `backend/app/main.py`.
   exclusions, 5xx/exception errors, a pre-routing 429, the in-progress gauge, method bounding,
   the real-app scrape (families and runtime role), no UUID/IP label values, the scrape
   skipping the limiter, and single registration.
+
+## 8. Phase 2 result: PARTIALLY IMPLEMENTED (wiring tested; not live-verified in Prometheus)
+
+- `CollectionOrchestrator.run()` now records each phase (`authenticate`, `collect`, `normalize`,
+  `persist`) and the run's outcome. A failure is counted in the new
+  `hsdeep_collection_failures_total{source_type, stage}`, where `stage` is `configure`,
+  `authenticate`, `collect`, `normalize` or `persist`. A concurrent-run skip is counted in
+  `hsdeep_collection_skipped_total`, not as a run.
+- `scheduler.jobs.tick()` records queue depth, last-tick time and the new
+  `hsdeep_scheduler_tick_duration_seconds`. A tick that raises counts in
+  `hsdeep_scheduler_tick_failures_total`.
+- The alert engine records `hsdeep_alert_created_total{source, severity}` when it opens an alert.
+- Remaining: DB pool and Redis gauges, and relabelling the ServiceNow metrics without
+  `connection_id`.
+
+## 9. Live summary for the Next.js page
+
+`GET /api/platform/observability/summary` (superuser only, `require_admin`) reads this
+process's own Prometheus registry. It needs no Prometheus server and no database. Values are
+cumulative since the process started and cover that process only; the payload says so.
+Percentiles are estimated from histogram buckets with the same interpolation as PromQL
+`histogram_quantile()`. Anything unobserved is `null`, shown as "Not measured" and never as 0.
+The page lays the API figures out by the RED method (rate, errors, duration), followed by
+collection outcome and failure stage, scheduler freshness and alerts opened. Tile thresholds
+match the planned Phase 5 alert rules.

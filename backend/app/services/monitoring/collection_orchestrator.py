@@ -30,9 +30,11 @@ directly inside `run()` instead.
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from app.collectors.base import CollectorConfigError, CollectorRegistry
+from app.core import metrics as platform_metrics
 from app.core.security import decrypt_connection_info
 from app.models.collector_run import CollectorRun
 from app.models.monitoring_source import MonitoringSource
@@ -157,6 +159,7 @@ class CollectionOrchestrator:
                 status="skipped",
                 error="Skipped: a collection run is already in progress for this source.",
             )
+            platform_metrics.observe_collection_skipped(source.source_type)
             await _meter()
             return CollectionOutcome(skipped_run)
 
@@ -166,14 +169,32 @@ class CollectionOrchestrator:
 
         # Bound before the try so the cleanup below can always see it.
         collector = None
+        # Platform metrics (app/core/metrics.py): global per source_type, never
+        # per tenant or source. ``stage`` names what was running if it fails.
+        source_type = source.source_type
+        run_started = time.perf_counter()
+        stage = "configure"
+
+        def _phase(name: str, started: float) -> None:
+            platform_metrics.observe_collector_phase(source_type, name, time.perf_counter() - started)
+
+        def _failed() -> None:
+            if stage == "done":  # the run was already recorded as a success
+                return
+            platform_metrics.observe_collection_failure(source_type, stage)
+            platform_metrics.observe_collection_run(source_type, "error", time.perf_counter() - run_started)
 
         try:
             collector_cls = CollectorRegistry.get(source.source_type)
             connection_info = decrypt_connection_info(source)
             collector = collector_cls(connection_info)
 
+            stage = "authenticate"
+            phase_started = time.perf_counter()
             check = await collector.authenticate()
+            _phase("authenticate", phase_started)
             if not check.success:
+                _failed()
                 run_record = await self.run_repo.finish(
                     run_record, status="error", error=check.message
                 )
@@ -183,8 +204,16 @@ class CollectionOrchestrator:
                 await _meter()
                 return CollectionOutcome(run_record, recovery_events=events)
 
+            stage = "collect"
+            phase_started = time.perf_counter()
             raw = await collector.collect()
+            _phase("collect", phase_started)
+            stage = "normalize"
+            phase_started = time.perf_counter()
             bundle = collector.normalize(raw)
+            _phase("normalize", phase_started)
+            stage = "persist"
+            phase_started = time.perf_counter()
             save_result = await self.saver.save(source, bundle)
 
             # alerts_upserted counts DISTINCT Alert rows touched this run -
@@ -226,6 +255,7 @@ class CollectionOrchestrator:
             # triggered here: the transaction owner fires RCA only after a
             # successful commit (see scheduler/jobs.py and monitoring route).
             created_incidents = self.alert_service.drain_created_incidents()
+            _phase("persist", phase_started)
 
             run_record = await self.run_repo.finish(
                 run_record,
@@ -237,6 +267,18 @@ class CollectionOrchestrator:
                 events_recorded=save_result.events_recorded,
                 alerts_upserted=alerts_upserted,
             )
+            platform_metrics.observe_collection_run(
+                source_type,
+                "success",
+                time.perf_counter() - run_started,
+                devices_upserted=save_result.devices_upserted,
+                interfaces_upserted=save_result.interfaces_upserted,
+                sensors_upserted=save_result.sensors_created + save_result.sensors_updated,
+                metrics_recorded=save_result.metrics_recorded,
+                events_recorded=save_result.events_recorded,
+                alerts_upserted=alerts_upserted,
+            )
+            stage = "done"
             events = await self._record_health(
                 source, run_success=True, error=None, run_id=run_record.id
             )
@@ -251,6 +293,7 @@ class CollectionOrchestrator:
             return CollectionOutcome(run_record, created_incidents, events)
 
         except CollectorConfigError as exc:
+            _failed()
             run_record = await self.run_repo.finish(run_record, status="error", error=str(exc))
             events = await self._record_health(
                 source, run_success=False, error=str(exc), run_id=run_record.id
@@ -261,6 +304,7 @@ class CollectionOrchestrator:
             # drained here so they can never leak into a later run's result.
             return CollectionOutcome(run_record, self.alert_service.drain_created_incidents(), events)
         except Exception as exc:  # noqa: BLE001 - catch-all: never propagate vendor-side failures
+            _failed()
             run_record = await self.run_repo.finish(run_record, status="error", error=str(exc))
             events = await self._record_health(
                 source, run_success=False, error=str(exc), run_id=run_record.id

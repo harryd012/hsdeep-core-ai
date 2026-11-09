@@ -64,6 +64,15 @@ if TYPE_CHECKING:
 AlertAction = Literal["opened", "updated", "resolved", "noop"]
 
 
+def _observe_opened(alert: Alert) -> None:
+    """Platform metric for a newly opened alert: source and severity only,
+    never tenant, device or alert identifiers."""
+    from app.core.metrics import observe_alert_created
+
+    severity = getattr(alert.severity, "value", alert.severity)
+    observe_alert_created(str(alert.source or "unknown"), str(severity or "unknown"))
+
+
 @dataclass(frozen=True)
 class CreatedIncidentReference:
     """Minimal identity of an Incident created during a collection run.
@@ -233,6 +242,7 @@ class AlertService:
         )
         await self._record_history(created, event_type="opened", message=f"Alert opened: {created.title}")
         await self._correlate(created)
+        _observe_opened(created)
         return AlertEvaluation(alert=created, action="opened")
 
     @staticmethod
@@ -439,6 +449,7 @@ class AlertService:
         )
         await self._record_history(created, event_type="opened", message=f"Vendor-native alert opened: {created.title}")
         await self._correlate(created)
+        _observe_opened(created)
         return AlertEvaluation(alert=created, action="opened")
 
     # -- operator actions ----------------------------------------------------

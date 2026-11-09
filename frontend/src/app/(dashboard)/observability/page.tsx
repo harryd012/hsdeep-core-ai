@@ -3,6 +3,7 @@
 import { ExternalLink, Gauge } from "lucide-react";
 
 import { Banner, DataTable, PageShell, Panel, Pill, StatStrip, StatTile, type Column } from "@/components/ui/PageKit";
+import PlatformLiveMetrics from "@/components/observability/PlatformLiveMetrics";
 import { useAuth } from "@/lib/auth-context";
 import {
   APPROVED_DECISIONS,
@@ -21,8 +22,9 @@ import {
 /**
  * Platform Observability - the Prometheus + Grafana audit and plan for
  * monitoring HSDEEP itself. Superusers only (platform internals, not tenant
- * data). Shows no live health values: those belong in Grafana, linked below
- * when NEXT_PUBLIC_GRAFANA_URL is set.
+ * data). The live section reads this backend process's own metrics through
+ * the superuser-only summary API; windows, history and the other processes
+ * belong in Grafana, linked when NEXT_PUBLIC_GRAFANA_URL is set.
  */
 
 const GRAFANA_URL = grafanaUrl(process.env.NEXT_PUBLIC_GRAFANA_URL);
@@ -52,7 +54,7 @@ const metricColumns: Column<CatalogueMetric>[] = [
   { key: "state", header: "State", width: 150, sortValue: (m) => m.state, render: (m) =>
       m.state === "emitted"
         ? <Pill tone="good">Emitted</Pill>
-        : <Pill tone="neutral">Declared, zero until P2</Pill> },
+        : <Pill tone="neutral">Declared, not yet recorded</Pill> },
 ];
 
 export default function PlatformObservabilityPage() {
@@ -96,11 +98,15 @@ export default function PlatformObservabilityPage() {
     >
       <Banner tone="info">
         <span style={{ overflowWrap: "anywhere" }}>
-          This page shows the plan and its delivery state, never live health. Live platform metrics appear in Grafana once
-          Phases 3–4 are deployed{GRAFANA_URL ? "" : " and NEXT_PUBLIC_GRAFANA_URL is set"}.
+          Live figures below come from this backend process only, cumulative since it started. History, time windows and
+          the worker and scheduler processes appear in Grafana once Phases 3–4 are deployed
+          {GRAFANA_URL ? "" : " and NEXT_PUBLIC_GRAFANA_URL is set"}.
         </span>
       </Banner>
 
+      <PlatformLiveMetrics />
+
+      <h2 style={{ margin: "8px 0 0", fontSize: 15, fontWeight: 600 }}>Delivery plan</h2>
       <StatStrip>
         <StatTile label="Phases delivered" value={`${done} of ${PLAN_PHASES.length}`}
           info="Phases implemented and tested, or implemented and awaiting live verification in Prometheus."
@@ -108,8 +114,8 @@ export default function PlatformObservabilityPage() {
         <StatTile label="Partially done" value={String(counts.partial)} info="Phases with some of their scope delivered." />
         <StatTile label="Not started" value={String(counts["not-implemented"])} info="Planned phases with no code yet." />
         <StatTile label="Metrics emitted" value={String(METRIC_CATALOGUE.filter((m) => m.state === "emitted").length)}
-          info="Platform metrics recorded today. Declared metrics are registered on /metrics and stay at zero until Phase 2 wires their callers."
-          sub={`${METRIC_CATALOGUE.filter((m) => m.state === "declared").length} declared, waiting for Phase 2`} />
+          info="Platform metric families recorded by the backend today."
+          sub={`of ${METRIC_CATALOGUE.length} in the catalogue`} />
       </StatStrip>
 
       <div className="pk-grid">
@@ -153,7 +159,7 @@ export default function PlatformObservabilityPage() {
         </div>
 
         <div className="pk-col-12">
-          <Panel title="Metric catalogue" state="ready" info="Platform-level metrics only. Emitted: recorded today. Declared: registered on /metrics, stays at zero until the Phase 2 wiring.">
+          <Panel title="Metric catalogue" state="ready" info="Platform-level metrics only, with bounded labels. Emitted: recorded by the backend today.">
             <DataTable caption="Platform metrics" columns={metricColumns} rows={METRIC_CATALOGUE} rowKey={(m) => m.name} maxHeight="none" />
           </Panel>
         </div>
