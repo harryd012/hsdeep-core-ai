@@ -95,3 +95,20 @@ async def metric_retention_job() -> None:
                         result["metrics"], result["spans"], result["events"])
     except Exception:  # noqa: BLE001 - a scheduler job must never crash the scheduler
         logger.exception("Retention job failed")
+
+
+BASELINE_INTERVAL_SECONDS = 300
+
+
+async def baseline_job() -> None:
+    """Dynamic baselines (observability plan P9): learn when due, judge the
+    latest reading, open / resolve the anomaly alert."""
+    from app.services.monitoring.baseline_service import BaselineService
+
+    try:
+        async with AsyncSessionLocal() as db:
+            counts = await BaselineService(db).evaluate_all()
+        if counts.get("anomalous"):
+            logger.info("Baselines: %s", counts)
+    except Exception:  # noqa: BLE001 - a scheduler job must never crash the scheduler
+        logger.exception("Baseline job failed")
