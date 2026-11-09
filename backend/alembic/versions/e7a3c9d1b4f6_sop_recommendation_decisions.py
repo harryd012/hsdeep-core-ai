@@ -1,7 +1,7 @@
 """sop: recommendation decisions (accept / dismiss per incident)
 
 Revision ID: e7a3c9d1b4f6
-Revises: c4e8a2d6f1b3
+Revises: f4b1d7e9c3a5
 Create Date: 2026-11-09 12:00:00.000000
 
 An operator's accept / dismiss answer to an SOP recommended for an incident
@@ -14,7 +14,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = 'e7a3c9d1b4f6'
-down_revision: Union[str, None] = 'c4e8a2d6f1b3'
+down_revision: Union[str, None] = 'f4b1d7e9c3a5'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
