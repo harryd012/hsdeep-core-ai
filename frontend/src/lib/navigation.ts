@@ -1,6 +1,6 @@
 import {
   Activity, ArrowLeftRight, Bell, BookOpen, Bot, Building2, CreditCard, Database, DatabaseBackup, LayoutDashboard,
-  LayoutGrid, LayoutPanelLeft, LifeBuoy, Network, ScrollText, Server, Settings, Shield, Ticket, TriangleAlert, Workflow, type LucideIcon,
+  LayoutGrid, LayoutPanelLeft, LifeBuoy, Network, ScrollText, Server, Settings, Shield, Ticket, TriangleAlert, Waypoints, Workflow, type LucideIcon,
 } from "lucide-react";
 
 /**
@@ -60,6 +60,8 @@ export const NAV_CONFIG: NavGroup[] = [
     description: "Interface health and load, errors and VPN tunnels" },
   { id: "logs", label: "Logs", icon: ScrollText, route: "/logs", section: "Observe", permission: "monitoring.read",
     description: "Search syslog and collector log lines" },
+  { id: "traces", label: "Traces", icon: Waypoints, route: "/traces", section: "Observe", permission: "monitoring.read",
+    description: "Distributed traces from OpenTelemetry: services and dependencies" },
   { id: "alerts", label: "Alerts", icon: Bell, route: "/alerts", section: "Observe", permission: "alerts.read",
     description: "Alerts from every connected source" },
   { id: "reports", label: "Reports", icon: Database, route: "/reports", section: "Observe", permission: "dashboard.read",

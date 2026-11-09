@@ -1,0 +1,129 @@
+# SOP-027: Source Blocking and Account Lockout Changes
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: security
+# Estimated Duration: 30 minutes
+# Required Skills: Security Admin
+# Required Permissions: Security Admin
+# Tags: security, blocking, account, lockout, mfa, authorized
+# read_only: false
+# resource_intensive: false
+# disruptive: true
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-027
+status: draft
+versionNumber: 1
+category: security
+changeSummary: Initial version - Source blocking and account lockout changes
+
+steps:
+  - order: 1
+    action: Document the source blocking reason and scope
+    description: Record the threat, affected sources, and blocking scope.
+    expectedResult: Blocking documentation is complete with all required fields.
+    warnings: |
+      - Source blocking can disrupt legitimate traffic.
+      - Blocking scope must be clearly defined to avoid unintended impacts.
+    failureAction: Remove source block and document the issue.
+  - order: 2
+    action: Change account lockout policy
+    description: Modify the account lockout policy settings.
+    expectedResult: Account lockout policy is updated.
+    warnings: |
+      - Lockout policy changes can affect legitimate user access.
+      - Lockout policy changes require authorized change control.
+    failureAction: Revert lockout policy changes and document the issue.
+  - order: 3
+    action: Modify MFA policy
+    description: Modify the multi-factor authentication policy settings.
+    expectedResult: MFA policy is updated.
+    warnings: |
+      - MFA policy changes can affect user login.
+      - MFA policy changes require authorized change control.
+    failureAction: Revert MFA policy changes and document the issue.
+
+troubleshootingMatrix:
+  - symptom: Source blocking disrupts legitimate traffic
+    possibleCauses: |
+      - Overly broad blocking scope
+      - Missing authorization
+      - Incomplete scope definition
+    recommendedActions: |
+      - Review blocking scope
+      - Verify authorization
+      - Narrow blocking scope
+
+commandsAndExpectedResults:
+  - command: block source <ip/cidr>
+    expectedResult: Source is blocked from network access.
+    warnings: |
+      - Requires explicit authorization.
+      - Can disrupt legitimate traffic.
+  - command: modify account lockout policy
+    expectedResult: Lockout policy is modified.
+    warnings: |
+      - Requires authorized change control.
+      - Can affect legitimate user access.
+  - command: modify MFA policy
+    expectedResult: MFA policy is modified.
+    warnings: |
+      - Requires authorized change control.
+      - Can affect user login.
+
+prerequisites:
+  - Security admin credentials are available.
+  - Change control approval is obtained for disruptive operations.
+  - Current blocking and lockout policies are documented.
+
+permissions:
+  - Security Admin membership.
+  - Read access to security policies.
+  - Write access for policy modifications (approved changes only).
+
+escalationCriteria:
+  - Source blocking disrupts legitimate traffic.
+  - Account lockout policy changes affect legitimate user access.
+  - MFA policy changes affect user login.
+
+rollbackPrecautions:
+  - Revert source blocking if it disrupts legitimate traffic.
+  - Revert account lockout policy changes.
+  - Revert MFA policy changes.
+  - Document all changes and reasons for rollback.
+  - Obtain approval before re-attempting disruptive operations.
+
+ticketTemplate:
+  - Short Description: Source blocking and account lockout changes - SOP-027
+  - Description: |
+      Source blocking and account lockout changes.
+  - Priority: P3.
+  - Impacted Systems: <Source IP>, <Account>.
+  - Category: Security.
+  - Urgency: Medium.
+  - Assigned Group: Security Team.
+  - Tags: #security #blocking #account #lockout #mfa.
+  - Related SOP: SOP-027.
+
+closureCriteria:
+  - Source blocking is documented and authorized.
+  - Account lockout policy changes are documented and authorized.
+  - MFA policy changes are documented and authorized.
+  - Ticket is marked as resolved in the tracking system.
+
+safetyNotes:
+  - Do not automatically approve the SOP.
+  - Do not execute commands against production infrastructure during import or testing without authorization.
+  - Source blocking, account lockout changes and MFA policy changes must require authorization.
+  - Secure-channel repair requires explicit authorization.
+  - Account unlock/reset requires identity verification and authorization.
+  - Domain unjoin/rejoin is a last resort and requires approved change control.
+  - Never expose passwords, credentials, or secrets.
+  - Do not disable MFA, endpoint security, firewall, or auditing.
+  - Respect existing tenant isolation and JWT-based tenant context.
+  - Do not trust tenant IDs supplied by the client.
+
+searchableKeywords:
+  - security, blocking, account, lockout, mfa, source, policy

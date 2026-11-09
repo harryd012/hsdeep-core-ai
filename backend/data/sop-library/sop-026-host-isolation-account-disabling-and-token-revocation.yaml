@@ -1,0 +1,135 @@
+# SOP-026: Host Isolation, Account Disabling, and Token Revocation
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: security
+# Estimated Duration: 30 minutes
+# Required Skills: Security Admin
+# Required Permissions: Security Admin
+# Tags: security, isolation, account, token, blocking, authorized
+# read_only: false
+# resource_intensive: false
+# disruptive: true
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-026
+status: draft
+versionNumber: 1
+category: security
+changeSummary: Initial version - Host isolation and account management
+
+steps:
+  - order: 1
+    action: Document the host isolation reason and scope
+    description: Record the threat, affected systems, and isolation scope.
+    expectedResult: Isolation documentation is complete with all required fields.
+    warnings: |
+      - Host isolation can disrupt user access and associated systems.
+      - Isolation scope must be clearly defined to avoid unintended impacts.
+    failureAction: Revert host isolation and document the issue.
+  - order: 2
+    action: Disable the compromised user account
+    description: Disable the user account associated with the threat.
+    expectedResult: User account is disabled; login is prevented.
+    warnings: |
+      - Account disabling prevents legitimate user access.
+      - Account disabling requires identity verification and authorization.
+    failureAction: Re-enable the account and document the issue.
+  - order: 3
+    action: Revoke authentication tokens
+    description: Revoke all active authentication tokens for the affected account.
+    expectedResult: All active tokens are revoked; re-authentication is required.
+    warnings: |
+      - Token revocation forces re-authentication for all users.
+      - Token revocation requires authorized credentials.
+    failureAction: Restore tokens and document the issue.
+  - order: 4
+    action: Block the affected host from network access
+    description: Block the affected host from network resources.
+    expectedResult: Host is blocked from network resources.
+    warnings: |
+      - Host blocking can disrupt user access and associated systems.
+      - Blocking requires authorized change control.
+    failureAction: Remove host block and document the issue.
+
+troubleshootingMatrix:
+  - symptom: Host isolation disrupts legitimate access
+    possibleCauses: |
+      - Overly broad isolation scope
+      - Missing authorization
+      - Incomplete scope definition
+    recommendedActions: |
+      - Review isolation scope
+      - Verify authorization
+      - Narrow isolation scope
+
+commandsAndExpectedResults:
+  - command: isolate host <id>
+    expectedResult: Host is isolated; network access is restricted.
+    warnings: |
+      - Requires explicit authorization.
+      - Can disrupt user access.
+  - command: disable account <username>
+    expectedResult: Account is disabled; login is prevented.
+    warnings: |
+      - Requires identity verification and authorization.
+  - command: revoke tokens <username>
+    expectedResult: Tokens are revoked; re-authentication required.
+    warnings: |
+      - Requires authorized credentials.
+
+prerequisites:
+  - Security admin credentials are available.
+  - Change control approval is obtained for disruptive operations.
+  - Affected systems are identified and documented.
+
+permissions:
+  - Security Admin membership.
+  - Read access to user accounts.
+  - Write access for account modifications (approved changes only).
+
+escalationCriteria:
+  - Account disabling prevents legitimate user access.
+  - Token revocation forces re-authentication for all users.
+  - Host blocking disrupts user access and associated systems.
+
+rollbackPrecautions:
+  - Re-enable disabled accounts if isolation fails.
+  - Restore tokens if revocation causes issues.
+  - Remove host block if isolation causes excessive disruption.
+  - Document all changes and reasons for rollback.
+  - Obtain approval before re-attempting disruptive operations.
+
+ticketTemplate:
+  - Short Description: Host isolation, account disabling, token revocation - SOP-026
+  - Description: |
+      Host isolation, account disabling, and token revocation.
+  - Priority: P3.
+  - Impacted Systems: <Hostname>, <Username>.
+  - Category: Security.
+  - Urgency: Medium.
+  - Assigned Group: Security Team.
+  - Tags: #security #isolation #account #token #blocking.
+  - Related SOP: SOP-026.
+
+closureCriteria:
+  - Account disabling is documented and authorized.
+  - Token revocation is documented and authorized.
+  - Host blocking is documented and authorized.
+  - Ticket is marked as resolved in the tracking system.
+
+safetyNotes:
+  - Do not automatically approve the SOP.
+  - Do not execute commands against production infrastructure during import or testing without authorization.
+  - Host isolation, account disabling, token revocation and blocking must require authorization.
+  - Secure-channel repair requires explicit authorization.
+  - Account unlock/reset requires identity verification and authorization.
+  - Domain unjoin/rejoin is a last resort and requires approved change control.
+  - Never expose passwords, credentials, or secrets.
+  - Do not disable MFA, endpoint security, firewall, or auditing.
+  - Respect existing tenant isolation and JWT-based tenant context.
+  - Do not trust tenant IDs supplied by the client.
+
+searchableKeywords:
+  - security, isolation, account, token, blocking, host, security intrusion

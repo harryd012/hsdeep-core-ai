@@ -56,6 +56,9 @@ ALIASES = {
     "segno": "segno",
     # Import-name aliases that differ from the distribution name:
     "dns": "dnspython",  # verified-domain TXT lookups (security S6)
+    # SAML 2.0 single sign-on: XML-signature verification (security S6).
+    "signxml": "signxml",
+    "lxml": "lxml",
     "email_validator": "email-validator",
     "pyVim": "pyvmomi",
     # starlette is a declared direct dependency (see requirements.txt).

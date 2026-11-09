@@ -2,8 +2,9 @@
 
 /**
  * /settings/sso — enterprise identity (security programme S6): verified email
- * domains, the organization's OIDC identity provider (Entra ID, Okta, Google
- * Workspace …), "require SSO", just-in-time accounts, and SCIM provisioning.
+ * domains, the organization's identity provider over OpenID Connect or SAML 2.0
+ * (Entra ID, Okta, Google Workspace, ADFS …), "require SSO", just-in-time
+ * accounts, and SCIM provisioning.
  * Needs security.manage; every change is recorded in the audit log.
  */
 
@@ -19,9 +20,11 @@ import {
   getIdentity,
   removeDomain,
   revokeScimToken,
+  updateSaml,
   updateSso,
   verifyDomain,
   type Identity,
+  type SamlUpdate,
   type SsoUpdate,
 } from "@/lib/identity";
 
@@ -90,6 +93,85 @@ function DomainsPanel({ data }: { data: Identity }) {
   );
 }
 
+function SamlFields({ data, onSaved }: { data: Identity; onSaved: (m: Msg) => void }) {
+  const qc = useQueryClient();
+  const m = data.saml;
+  const [mode, setMode] = useState<"metadata" | "manual">(m.idp_entity_id ? "manual" : "metadata");
+  const [xml, setXml] = useState("");
+  const [entityId, setEntityId] = useState(m.idp_entity_id ?? "");
+  const [ssoUrl, setSsoUrl] = useState(m.idp_sso_url ?? "");
+  const [certs, setCerts] = useState("");
+  const [emailAttr, setEmailAttr] = useState(m.email_attribute ?? "");
+  const [now] = useState(() => Date.now());
+  const save = useMutation({
+    mutationFn: (body: SamlUpdate) => updateSaml(body),
+    onSuccess: (d) => {
+      qc.setQueryData(KEY, d); setXml(""); setCerts("");
+      setEntityId(d.saml.idp_entity_id ?? ""); setSsoUrl(d.saml.idp_sso_url ?? "");
+      onSaved({ tone: "good", text: "SAML identity provider saved." });
+    },
+    onError: (e) => onSaved({ tone: "bad", text: e instanceof Error ? e.message : "Could not save." }),
+  });
+  const submit = () => {
+    const body: SamlUpdate = { email_attribute: emailAttr.trim() };
+    if (mode === "metadata") body.metadata_xml = xml;
+    else {
+      body.idp_entity_id = entityId.trim();
+      body.idp_sso_url = ssoUrl.trim();
+      if (certs.trim()) body.idp_certificates = certs;
+    }
+    save.mutate(body);
+  };
+  return (
+    <div className="sso-form">
+      <span className="sec-help" style={{ margin: 0 }}>Give these to your identity provider, or point it at our metadata URL:</span>
+      <div className="sso-field"><span>Entity ID (audience)</span><CopyText value={m.sp_entity_id} /></div>
+      <div className="sso-field"><span>Assertion consumer service (ACS) URL</span><CopyText value={m.acs_url} /></div>
+      <div className="sso-field"><span>Service provider metadata</span><CopyText value={m.metadata_url} /></div>
+      <div className="sso-seg" role="radiogroup" aria-label="How to set the identity provider">
+        <button type="button" role="radio" aria-checked={mode === "metadata"} className={`pk-button${mode === "metadata" ? " pk-button--primary" : ""}`} onClick={() => setMode("metadata")}>Paste metadata XML</button>
+        <button type="button" role="radio" aria-checked={mode === "manual"} className={`pk-button${mode === "manual" ? " pk-button--primary" : ""}`} onClick={() => setMode("manual")}>Enter fields</button>
+      </div>
+      {mode === "metadata" ? (
+        <label className="sso-field"><span>Identity provider metadata</span>
+          <textarea className="pk-input sso-textarea" rows={6} spellCheck={false} placeholder="<EntityDescriptor …> from Entra ID, Okta, ADFS or Google Workspace"
+            value={xml} onChange={(e) => setXml(e.target.value)} /></label>
+      ) : (
+        <>
+          <label className="sso-field"><span>Identity provider entity ID (issuer)</span>
+            <input className="pk-input" value={entityId} onChange={(e) => setEntityId(e.target.value)} /></label>
+          <label className="sso-field"><span>Sign-in URL (HTTP-Redirect binding)</span>
+            <input className="pk-input" placeholder="https://" value={ssoUrl} onChange={(e) => setSsoUrl(e.target.value)} /></label>
+          <label className="sso-field"><span>Signing certificate(s), PEM</span>
+            <textarea className="pk-input sso-textarea" rows={4} spellCheck={false}
+              placeholder={m.certificates.length ? "Leave blank to keep the stored certificates" : "-----BEGIN CERTIFICATE-----"}
+              value={certs} onChange={(e) => setCerts(e.target.value)} /></label>
+        </>
+      )}
+      <label className="sso-field"><span>Email attribute (optional)</span>
+        <input className="pk-input" placeholder="Defaults to the NameID, then the usual email attributes" value={emailAttr} onChange={(e) => setEmailAttr(e.target.value)} /></label>
+      {m.certificates.length > 0 && (
+        <ul className="sso-certs">
+          {m.certificates.map((c) => {
+            const soon = new Date(c.expires).getTime() - now < 30 * 86_400_000;
+            return (
+              <li key={c.subject + c.expires}>
+                <KeyRound size={13} aria-hidden="true" /> <code>{c.subject}</code>
+                <Pill tone={soon ? "warn" : "good"}>expires {new Date(c.expires).toLocaleDateString()}</Pill>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <div className="sec-actions" style={{ justifyContent: "flex-start" }}>
+        <button type="button" className="pk-button pk-button--primary" disabled={save.isPending || (mode === "metadata" && !xml.trim())} onClick={submit}>
+          Save SAML provider
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ProviderPanel({ data }: { data: Identity }) {
   const qc = useQueryClient();
   const { tenantId } = useAuth();
@@ -105,10 +187,23 @@ function ProviderPanel({ data }: { data: Identity }) {
     onError: (e) => setMsg({ tone: "bad", text: e instanceof Error ? e.message : "Could not save." }),
   });
   const hasVerified = data.domains.some((d) => d.verified);
+  const isSaml = s.protocol === "saml";
+  const samlReady = !!(data.saml.idp_entity_id && data.saml.idp_sso_url && data.saml.certificates.length);
+  const ready = isSaml ? samlReady : !!(s.issuer && s.client_id);
   return (
-    <Panel title="Identity provider (OIDC)" info="Works with Microsoft Entra ID, Okta, Google Workspace, Auth0, Ping and any OpenID Connect provider." state="ready"
-      aside={s.enabled ? <Pill tone="good">SSO on</Pill> : <Pill tone="neutral">SSO off</Pill>}>
+    <Panel title="Identity provider" info="OpenID Connect or SAML 2.0: Microsoft Entra ID, Okta, Google Workspace, ADFS, Auth0, Ping and others." state="ready"
+      aside={s.enabled ? <Pill tone="good">SSO on · {isSaml ? "SAML" : "OIDC"}</Pill> : <Pill tone="neutral">SSO off</Pill>}>
       {msg && <Banner tone={msg.tone}>{msg.text}</Banner>}
+      <div className="sso-seg" role="radiogroup" aria-label="Protocol">
+        {(["oidc", "saml"] as const).map((p) => (
+          <button key={p} type="button" role="radio" aria-checked={s.protocol === p} disabled={save.isPending}
+            className={`pk-button${s.protocol === p ? " pk-button--primary" : ""}`}
+            onClick={() => { if (s.protocol !== p) save.mutate({ protocol: p }); }}>
+            {p === "oidc" ? "OpenID Connect" : "SAML 2.0"}
+          </button>
+        ))}
+      </div>
+      {isSaml ? <SamlFields data={data} onSaved={setMsg} /> : (
       <div className="sso-form">
         <span className="sec-help" style={{ margin: 0 }}>Register this redirect URI in your identity provider:</span>
         <CopyText value={s.redirect_uri} />
@@ -126,10 +221,11 @@ function ProviderPanel({ data }: { data: Identity }) {
           </button>
         </div>
       </div>
+      )}
       <fieldset className="sec-fieldset" disabled={save.isPending} style={{ marginTop: 14 }}>
         <label className="sec-row">
-          <span><b>Turn on single sign-on</b><small>{hasVerified ? "People on your verified domains can sign in with your identity provider." : "Verify an email domain first."}</small></span>
-          <input type="checkbox" className="sec-check" checked={s.enabled} disabled={!hasVerified || !s.issuer || !s.client_id}
+          <span><b>Turn on single sign-on</b><small>{!hasVerified ? "Verify an email domain first." : !ready ? "Set up the identity provider first." : "People on your verified domains can sign in with your identity provider."}</small></span>
+          <input type="checkbox" className="sec-check" checked={s.enabled} disabled={!s.enabled && (!hasVerified || !ready)}
             onChange={(e) => save.mutate({ enabled: e.target.checked, ...(e.target.checked ? {} : { require_sso: false }) })} />
         </label>
         <label className="sec-row">
@@ -210,18 +306,18 @@ export default function SsoSettingsPage() {
         <div className="sec-grid">
           <div className="sec-stack">
             <DomainsPanel data={data} />
-            <ProviderPanel key={`${data.sso.issuer}-${data.sso.client_id}`} data={data} />
+            <ProviderPanel key={`${data.sso.protocol}-${data.sso.issuer}-${data.sso.client_id}`} data={data} />
           </div>
           <div className="sec-stack">
             <ScimPanel data={data} />
             <Panel title="How it works" state="ready">
               <ol className="mfa-setup__steps">
                 <li><ShieldCheck size={13} aria-hidden="true" /> Verify each email domain with a DNS TXT record.</li>
-                <li><Fingerprint size={13} aria-hidden="true" /> Register the redirect URI with your identity provider and paste its issuer, client ID and secret here.</li>
+                <li><Fingerprint size={13} aria-hidden="true" /> OIDC: register the redirect URI and paste the issuer, client ID and secret. SAML: give your provider our entity ID and ACS URL (or metadata URL), then paste its metadata XML.</li>
                 <li><Users size={13} aria-hidden="true" /> Turn SSO on. People enter their work email on the sign-in page and choose &quot;Sign in with SSO&quot;.</li>
                 <li><KeyRound size={13} aria-hidden="true" /> Optional: require SSO, and connect SCIM so joiners and leavers are handled automatically.</li>
               </ol>
-              <p className="sec-help" style={{ margin: 0 }}>SAML 2.0 is not available yet; every major identity provider also supports OpenID Connect.</p>
+              <p className="sec-help" style={{ margin: 0 }}>SAML sign-in starts from our sign-in page (service-provider initiated). Responses must be signed; encrypted assertions are not supported yet.</p>
             </Panel>
           </div>
         </div>

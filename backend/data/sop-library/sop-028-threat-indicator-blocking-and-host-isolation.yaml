@@ -1,0 +1,121 @@
+# SOP-028: Threat Indicator Blocking and Host Isolation
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: security
+# Estimated Duration: 30 minutes
+# Required Skills: Security Analyst
+# Required Permissions: Security Analyst
+# Tags: security, threat, indicator, blocking, isolation, authorized
+# read_only: false
+# resource_intensive: false
+# disruptive: true
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-028
+status: draft
+versionNumber: 1
+category: security
+changeSummary: Initial version - Threat indicator blocking and host isolation
+
+steps:
+  - order: 1
+    action: Document the threat indicator and risk level
+    description: Record the threat indicator, risk level, and affected systems.
+    expectedResult: Threat indicator documentation is complete with all required fields.
+    warnings: |
+      - Threat indicator blocking can disrupt legitimate traffic.
+      - Blocking scope must be clearly defined to avoid unintended impacts.
+    failureAction: Remove threat indicator block and document the issue.
+  - order: 2
+    action: Block threat indicators
+    description: Block the specified threat indicators (IPs, domains, hashes).
+    expectedResult: Threat indicators are blocked; associated traffic is filtered.
+    warnings: |
+      - Threat indicator blocking can disrupt legitimate traffic.
+      - Blocking requires authorized change control.
+    failureAction: Remove threat indicator block and document the issue.
+  - order: 3
+    action: Isolate the affected host
+    description: Isolate the affected host from network resources.
+    expectedResult: Host is isolated from network resources.
+    warnings: |
+      - Host isolation can disrupt user access and associated systems.
+      - Isolation requires authorized change control.
+    failureAction: Restore host access and document the issue.
+
+troubleshootingMatrix:
+  - symptom: Threat indicator blocking disrupts legitimate traffic
+    possibleCauses: |
+      - Overly broad blocking scope
+      - Missing authorization
+      - Incomplete scope definition
+    recommendedActions: |
+      - Review blocking scope
+      - Verify authorization
+      - Narrow blocking scope
+
+commandsAndExpectedResults:
+  - command: block indicator <indicator>
+    expectedResult: Threat indicator is blocked; associated traffic is filtered.
+    warnings: |
+      - Requires explicit authorization.
+      - Can disrupt legitimate traffic.
+  - command: isolate host <id>
+    expectedResult: Host is isolated from network resources.
+    warnings: |
+      - Requires authorized change control.
+      - Can disrupt user access.
+
+prerequisites:
+  - Security analyst credentials are available.
+  - Change control approval is obtained for disruptive operations.
+  - Threat indicators are verified and validated.
+
+permissions:
+  - Security Analyst membership.
+  - Read access to threat intelligence.
+  - Write access for indicator blocking (approved changes only).
+
+escalationCriteria:
+  - Threat indicator blocking disrupts legitimate traffic.
+  - Host isolation disrupts user access and associated systems.
+
+rollbackPrecautions:
+  - Remove threat indicator block if it disrupts legitimate traffic.
+  - Restore host access if isolation causes excessive disruption.
+  - Document all changes and reasons for rollback.
+  - Obtain approval before re-attempting disruptive operations.
+
+ticketTemplate:
+  - Short Description: Threat indicator blocking and host isolation - SOP-028
+  - Description: |
+      Threat indicator blocking and host isolation.
+  - Priority: P3.
+  - Impacted Systems: <Indicator Value>, <Hostname>.
+  - Category: Security.
+  - Urgency: Medium.
+  - Assigned Group: Security Team.
+  - Tags: #security #threat #indicator #blocking #isolation.
+  - Related SOP: SOP-028.
+
+closureCriteria:
+  - Threat indicator blocking is documented and authorized.
+  - Host isolation is documented and authorized.
+  - Ticket is marked as resolved in the tracking system.
+
+safetyNotes:
+  - Do not automatically approve the SOP.
+  - Do not execute commands against production infrastructure during import or testing without authorization.
+  - Threat indicator blocking and host isolation must require authorization.
+  - Secure-channel repair requires explicit authorization.
+  - Account unlock/reset requires identity verification and authorization.
+  - Domain unjoin/rejoin is a last resort and requires approved change control.
+  - Never expose passwords, credentials, or secrets.
+  - Do not disable MFA, endpoint security, firewall, or auditing.
+  - Respect existing tenant isolation and JWT-based tenant context.
+  - Do not trust tenant IDs supplied by the client.
+
+searchableKeywords:
+  - security, threat, indicator, blocking, isolation, threat intelligence

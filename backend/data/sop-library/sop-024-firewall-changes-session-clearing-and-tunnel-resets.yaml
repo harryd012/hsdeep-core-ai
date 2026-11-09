@@ -1,0 +1,138 @@
+# SOP-024: Firewall Changes, Session Clearing, and Tunnel Resets
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: configuration
+# Estimated Duration: 30 minutes
+# Required Skills: Firewall Admin
+# Required Permissions: Firewall Admin
+# Tags: firewall, session, tunnel, reset, debug, risky
+# read_only: false
+# resource_intensive: false
+# disruptive: true
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-024
+status: draft
+versionNumber: 1
+category: configuration
+changeSummary: Initial version - Firewall changes and session clearing
+
+steps:
+  - order: 1
+    action: Document the firewall rule changes to be implemented
+    description: Record the source, destination, service, and action for each rule change.
+    expectedResult: Change documentation is complete with all required fields.
+    warnings: |
+      - Unauthorized firewall changes can disrupt network connectivity.
+      - Missing documentation can lead to incomplete rollbacks.
+    failureAction: Revert changes and document the issue.
+  - order: 2
+    action: Clear stale firewall sessions
+    description: Clear inactive or stale firewall sessions to free resources.
+    expectedResult: Stale sessions are cleared without affecting active sessions.
+    warnings: |
+      - Session clearing can disrupt active connections.
+      - Only clear sessions that are confirmed to be inactive.
+    failureAction: Restore cleared sessions if active connections are disrupted.
+  - order: 3
+    action: Reset tunnel interfaces
+    description: Reset the specified tunnel interface to re-establish connectivity.
+    expectedResult: Tunnel interface is reset and connectivity is restored.
+    warnings: |
+      - Tunnel resets disrupt all passing traffic.
+      - Tunnel resets require authorized change control.
+    failureAction: Restart the tunnel interface and verify connectivity.
+  - order: 4
+    action: Run firewall debug commands
+    description: Run diagnostic debug commands to troubleshoot firewall issues.
+    expectedResult: Debug output is collected without altering firewall state.
+    warnings: |
+      - Debug commands must not be run in production without authorization.
+      - Debug output may contain sensitive network information.
+    failureAction: Exit debug mode and revert any partial changes.
+
+troubleshootingMatrix:
+  - symptom: Firewall rule application fails
+    possibleCauses: |
+      - Misconfigured rule parameters
+      - Conflicting rules
+      - Session timeouts
+    recommendedActions: |
+      - Review change documentation
+      - Verify rule order and priorities
+      - Check session status
+
+commandsAndExpectedResults:
+  - command: firewall-cmd --list-rules
+    expectedResult: Lists current firewall rules; no error messages.
+    warnings: |
+      - Requires firewall service to be running.
+      - May require root privileges.
+  - command: clear firewall sessions
+    expectedResult: Stale sessions are cleared; active sessions remain intact.
+    warnings: |
+      - Requires explicit authorization.
+      - Can disrupt active connections.
+  - command: debug firewall
+    expectedResult: Debug output is collected; no state changes.
+    warnings: |
+      - Must not be run in production without authorization.
+      - May expose sensitive network information.
+
+prerequisites:
+  - Firewall admin credentials are available.
+  - Change control approval is obtained for disruptive operations.
+  - Backup of current firewall configuration is available.
+
+permissions:
+  - Firewall Admin membership.
+  - Read access to firewall configuration.
+  - Write access for rule modifications (approved changes only).
+
+escalationCriteria:
+  - Session clearing disrupts active connections.
+  - Tunnel reset fails to restore connectivity.
+  - Debug commands are run without authorization.
+  - Firewall rules are applied without change control approval.
+
+rollbackPrecautions:
+  - Restore firewall configuration from backup if changes fail.
+  - Re-establish stalled sessions after reset.
+  - Document all changes and reasons for rollback.
+  - Obtain approval before re-attempting disruptive operations.
+
+ticketTemplate:
+  - Short Description: Firewall change and session clearing - SOP-024
+  - Description: |
+      Firewall rule modifications, session clearing, and tunnel resets.
+  - Priority: P3.
+  - Impacted Systems: <Firewall Name>
+  - Category: Firewall.
+  - Urgency: Medium.
+  - Assigned Group: Network Security Team.
+  - Tags: #firewall #session #tunnel #change-control.
+  - Related SOP: SOP-024.
+
+closureCriteria:
+  - All changes are documented and approved.
+  - Active sessions are intact after operations.
+  - Tunnel connectivity is restored.
+  - Debug output is reviewed and archived.
+  - Ticket is marked as resolved in the tracking system.
+
+safetyNotes:
+  - Do not automatically approve the SOP.
+  - Do not execute commands against production infrastructure during import or testing without authorization.
+  - Firewall changes, session clearing, tunnel resets and debug operations must have appropriate risk indicators.
+  - Secure-channel repair requires explicit authorization.
+  - Account unlock/reset requires identity verification and authorization.
+  - Domain unjoin/rejoin is a last resort and requires approved change control.
+  - Never expose passwords, credentials, or secrets.
+  - Do not disable MFA, endpoint security, firewall, or auditing.
+  - Respect existing tenant isolation and JWT-based tenant context.
+  - Do not trust tenant IDs supplied by the client.
+
+searchableKeywords:
+  - firewall, session, tunnel, reset, debug, risky, firewalls, network security

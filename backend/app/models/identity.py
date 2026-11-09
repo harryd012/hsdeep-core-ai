@@ -109,3 +109,23 @@ class SsoHandoff(Base):
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TenantSamlConfig(Base):
+    """SAML 2.0 identity provider for a tenant (used when TenantSsoConfig.protocol
+    is "saml"). The IdP's signing certificate is public, so it is stored as is."""
+
+    __tablename__ = "tenant_saml_configs"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
+    )
+    idp_entity_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    idp_sso_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    #: One or more PEM certificates (several during an IdP certificate rollover).
+    idp_certificates: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Attribute holding the email; None = NameID, then the usual email attributes.
+    email_attribute: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )

@@ -28,9 +28,9 @@ const SECTIONS: { title: string; items: string[] }[] = [
       "Passwords are hashed with Argon2id. Your administrators set the password rules, lockout threshold and idle-session timeout.",
       "Two-step verification with authenticator apps and one-time recovery codes; your organization can require it for everyone.",
       "Role-based access with custom roles, and a list of every signed-in device that each user (or an administrator) can sign out.",
-      "Single sign-on with your identity provider over OpenID Connect (Entra ID, Okta, Google Workspace and others), on email domains you verify through DNS; it can be required for everyone except owners' break-glass access.",
+      "Single sign-on with your identity provider over OpenID Connect or SAML 2.0 (Entra ID, Okta, Google Workspace, ADFS and others), on email domains you verify through DNS; it can be required for everyone except owners' break-glass access.",
       "SCIM 2.0 provisioning: your identity provider creates, updates and deactivates users, and a deactivated user is signed out at once.",
-      "SAML 2.0 is on the roadmap, not available yet.",
+      "SAML responses must be signed by your identity provider and answer a sign-in we started; unsolicited, replayed and tampered responses are refused.",
     ],
   },
   {

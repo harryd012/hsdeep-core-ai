@@ -187,15 +187,18 @@ async def complete_login(db: AsyncSession, *, state: str, code: str) -> SsoResul
     if email_domain(email) not in await verified_domains(db, config.tenant_id):
         raise SsoError("Your email domain is not verified for this organization.")
 
-    user, created = await _resolve_user(db, config, email=email, subject=subject, name=claims.get("name"))
+    user, created = await resolve_user(db, config, email=email, subject=subject, name=claims.get("name"))
     if not user.is_active:
         raise SsoError("Your account is disabled. Contact your administrator.")
     return SsoResult(user=user, next_path=row.next_path, created=created)
 
 
-async def _resolve_user(db: AsyncSession, config: TenantSsoConfig, *, email: str, subject: str, name) -> tuple[User, bool]:
+async def resolve_user(db: AsyncSession, config: TenantSsoConfig, *, email: str, subject: str, name,
+                       provider: str = "oidc") -> tuple[User, bool]:
+    """Find the user by linked subject, else by email (and link them), else
+    create them when just-in-time provisioning is on. Shared by OIDC and SAML."""
     link = (await db.execute(select(UserIdentity).where(
-        UserIdentity.tenant_id == config.tenant_id, UserIdentity.provider == "oidc", UserIdentity.subject == subject
+        UserIdentity.tenant_id == config.tenant_id, UserIdentity.provider == provider, UserIdentity.subject == subject
     ))).scalar_one_or_none()
     if link is not None:
         user = await db.get(User, link.user_id)
@@ -220,7 +223,7 @@ async def _resolve_user(db: AsyncSession, config: TenantSsoConfig, *, email: str
                 await users.assign_roles(user, roles)
         created = True
     if link is None:
-        db.add(UserIdentity(tenant_id=config.tenant_id, user_id=user.id, provider="oidc", subject=subject))
+        db.add(UserIdentity(tenant_id=config.tenant_id, user_id=user.id, provider=provider, subject=subject))
         await db.flush()
     return user, created
 

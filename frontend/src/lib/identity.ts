@@ -15,7 +15,7 @@ export interface IdentityDomain {
 }
 
 export interface SsoConfig {
-  protocol: "oidc";
+  protocol: "oidc" | "saml";
   issuer: string | null;
   client_id: string | null;
   client_secret_set: boolean;
@@ -33,9 +33,11 @@ export interface SsoConfig {
 export interface Identity {
   domains: IdentityDomain[];
   sso: SsoConfig;
+  saml: SamlConfig;
 }
 
 export interface SsoUpdate {
+  protocol?: "oidc" | "saml";
   issuer?: string | null;
   client_id?: string | null;
   /** Write-only; omit to keep, "" to remove. */
@@ -67,3 +69,28 @@ export async function startSso(email: string, next?: string): Promise<string> {
   if (!res.ok) throw new ApiError("/api/auth/sso/start", res.status, await readErrorDetail(res));
   return ((await res.json()) as { redirect_url: string }).redirect_url;
 }
+
+// ---------------------------------------------------------------------------
+// SAML 2.0
+// ---------------------------------------------------------------------------
+
+export interface SamlConfig {
+  idp_entity_id: string | null;
+  idp_sso_url: string | null;
+  certificates: { subject: string; expires: string }[];
+  email_attribute: string | null;
+  /** Give these to the identity provider. */
+  sp_entity_id: string;
+  acs_url: string;
+  metadata_url: string;
+}
+
+export interface SamlUpdate {
+  metadata_xml?: string;
+  idp_entity_id?: string;
+  idp_sso_url?: string;
+  idp_certificates?: string;
+  email_attribute?: string;
+}
+
+export const updateSaml = (body: SamlUpdate) => apiFetch<Identity>(`${BASE}/saml`, { method: "PUT", body: JSON.stringify(body) });

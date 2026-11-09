@@ -44,6 +44,9 @@ PUBLIC_WRITE_ROUTES = {
     # and a one-time handoff code.
     ("POST", "/api/auth/sso/start"),
     ("POST", "/api/auth/sso/exchange"),
+    # SAML assertion consumer service: authorised by the IdP's verified signature
+    # and a one-time RelayState from our own request.
+    ("POST", "/api/auth/sso/saml/{tenant_id}/acs"),
     # SCIM (S6): authorised by the tenant's SCIM bearer token (scim_tenant).
     ("POST", "/api/scim/v2/Users"),
     ("PUT", "/api/scim/v2/Users/{user_id}"),
@@ -66,6 +69,7 @@ PUBLIC_WRITE_ROUTES = {
     ("POST", "/api/servicenow/webhooks/incoming/{connection_id}"),
     ("POST", "/api/v1/ingest/metrics"),
     ("POST", "/api/v1/ingest/events"),
+    ("POST", "/api/v1/ingest/otlp/v1/traces"),
 }
 
 VIEWER = resolve_role_permissions(DEFAULT_ROLES["Viewer"][1])
