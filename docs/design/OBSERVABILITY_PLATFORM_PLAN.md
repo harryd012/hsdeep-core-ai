@@ -43,10 +43,10 @@ Earlier audits: `docs/REPOSITORY_AUDIT.md`, `docs/PLATFORM_LEDGER.md` (batches 1
 | P2 Inventory & discovery | Saved views and bulk actions on hosts; discovery schedules, exclusions and approval of recommended sensors (on the existing discovery engine) | **Slices 1–2 implemented and tested**: scheduled discovery + scopes UI (`tests/test_discovery_schedule.py`); host saved views, bulk classification / monitoring pause and a tag facet (`tests/test_host_views_bulk.py`, UI not verified in a signed-in browser); sensor recommendations wait for P3's library |
 | P3 Sensor library | Sensor templates (catalogue from the collectors' real metric types), recommendation from discovery profiles, bulk add for collectors that support configuration (SNMP, connectivity) | **Slice 1 implemented and tested**: catalogue of 29 templates with tenant usage, bulk thresholds through the P1 lifecycle, per-host coverage rules, sensors linked to their host; **slice 2**: bulk reachability checks tied to their hosts, a reachability sensor that alerts when a host stops answering (`tests/test_sensor_library.py`) |
 | P4 Network Monitoring Center | Interface traffic / errors / utilization pages from `interfaces` + metrics, top-N bandwidth, VPN tunnels (FortiGate / Palo Alto data already collected) | **Slice 1 implemented and tested**: per-interface history (traffic, utilisation, error rates), network overview / interface list / interface history API, Network Monitoring and interface pages (`tests/test_network_center.py`) |
-| P5 Infrastructure monitoring | Windows / Linux / VMware host views from existing collectors | **Slice 1 implemented and tested**: server fleet page (`tests/test_server_fleet.py`); per-host detail already existed |
+| P5 Infrastructure monitoring | Windows / Linux / VMware host views from existing collectors | **Slices 1–3 implemented and tested**: server fleet page and PRTG resource sensors (`tests/test_server_fleet.py`); infrastructure health overview with clouds (`tests/test_infrastructure_health_overview.py`); per-host detail already existed |
 | P6 Dashboards & topology | Widget registry over aggregated APIs, saved dashboards per tenant / role; topology already exists, add drill-down to sensors | **Slice 1 implemented** (frontend only): topology drill-down to sensors, alerts, host tabs and interface pages; **slice 2**: saved dashboards and the widget registry (`tests/test_saved_dashboards.py`) |
 | P7 Metrics / logs | Syslog receiver on the edge agent → normalized events, Logs Explorer over events | **Slice 1 implemented and tested**: syslog receiver (separate process), log-to-device linking at ingest, Logs Explorer API and page (`tests/test_logs_explorer.py`); not verified in a browser |
-| P8 APM / tracing | OTLP/HTTP ingest of traces → spans table, service map from span parent/child | planned (new ingestion path) |
+| P8 APM / tracing | OTLP/HTTP ingest of traces → spans table, service map from span parent/child | **Slice 1 implemented and tested**: OTLP/HTTP JSON trace ingest, spans table, services / traces / service map / trace APIs, Traces pages (`tests/test_tracing.py`); not verified in a browser |
 | P9 Alerting | Dynamic baselines, notification policies, Teams channel | planned (engine exists) |
 | P10 AI RCA / copilot | Copilot tools over the new sensor / history APIs | planned (engine exists) |
 | P11 Reporting | Sensor / interface / availability reports from stored metrics | planned (reports module exists) |
@@ -409,3 +409,65 @@ log search").
   Type-checked and linted; **not verified in a browser** (the dev servers were stopped).
 - **Not in this slice**: syslog over TCP / TLS, a log retention job for LOG events, saved log
   searches, log-based alert rules, and a log widget for dashboards.
+
+## 12. P8 slice 1: OpenTelemetry traces
+
+- **Ingest** (`POST /api/v1/ingest/otlp/v1/traces`): OTLP/HTTP with the JSON encoding, so an
+  OpenTelemetry SDK or collector works unchanged with `OTEL_EXPORTER_OTLP_ENDPOINT=<platform>/api/v1/ingest/otlp`,
+  `OTEL_EXPORTER_OTLP_PROTOCOL=http/json` and
+  `OTEL_EXPORTER_OTLP_HEADERS=X-HSDEEP-Collector-Credential=<credential>`. Authenticated by a
+  collector credential like the other ingest routes (tenant and source from the credential). The
+  protobuf encoding is answered with 415 and says how to switch: neither `protobuf` nor
+  `opentelemetry-proto` is a dependency, and the dependency files were being changed by another
+  session. Compressed bodies are refused (415); bodies over 8 MB get 413; up to 10,000 spans
+  per request. Response per OTLP: `{}`, or `partialSuccess` with the rejected count and first
+  reason.
+- **Decoding** (`app/services/tracing/otlp.py`, pure): hex trace / span ids (all-zero or malformed
+  rejected), enum values as numbers or names, 64-bit times as strings, a span that ends before it
+  starts rejected, `service.name` from the resource (else OpenTelemetry's `unknown_service`);
+  attributes (128), values (1,024 characters) and events (32) bounded.
+- **Storage** (`trace_spans`, migration `c4e8a2d6f1b3`): one row per span, unique per (tenant,
+  trace, span) so a resent batch is a no-op; indexes for the window, service and trace lookups.
+  Spans follow the metric retention (`metric_retention_days`, or the tenant's own metric
+  retention from S5), purged by the existing retention job.
+- **API** (`/api/traces`, `monitoring.read`, windows up to 7 days): `/services` (spans, error
+  spans and rate, traces, p50 / p95 / max of entry spans: server / consumer spans or spans
+  without a parent), `/` (traces: start, duration from first start to last end, spans, errors,
+  services, root span or the earliest span when the root has not arrived, filters for service,
+  errors, minimum duration and span-name text), `/{trace_id}` (all spans, orphan count),
+  `/service-map` (caller -> callee edges from parent / child spans across services, with calls,
+  errors, average and p95 callee duration).
+- **UI** ("Traces" under Observe): `/traces` with Services (tiles, a layered service map, the
+  services table) and Traces (filters, search, paging); `/traces/[traceId]` with the waterfall
+  (spans on the trace timeline, indented under their parent, coloured by service, failed spans
+  red) and the selected span's attributes, resource and events. Type-checked and linted; **not
+  verified in a browser** (another session's dev server holds this folder).
+- **Not in this slice**: protobuf encoding and gzip, metrics and logs over OTLP, linking spans to
+  hosts (`host.name`) and logs (trace ids in log lines), latency / error-rate alert rules,
+  sampling controls.
+
+## 13. P5 slice 3: infrastructure health overview
+
+The `/infrastructure` landing page was a count row, a raw table of every device and a text dump
+of the topology. It is now a health overview (layout inspired by the reference product's
+"current health overview", original design):
+
+- **Backend** (additive, no new endpoint): the canonical `InfrastructureOverviewService`
+  (`GET /api/infrastructure/overview`) adds `devices.by_category`, i.e. device health per
+  resource family from the existing vocabulary (`resource_family`: server → compute,
+  switch / router → network, firewall → security ...; an unmapped type stays `unknown`), and
+  `devices.cloud.providers`, i.e. cloud resources per provider and service category
+  (virtual machines, networking, security, load balancing) from the collector's own
+  `resource_kind`; anything else is `other`, never guessed. Health uses the service's existing
+  status buckets (unknown is never healthy). The provider falls back to the device vendor for
+  rows written before collectors set `custom_metadata.provider`; the Azure collector now sets
+  `provider` / `resource_kind` / `region` like AWS and GCP.
+- **UI**: summary strip (devices, sites, sensors down, active alerts, open incidents, failing
+  sources), one card per family plus data sources (critical / warning counts of the total and a
+  bar split by health, linking to Servers, Network, Firewalls, Universal Resources or Hosts),
+  and a Clouds panel: AWS, Azure and Google Cloud cards ("Not connected" when a provider has no
+  resources, not 0) with a services row per connected provider. The existing collection,
+  canonical topology and SD-WAN / SASE panels stay below. The raw device table and topology
+  text are gone (Hosts and Topology cover them); the unused `InfrastructureKpiRow` was removed.
+- **Not collected yet**: serverless, storage, database and container services of the clouds
+  (the connectors list VMs, networks, security rules and load balancers only).

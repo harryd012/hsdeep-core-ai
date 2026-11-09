@@ -1,0 +1,151 @@
+# SOP-029: FortiGate Disruptive Operations
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: configuration
+# Estimated Duration: 45 minutes
+# Required Skills: FortiGate Admin
+# Required Permissions: FortiGate Admin
+# Tags: fortigate, debug, session, ha, failover, policy, disruptive, authorized
+# read_only: false
+# resource_intensive: false
+# disruptive: true
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-029
+status: draft
+versionNumber: 1
+category: configuration
+changeSummary: Initial version - FortiGate disruptive operations
+
+steps:
+  - order: 1
+    action: Document the FortiGate operation to be performed
+    description: Record the operation, affected devices, and expected outcome.
+    expectedResult: Operation documentation is complete with all required fields.
+    warnings: |
+      - FortiGate disruptive operations can disrupt network traffic.
+      - Operations must have authorized change control.
+    failureAction: Revert operation and document the issue.
+  - order: 2
+    action: Run FortiGate debug commands
+    description: Run FortiGate diagnostic debug commands.
+    expectedResult: Debug output is collected without altering FortiGate state.
+    warnings: |
+      - Debug commands must not be run in production without authorization.
+      - Debug output may contain sensitive network information.
+    failureAction: Exit debug mode and revert any partial changes.
+  - order: 3
+    action: Clear FortiGate sessions
+    description: Clear stale or active FortiGate sessions.
+    expectedResult: Sessions are cleared as specified.
+    warnings: |
+      - Session clearing can disrupt active connections.
+      - Session clearing requires authorized change control.
+    failureAction: Restore cleared sessions if active connections are disrupted.
+  - order: 4
+    action: Perform FortiGate HA failover
+    description: Perform FortiGate high availability failover.
+    expectedResult: HA failover is performed; secondary device becomes primary.
+    warnings: |
+      - HA failover disrupts traffic during switchover.
+      - HA failover requires authorized change control.
+    failureAction: Revert HA failover and document the issue.
+  - order: 4
+    action: Modify FortiGate policy
+    description: Modify FortiGate security policy rules.
+    expectedResult: Policy rules are modified without affecting traffic.
+    warnings: |
+      - Policy modifications can disrupt network traffic.
+      - Policy modifications require authorized change control.
+    failureAction: Revert policy modifications and document the issue.
+
+troubleshootingMatrix:
+  - symptom: FortiGate disruptive operations disrupt traffic
+    possibleCauses: |
+      - Unauthorized operations
+      - Misconfigured parameters
+      - Session timeouts
+    recommendedActions: |
+      - Review operation documentation
+      - Verify change control approval
+      - Check traffic flow
+
+commandsAndExpectedResults:
+  - command: diagnose debug firewall
+    expectedResult: Debug output is collected; no state changes.
+    warnings: |
+      - Must not be run in production without authorization.
+      - May expose sensitive network information.
+  - command: diagnose session clear
+    expectedResult: Sessions are cleared as specified.
+    warnings: |
+      - Requires explicit authorization.
+      - Can disrupt active connections.
+  - command: diagnose ha reset
+    expectedResult: HA failover is performed; secondary device becomes primary.
+    warnings: |
+      - Requires authorized change control.
+      - Disrupts traffic during switchover.
+  - command: diagnose firewall policy
+    expectedResult: Policy rules are modified; no traffic impact.
+    warnings: |
+      - Requires authorized change control.
+      - May disrupt network traffic.
+
+prerequisites:
+  - FortiGate admin credentials are available.
+  - Change control approval is obtained for disruptive operations.
+  - Current FortiGate configuration is documented.
+
+permissions:
+  - FortiGate Admin membership.
+  - Read access to FortiGate configuration.
+  - Write access for operation modifications (approved changes only).
+
+escalationCriteria:
+  - FortiGate disruptive operations disrupt traffic.
+  - HA failover disrupts traffic during switchover.
+  - Policy modifications disrupt network traffic.
+
+rollbackPrecautions:
+  - Revert operation if it disrupts traffic.
+  - Restore sessions if clearing disrupts connections.
+  - Revert policy modifications if they disrupt traffic.
+  - Document all changes and reasons for rollback.
+  - Obtain approval before re-attempting disruptive operations.
+
+ticketTemplate:
+  - Short Description: FortiGate disruptive operations - SOP-029
+  - Description: |
+      FortiGate debug, session clearing, HA failover, policy changes and other disruptive operations.
+  - Priority: P3.
+  - Impacted Systems: <FortiGate Name>.
+  - Category: FortiGate.
+  - Urgency: Medium.
+  - Assigned Group: Network Security Team.
+  - Tags: #fortigate #debug #session #ha #failover #policy #disruptive.
+  - Related SOP: SOP-029.
+
+closureCriteria:
+  - All operations are documented and approved.
+  - Traffic disruption is minimized or documented.
+  - HA failover is completed if required.
+  - Policy modifications are documented and approved.
+  - Ticket is marked as resolved in the tracking system.
+
+safetyNotes:
+  - Do not automatically approve the SOP.
+  - Do not execute commands against production infrastructure during import or testing without authorization.
+  - FortiGate debug, session clearing, HA failover, policy changes and other disruptive operations must be correctly classified.
+  - Secure-channel repair requires explicit authorization.
+  - Account unlock/reset requires identity verification and authorization.
+  - Domain unjoin/rejoin is a last resort and requires approved change control.
+  - Never expose passwords, credentials, or secrets.
+  - Do not disable MFA, endpoint security, firewall, or auditing.
+  - Respect existing tenant isolation and JWT-based tenant context.
+  - Do not trust tenant IDs supplied by the client.
+
+searchableKeywords:
+  - fortigate, debug, session, ha, failover, policy, disruptive, authorized, FortiGate

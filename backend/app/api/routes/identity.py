@@ -6,13 +6,16 @@ Administration (security.manage):
   POST   /api/settings/identity/domains               add a domain (returns its DNS TXT record)
   POST   /api/settings/identity/domains/{id}/verify   check the TXT record
   DELETE /api/settings/identity/domains/{id}
-  PUT    /api/settings/identity/sso                   OIDC provider, enable, require SSO, JIT
+  PUT    /api/settings/identity/sso                   protocol, OIDC provider, enable, require SSO, JIT
+  PUT    /api/settings/identity/saml                  SAML identity provider (or its metadata XML)
   POST   /api/settings/identity/scim-token            new SCIM token (shown once; replaces the old one)
   DELETE /api/settings/identity/scim-token            revoke SCIM access
 
 Sign-in (public, rate limited):
   POST   /api/auth/sso/start                          email -> the identity provider's URL
-  GET    /api/auth/sso/oidc/callback                  the provider returns here -> browser
+  GET    /api/auth/sso/oidc/callback                  the OIDC provider returns here -> browser
+  GET    /api/auth/sso/saml/{tenant_id}/metadata      our SAML service-provider metadata
+  POST   /api/auth/sso/saml/{tenant_id}/acs           the SAML provider posts here -> browser
   POST   /api/auth/sso/exchange                       one-time handoff code -> session tokens
 """
 from __future__ import annotations
@@ -20,11 +23,13 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import RedirectResponse
+from typing import Literal
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,12 +40,13 @@ from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.entitlements import require_active_subscription
 from app.core.security import SecretCrypto
-from app.models.identity import TenantDomain, TenantSsoConfig
+from app.models.identity import SsoLoginState, TenantDomain, TenantSamlConfig, TenantSsoConfig
 from app.schemas.auth import TokenResponse
 from app.services.audit_service import AuditService
 from app.services.auth_service import AuthService
 from app.services.identity import domains as dom
 from app.services.identity import oidc
+from app.services.identity import saml
 
 router = APIRouter(tags=["identity"])
 _guard = Depends(require_active_subscription)
@@ -72,9 +78,31 @@ class SsoOut(BaseModel):
     scim_base_url: str
 
 
+class SamlOut(BaseModel):
+    idp_entity_id: str | None = None
+    idp_sso_url: str | None = None
+    #: Subject and expiry of each stored IdP signing certificate.
+    certificates: list[dict] = []
+    email_attribute: str | None = None
+    sp_entity_id: str
+    acs_url: str
+    metadata_url: str
+
+
 class IdentityOut(BaseModel):
     domains: list[DomainOut]
     sso: SsoOut
+    saml: SamlOut
+
+
+class SamlUpdate(BaseModel):
+    """Either paste the IdP's metadata XML, or set the fields one by one."""
+
+    metadata_xml: str | None = Field(None, max_length=200_000)
+    idp_entity_id: str | None = Field(None, max_length=500)
+    idp_sso_url: str | None = Field(None, max_length=1000)
+    idp_certificates: str | None = Field(None, max_length=50_000)
+    email_attribute: str | None = Field(None, max_length=255)
 
 
 class DomainCreate(BaseModel):
@@ -82,6 +110,7 @@ class DomainCreate(BaseModel):
 
 
 class SsoUpdate(BaseModel):
+    protocol: Literal["oidc", "saml"] | None = None
     issuer: str | None = Field(None, max_length=500)
     client_id: str | None = Field(None, max_length=255)
     #: Write-only. Omit to keep the stored secret; "" removes it (public clients).
@@ -109,7 +138,37 @@ async def _identity(db: AsyncSession, tenant_id: uuid.UUID) -> IdentityOut:
             default_role_id=cfg.default_role_id, redirect_uri=oidc.redirect_uri(),
             scim_enabled=bool(cfg.scim_token_hash), scim_token_prefix=cfg.scim_token_prefix, scim_base_url=f"{base}/api/scim/v2",
         )
-    return IdentityOut(domains=[_domain_out(d) for d in rows], sso=sso)
+    return IdentityOut(domains=[_domain_out(d) for d in rows], sso=sso, saml=await _saml_out(db, tenant_id))
+
+
+def _cert_summary(pem_text: str | None) -> list[dict]:
+    from cryptography import x509
+
+    out = []
+    for pem in saml.split_certificates(pem_text or ""):
+        try:
+            cert = x509.load_pem_x509_certificate(pem.encode())
+        except ValueError:
+            continue
+        out.append({"subject": cert.subject.rfc4514_string(), "expires": cert.not_valid_after_utc.isoformat()})
+    return out
+
+
+async def _saml_out(db: AsyncSession, tenant_id: uuid.UUID) -> SamlOut:
+    row = await db.get(TenantSamlConfig, tenant_id)
+    base = get_settings().api_public_url.rstrip("/")
+    return SamlOut(
+        idp_entity_id=row.idp_entity_id if row else None, idp_sso_url=row.idp_sso_url if row else None,
+        certificates=_cert_summary(row.idp_certificates if row else None),
+        email_attribute=row.email_attribute if row else None,
+        sp_entity_id=saml.sp_entity_id(tenant_id), acs_url=saml.acs_url(tenant_id),
+        metadata_url=f"{base}/api/auth/sso/saml/{tenant_id}/metadata",
+    )
+
+
+async def _saml_ready(db: AsyncSession, tenant_id: uuid.UUID) -> bool:
+    row = await db.get(TenantSamlConfig, tenant_id)
+    return bool(row and row.idp_entity_id and row.idp_sso_url and row.idp_certificates)
 
 
 async def _config(db: AsyncSession, tenant_id: uuid.UUID) -> TenantSsoConfig:
@@ -191,20 +250,57 @@ async def update_sso(payload: SsoUpdate, principal: Principal = Depends(require_
             old[field], new[field] = getattr(cfg, field), value
             setattr(cfg, field, value)
     if cfg.enabled:
-        if not (cfg.issuer and cfg.client_id):
-            raise HTTPException(status_code=422, detail="Set the issuer and client ID before turning SSO on.")
         if not await dom.verified_domains(db, principal.tenant_id):
             raise HTTPException(status_code=422, detail="Verify at least one email domain before turning SSO on.")
-        try:
-            await oidc.discover(cfg.issuer)
-        except (oidc.SsoError, Exception) as exc:  # noqa: BLE001 - any discovery failure is a config error
-            raise HTTPException(status_code=422, detail=f"Could not read the identity provider's configuration at {cfg.issuer}: {exc}") from exc
+        if cfg.protocol == "saml":
+            if not await _saml_ready(db, principal.tenant_id):
+                raise HTTPException(status_code=422, detail="Set the SAML identity provider (entity ID, sign-in URL, certificate) before turning SSO on.")
+        else:
+            if not (cfg.issuer and cfg.client_id):
+                raise HTTPException(status_code=422, detail="Set the issuer and client ID before turning SSO on.")
+            try:
+                await oidc.discover(cfg.issuer)
+            except (oidc.SsoError, Exception) as exc:  # noqa: BLE001 - any discovery failure is a config error
+                raise HTTPException(status_code=422, detail=f"Could not read the identity provider's configuration at {cfg.issuer}: {exc}") from exc
     if cfg.require_sso and not cfg.enabled:
         raise HTTPException(status_code=422, detail="Turn SSO on before requiring it.")
     if new:
         await _audit(db, principal, "identity.sso_updated", f"Single sign-on changed: {', '.join(sorted(new))}",
                      old={k: str(v) if isinstance(v, uuid.UUID) else v for k, v in old.items()},
                      new={k: str(v) if isinstance(v, uuid.UUID) else v for k, v in new.items()})
+    await db.commit()
+    return await _identity(db, principal.tenant_id)
+
+
+@router.put("/settings/identity/saml", response_model=IdentityOut, dependencies=[_guard])
+async def update_saml(payload: SamlUpdate, principal: Principal = Depends(require_permission("security.manage")),
+                      db: AsyncSession = Depends(get_db)):
+    """Set the SAML identity provider. Metadata XML (from Entra ID, Okta, ADFS, Google …) fills
+    the entity ID, sign-in URL and signing certificates in one go."""
+    row = await db.get(TenantSamlConfig, principal.tenant_id)
+    if row is None:
+        row = TenantSamlConfig(tenant_id=principal.tenant_id)
+        db.add(row)
+    try:
+        if payload.metadata_xml:
+            meta = saml.parse_idp_metadata(payload.metadata_xml)
+            row.idp_entity_id, row.idp_sso_url, row.idp_certificates = meta.entity_id, meta.sso_url, meta.certificates
+        if payload.idp_entity_id is not None:
+            row.idp_entity_id = payload.idp_entity_id.strip() or None
+        if payload.idp_sso_url is not None:
+            url = payload.idp_sso_url.strip()
+            if url and not url.startswith("https://"):
+                raise saml.SamlError("The sign-in URL must use https://")
+            row.idp_sso_url = url or None
+        if payload.idp_certificates is not None:
+            row.idp_certificates = saml.normalize_certificates(payload.idp_certificates) if payload.idp_certificates.strip() else None
+    except saml.SamlError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if payload.email_attribute is not None:
+        row.email_attribute = payload.email_attribute.strip() or None
+    await _audit(db, principal, "identity.saml_updated", "SAML identity provider changed",
+                 new={"idp_entity_id": row.idp_entity_id, "idp_sso_url": row.idp_sso_url,
+                      "certificates": len(saml.split_certificates(row.idp_certificates or ""))})
     await db.commit()
     return await _identity(db, principal.tenant_id)
 
@@ -250,6 +346,16 @@ async def sso_start(payload: SsoStart, db: AsyncSession = Depends(get_db), _: No
     cfg = await db.get(TenantSsoConfig, tenant_id) if tenant_id else None
     if cfg is None or not cfg.enabled:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Single sign-on isn't set up for this email domain.")
+    if cfg.protocol == "saml":
+        row = await db.get(TenantSamlConfig, cfg.tenant_id)
+        if row is None or not row.idp_sso_url:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Single sign-on isn't set up for this email domain.")
+        relay, request_id = secrets.token_urlsafe(32), saml.new_request_id()
+        db.add(SsoLoginState(state=relay, tenant_id=cfg.tenant_id, nonce=request_id, code_verifier=secrets.token_urlsafe(16),
+                             next_path=_safe_next(payload.next), expires_at=datetime.now(timezone.utc) + oidc.STATE_TTL))
+        await db.commit()
+        return {"redirect_url": saml.authn_request_url(tenant_id=cfg.tenant_id, idp_sso_url=row.idp_sso_url,
+                                                       request_id=request_id, relay_state=relay)}
     try:
         url = await oidc.start_login(db, cfg, login_hint=payload.email.strip(), next_path=_safe_next(payload.next))
     except oidc.SsoError as exc:
@@ -309,3 +415,60 @@ async def sso_exchange(payload: SsoExchange, request: Request, db: AsyncSession 
     access, refresh, expires_in = await service._issue_tokens(user, ip_address=ip_address, user_agent=user_agent)
     await db.commit()
     return TokenResponse(access_token=access, refresh_token=refresh, expires_in=expires_in)
+
+
+# ---- SAML 2.0 -----------------------------------------------------------------
+
+@router.get("/auth/sso/saml/{tenant_id}/metadata", include_in_schema=False)
+async def saml_sp_metadata(tenant_id: uuid.UUID):
+    """Our service-provider metadata, to upload to the identity provider."""
+    return Response(saml.sp_metadata(tenant_id), media_type="application/samlmetadata+xml")
+
+
+@router.post("/auth/sso/saml/{tenant_id}/acs", include_in_schema=False)
+async def saml_acs(
+    tenant_id: uuid.UUID,
+    SAMLResponse: str = Form(..., max_length=500_000),  # noqa: N803 - SAML binding field name
+    RelayState: str | None = Form(None, max_length=200),  # noqa: N803 - SAML binding field name
+    db: AsyncSession = Depends(get_db),
+):
+    """Assertion consumer service (HTTP-POST binding). Only answers to our own
+    requests are accepted: RelayState names a one-time login state."""
+    state = await db.get(SsoLoginState, RelayState) if RelayState else None
+    if state is None or state.tenant_id != tenant_id:
+        return _to_app(error="This sign-in was not started here, or has expired. Start again from the sign-in page.")
+    await db.delete(state)  # one use, whatever happens next
+    await db.flush()
+    cfg = await db.get(TenantSsoConfig, tenant_id)
+    row = await db.get(TenantSamlConfig, tenant_id)
+    try:
+        if state.expires_at <= datetime.now(timezone.utc):
+            raise saml.SamlError("This sign-in has expired. Start again.")
+        if cfg is None or not cfg.enabled or cfg.protocol != "saml" or row is None or not row.idp_certificates:
+            raise saml.SamlError("SAML single sign-on is not enabled for this organization.")
+        identity = saml.verify_response(
+            SAMLResponse, certificates=row.idp_certificates, idp_entity_id=row.idp_entity_id or "",
+            sp_entity=saml.sp_entity_id(tenant_id), acs=saml.acs_url(tenant_id), request_id=state.nonce,
+            email_attribute=row.email_attribute,
+        )
+        if not identity.email:
+            raise saml.SamlError("The identity provider did not share your email address.")
+        if dom.email_domain(identity.email) not in await dom.verified_domains(db, tenant_id):
+            raise saml.SamlError("Your email domain is not verified for this organization.")
+        user, created = await oidc.resolve_user(db, cfg, email=identity.email, subject=identity.subject,
+                                                name=identity.name, provider="saml")
+        if not user.is_active:
+            raise saml.SamlError("Your account is disabled. Contact your administrator.")
+    except (saml.SamlError, oidc.SsoError) as exc:
+        await db.commit()  # the one-time state stays consumed
+        return _to_app(error=str(exc))
+    handoff = await oidc.create_handoff(db, user)
+    await AuditService(db).record(
+        tenant_id=tenant_id, action="auth.sso_login", actor_id=user.id, actor_email=user.email, entity_type="auth",
+        description=f"{user.email} signed in with SAML SSO" + (" (account created)" if created else ""),
+    )
+    await db.commit()
+    params = {"code": handoff}
+    if state.next_path:
+        params["next"] = state.next_path
+    return _to_app(**params)

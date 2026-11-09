@@ -1,6 +1,6 @@
 # Enterprise security, privacy and compliance programme
 
-Status: **S1–S6 implemented and tested** (2026-11-03 / 04), except SAML 2.0 (see S6).
+Status: **S1–S6 implemented and tested** (2026-11-03 / 04), including SAML 2.0 (see S6).
 
 Every item is labelled by its real state. Nothing here claims a certification: HSDEEP CORE AI
 holds no SOC 2, ISO 27001 or similar attestation.
@@ -240,7 +240,7 @@ green (2820 passed).
 object store is needed with several API replicas); deletion is not yet surfaced to platform
 admins on the Customers page; redaction does not cover free-text personal data such as names.
 
-## S6: enterprise identity (implemented, SAML deferred)
+## S6: enterprise identity (implemented)
 
 Migration `c9e7a3b5d1f6`; Settings > Single sign-on (`security.manage`); `app/api/routes/identity.py`,
 `app/api/routes/scim.py`, `app/services/identity/`.
@@ -272,17 +272,39 @@ Migration `c9e7a3b5d1f6`; Settings > Single sign-on (`security.manage`); `app/ap
 - **Configuration**: `API_PUBLIC_URL` (the callback base, default `http://localhost:8000`) and
   `APP_PUBLIC_URL` (where the browser lands) must be the public URLs in each deployment.
 
-**SAML 2.0 is not implemented.** Verifying SAML assertions safely needs an XML-signature library
-(`signxml` + `lxml`) and careful protection against signature-wrapping attacks; that is a separate
-step. Every major identity provider supports OpenID Connect, which is available now.
+### SAML 2.0
 
-Tests: `tests/test_security_s6_identity.py` (a fake identity provider with real RSA keys, JWKS and
-a token endpoint).
+Migration `d2f8b4c6e0a7` (`tenant_saml_configs`); `app/services/identity/saml.py`. A tenant picks
+the protocol (`oidc` or `saml`) on Settings > Single sign-on.
+
+- **Service provider**, per tenant: entity ID `{API_PUBLIC_URL}/api/auth/sso/saml/{tenant_id}`,
+  ACS `…/acs` (HTTP-POST), metadata `…/metadata`.
+- **Identity provider setup**: paste its metadata XML (entity ID, HTTP-Redirect sign-in URL and
+  signing certificates are read from it) or enter the fields; the sign-in URL must be https.
+  Several certificates may be stored for rollover; the page shows each subject and expiry.
+- **Flow**: service-provider initiated only. `/auth/sso/start` stores a one-time login state
+  (RelayState) holding the AuthnRequest ID and redirects with a deflated AuthnRequest. The ACS
+  consumes that state first, so IdP-initiated, replayed and expired responses are refused.
+- **Verification** (`signxml` 4.0.3, `lxml` 5.3.0, both pinned): XML parsed with DTDs, entities
+  and network access off (a DOCTYPE is refused); the Response or the Assertion must carry a valid
+  signature by a stored certificate, and only the signed XML is read afterwards; exactly one
+  Assertion (defeats signature wrapping); encrypted assertions refused; issuer, NotBefore /
+  NotOnOrAfter (2 minutes skew), audience = our entity ID, a bearer SubjectConfirmation whose
+  Recipient is our ACS and whose InResponseTo is our request ID.
+- **Users**: email from the configured attribute, else NameID, else the common email attributes;
+  must be on a verified domain. Matching, JIT creation, default role, the one-time handoff code
+  and the `auth.sso_login` audit are shared with OIDC (identity provider `saml`).
+- **Not supported**: IdP-initiated sign-in, encrypted assertions, signed AuthnRequests, single
+  logout, and SAML group attributes (roles are assigned in the platform).
+
+Tests: `tests/test_security_s6_identity.py` (a fake OIDC provider with real RSA keys, JWKS and a
+token endpoint) and `tests/test_security_saml.py` (a fake SAML identity provider signing with
+signxml: valid responses, every refusal path, a wrapping attack, end-to-end sign-in and replay).
 
 ## Not built yet
 
 | Item | Scope |
 |---|---|
-| SAML 2.0 | Assertion consumer service with signxml-based verification, IdP metadata import |
+| SAML extras | Encrypted assertions, IdP-initiated sign-in, single logout |
 | SCIM Groups | Map identity-provider groups to platform roles |
 | Per-tenant keys | Envelope encryption and customer-managed keys (design in S4) |
