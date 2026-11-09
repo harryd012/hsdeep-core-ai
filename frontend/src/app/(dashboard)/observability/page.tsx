@@ -92,11 +92,13 @@ export default function PlatformObservabilityPage() {
           <Pill tone="neutral">Grafana not configured</Pill>
         )
       }
-      meta="Source: docs/design/PROMETHEUS_GRAFANA_IMPLEMENTATION_AUDIT.md"
+      meta={<span style={{ overflowWrap: "anywhere" }}>Source: docs/design/PROMETHEUS_GRAFANA_IMPLEMENTATION_AUDIT.md</span>}
     >
       <Banner tone="info">
-        This page shows the plan and its delivery state, never live health. Live platform metrics appear in Grafana once
-        Phases 3–4 are deployed{GRAFANA_URL ? "" : " and NEXT_PUBLIC_GRAFANA_URL is set"}.
+        <span style={{ overflowWrap: "anywhere" }}>
+          This page shows the plan and its delivery state, never live health. Live platform metrics appear in Grafana once
+          Phases 3–4 are deployed{GRAFANA_URL ? "" : " and NEXT_PUBLIC_GRAFANA_URL is set"}.
+        </span>
       </Banner>
 
       <StatStrip>
@@ -139,9 +141,9 @@ export default function PlatformObservabilityPage() {
           <Panel title="Audit findings" state="ready">
             <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 10 }}>
               {AUDIT_FINDINGS.map((f) => (
-                <li key={f.title} style={{ display: "grid", gridTemplateColumns: "90px 1fr", gap: 10, alignItems: "start" }}>
+                <li key={f.title} style={{ display: "grid", gridTemplateColumns: "90px minmax(0, 1fr)", gap: 10, alignItems: "start" }}>
                   <Pill tone={SEVERITY_TONE[f.severity]}>{f.severity}</Pill>
-                  <span style={{ fontSize: 13 }}>
+                  <span style={{ fontSize: 13, overflowWrap: "anywhere" }}>
                     <strong>{f.title}.</strong> <span className="pk-muted">{f.detail}</span>
                   </span>
                 </li>
@@ -158,13 +160,13 @@ export default function PlatformObservabilityPage() {
 
         <div className="pk-col-12">
           <Panel title="References" state="ready" info="Official Prometheus, Grafana and Google SRE documentation the plan follows.">
-            <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
+            <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(min(260px, 100%), 1fr))" }}>
               {groups.map((g) => (
                 <div key={g}>
                   <h3 style={{ margin: "0 0 6px", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.04em" }} className="pk-muted">{g}</h3>
                   <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 8 }}>
                     {REFERENCES.filter((r) => r.group === g).map((r) => (
-                      <li key={r.url} style={{ fontSize: 13 }}>
+                      <li key={r.url} style={{ fontSize: 13, overflowWrap: "anywhere" }}>
                         <a href={r.url} target="_blank" rel="noopener noreferrer">{r.title}</a>
                         <span className="pk-cell-sub">{r.why}</span>
                       </li>
