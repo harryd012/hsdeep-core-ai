@@ -35,6 +35,7 @@ import {
 } from "@/lib/api";
 import { getResourceCapabilities, type CapabilityReport } from "@/lib/infrastructureIntelligence";
 import { buildIncidentInvestigation, type InvestigationModel } from "@/lib/investigation/investigationModel";
+import SopRecommendations from "@/components/investigation/SopRecommendations";
 
 /* ------------------------------------------------------------------ styles */
 
@@ -323,6 +324,7 @@ export default function InvestigationWorkspace({
 
   return (
     <InvestigationBody
+      incidentId={incidentId}
       model={m}
       collectors={collectors}
       collectorUnavailable={collectorUnavailable}
@@ -335,12 +337,14 @@ export default function InvestigationWorkspace({
 /* ------------------------------------------------------------------ sections */
 
 function InvestigationBody({
+  incidentId,
   model: m,
   collectors,
   collectorUnavailable,
   impactReason,
   capabilityReason,
 }: {
+  incidentId: string;
   model: InvestigationModel;
   collectors: CollectorHealthList | null;
   collectorUnavailable: string | null;
@@ -866,6 +870,9 @@ function InvestigationBody({
           </Msg>
         )}
       </Panel>
+
+      {/* Recommended SOPs: its own read, so a scoring failure never blanks the workspace. */}
+      <SopRecommendations incidentId={incidentId} />
 
       {/* 10 -------------------------------------------------------------- ACTION */}
       <Panel
