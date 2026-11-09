@@ -1,0 +1,147 @@
+# SOP-033: Dynamic Routing Adjacency Troubleshooting (OSPF, EIGRP, RIP)
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: connectivity
+# Estimated Duration: 45 minutes
+# Required Skills: Network Engineer, Routing Specialist
+# Required Permissions: read-only device access, configuration change (approved changes only)
+# Tags: routing, ospf, eigrp, rip, adjacency, neighbor, dynamic-routing, cisco, fortigate
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-033
+status: draft
+versionNumber: 1
+category: connectivity
+changeSummary: Initial version - find why an OSPF, EIGRP or RIP neighbour is down or routes are missing, and fix it under change control.
+
+steps:
+  - order: 1
+    action: Identify the protocol and the missing neighbour or routes
+    description: Check which routing protocol runs on the link (OSPF process ID and area, EIGRP AS number, RIP version) and which neighbour or prefixes are missing compared with the design.
+    expectedResult: The protocol, the two routers and the missing adjacency or prefixes are known.
+    failureAction: If the design is not documented, capture show ip protocols on both ends before going further.
+
+  - order: 2
+    action: Confirm Layer 1-3 between the neighbours
+    description: Check the link interfaces are up/up on both sides, the addresses are in the same subnet, and the neighbour's interface address answers ping (including with the MTU in use).
+    expectedResult: Both interfaces are up, in the same subnet, and reachable.
+    failureAction: Fix the physical or addressing issue first; routing cannot form over a broken link.
+
+  - order: 3
+    action: Compare protocol parameters on both ends
+    description: >-
+      OSPF - same area, area type, hello/dead timers, network type, MTU (or ip ospf mtu-ignore by design),
+      unique router IDs, matching authentication. The "network 10.0.0.0 0.0.0.255 area 0" statement must
+      cover the interface address. EIGRP - same AS number (for example "router eigrp 100"), matching K values,
+      matching authentication, the interface covered by a network statement such as
+      "network 192.168.1.0 0.0.0.255". RIP - same version (v2 recommended), the interface covered by
+      "network 192.168.1.0", not passive.
+    expectedResult: The mismatched parameter is found, or all parameters match.
+    warnings:
+      - A passive-interface stops hellos on that interface; check it is intended.
+      - Access lists or firewall policy can drop multicast hellos (OSPF 224.0.0.5/6, EIGRP 224.0.0.10, RIP 224.0.0.9).
+    failureAction: If parameters match and the adjacency is still down, collect outputs and escalate before running debugs.
+
+  - order: 4
+    action: Correct the parameter under change control
+    description: Prepare the configuration change on the side that differs from the design, with its rollback, and apply in the window. Prefer changing the side that is wrong over the side that matches the rest of the network.
+    expectedResult: The adjacency forms (OSPF FULL, EIGRP neighbour listed with uptime increasing, RIP updates received).
+    warnings:
+      - Changing an OSPF area, network type or router ID resets adjacencies on that router.
+      - Authentication changes must be made on both ends in the same window.
+    failureAction: Roll back the change and escalate.
+
+  - order: 5
+    action: Verify routes and convergence
+    description: Confirm the expected prefixes are now learned, the path is as designed, and no route flaps for several hello intervals.
+    expectedResult: The routing table holds the expected prefixes via the expected neighbour; the alert clears.
+
+troubleshootingMatrix:
+  - symptom: OSPF neighbour stuck in INIT or 2-WAY
+    possibleCauses:
+      - Hellos only received one way (ACL, multicast blocked)
+      - On broadcast networks, 2-WAY with non-DR routers is normal
+      - Duplicate router ID
+    recommendedActions:
+      - show ip ospf neighbor and show ip ospf interface on both ends
+  - symptom: OSPF neighbour stuck in EXSTART or EXCHANGE
+    possibleCauses:
+      - MTU mismatch between the two interfaces
+    recommendedActions:
+      - Compare interface MTU; align MTU (preferred) or use ip ospf mtu-ignore by design
+  - symptom: EIGRP neighbour not forming
+    possibleCauses:
+      - AS number mismatch
+      - K-value mismatch
+      - Authentication key mismatch
+      - Interfaces in different subnets
+    recommendedActions:
+      - show ip eigrp neighbors, show ip protocols, check log for K-value or authentication messages
+  - symptom: RIP routes missing
+    possibleCauses:
+      - Version mismatch (v1 vs v2)
+      - Interface not covered by a network statement or passive
+      - Hop count above 15 or split horizon on hub-and-spoke
+    recommendedActions:
+      - show ip protocols and debug ip rip only with approval
+
+commandsAndExpectedResults:
+  - command: show ip protocols
+    expectedResult: Running protocols, networks advertised, passive interfaces, timers and AS / process IDs.
+  - command: show ip ospf neighbor
+    expectedResult: Each expected neighbour in FULL (or 2-WAY with DROTHER peers on broadcast segments).
+  - command: show ip ospf interface <interface>
+    expectedResult: Area, network type, timers, cost and DR/BDR for the interface.
+  - command: show ip eigrp neighbors
+    expectedResult: Each expected neighbour with increasing uptime and low SRTT.
+  - command: show ip route ospf
+    expectedResult: Prefixes learned through OSPF (use eigrp / rip for the others).
+  - command: get router info ospf neighbor
+    expectedResult: FortiGate OSPF neighbours and their state.
+  - command: debug ip ospf adj
+    expectedResult: Adjacency events showing the mismatch.
+    warnings:
+      - Debug can load the CPU; run only with approval, scoped, and turn off with undebug all.
+
+prerequisites:
+  - Routing design (areas, AS numbers, authentication method) is available.
+  - Configuration of both routers backed up.
+  - Approved change for any configuration change.
+
+permissions:
+  - Read-only device access for diagnosis.
+  - Configuration privilege only under an approved change.
+
+escalationCriteria:
+  - Core or WAN routing adjacency down with traffic impact.
+  - Routes flapping or a suspected routing loop.
+  - The fix needs changes on a provider-managed router.
+
+ticketTemplate:
+  - Short Description: <OSPF/EIGRP/RIP> adjacency down between <router A> and <router B> - SOP-033
+  - Description: |
+      Neighbour <address> on <interface> is <state>. Parameter comparison attached.
+      Mismatch found: <parameter>. Proposed fix and rollback: <commands>.
+  - Priority: P2 if WAN/core traffic is affected, else P3.
+  - Impacted Systems: <routers>, <links>, <prefixes>.
+  - Category: Network - Routing.
+  - Assigned Group: Network Team.
+  - Related SOP: SOP-033.
+
+closureCriteria:
+  - Adjacency is up and stable, expected prefixes are learned.
+  - Configuration saved and change closed with before/after outputs.
+
+rollbackPrecautions:
+  - Keep the previous protocol configuration block for both routers.
+  - Revert authentication changes on both ends together.
+  - Turn off any debug with undebug all before closing.
+
+safetyNotes:
+  - No configuration or debug commands without authorization.
+  - Never paste routing authentication keys into the ticket.
+
+searchableKeywords:
+  - ospf, eigrp, rip, neighbor down, adjacency, exstart, router ospf, router eigrp, dynamic routing

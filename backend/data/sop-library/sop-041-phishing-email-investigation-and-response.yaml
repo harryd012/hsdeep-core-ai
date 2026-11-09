@@ -1,0 +1,127 @@
+# SOP-041: Phishing Email Investigation and Response
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: security
+# Estimated Duration: 45 minutes
+# Required Skills: SOC Analyst Tier 1, Email Administrator
+# Required Permissions: mail security console read, message search and purge (approved), identity read
+# Tags: phishing, email, credential-theft, spf, dkim, dmarc, quarantine, soc, m365
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-041
+status: draft
+versionNumber: 1
+category: security
+changeSummary: Initial version - analyse a reported or detected phishing email, find who received and interacted with it, remove it, and contain any credential or malware exposure.
+
+steps:
+  - order: 1
+    action: Collect the message safely
+    description: Get the original message with full headers (as an attachment or from the mail security console), never by forwarding inline. Record sender, return-path, subject, received time, recipients, links and attachments.
+    expectedResult: The original message and its indicators are in the case.
+    warnings:
+      - Do not click links or open attachments outside the sandbox.
+    failureAction: If the original is not available, search the mail logs by subject and sender.
+
+  - order: 2
+    action: Analyse headers and content
+    description: Check SPF, DKIM and DMARC results and the sending infrastructure in the headers, look-alike domains, reply-to mismatch, urgency or payment lures, and detonate links and attachments in the sandbox; check URL and file reputation.
+    expectedResult: Verdict (phishing, spam, legitimate) with the indicators (domains, URLs, IPs, hashes).
+    failureAction: If unclear, escalate to Tier 2 with the analysis so far.
+
+  - order: 3
+    action: Scope the campaign
+    description: Search all mailboxes for the same sender, subject, URL or attachment hash; list recipients, who opened it, who clicked (proxy / URL-rewrite logs) and who entered credentials or ran the attachment.
+    expectedResult: List of recipients and of users who interacted.
+    failureAction: If logs do not show clicks, treat recipients who opened it as possibly exposed.
+
+  - order: 4
+    action: Remove and block
+    description: Under the approved process, purge or quarantine the message from all mailboxes, and block the sender, domains, URLs and hashes at the mail gateway, proxy / DNS filter and EDR (SOP-028 for indicator blocking).
+    expectedResult: No copies remain in mailboxes; indicators blocked.
+    warnings:
+      - Message purge is irreversible on some platforms; confirm the search matches only the phishing message.
+    failureAction: If purge fails, quarantine and notify recipients not to interact.
+
+  - order: 5
+    action: Contain exposed users and hosts
+    description: For users who entered credentials - reset the password, revoke sessions and tokens, check MFA methods and mailbox rules (forwarding, deletion) for tampering, and review sign-ins. For users who ran an attachment - isolate the host and investigate (SOP-019, SOP-026).
+    expectedResult: Exposed accounts secured and infected hosts contained.
+    warnings:
+      - Account actions follow SOP-026 approvals; verify the user's identity out of band.
+    failureAction: Escalate to incident response if a privileged account or many users are exposed.
+
+  - order: 6
+    action: Notify, close and improve
+    description: Thank the reporter, inform affected users, record indicators and timeline, and suggest awareness or mail-rule improvements.
+    expectedResult: Case closed with timeline, indicators, actions and lessons learned.
+
+troubleshootingMatrix:
+  - symptom: Phishing passed SPF / DKIM / DMARC
+    possibleCauses:
+      - Sent from a compromised legitimate account or a look-alike domain the attacker controls
+    recommendedActions:
+      - Treat sender reputation, not authentication, as the signal; check the sending account for compromise
+  - symptom: Same campaign keeps arriving
+    possibleCauses:
+      - Attacker rotates sender domains or URLs
+    recommendedActions:
+      - Block by message characteristics and URL patterns; raise a gateway rule
+  - symptom: User entered credentials but MFA was on
+    possibleCauses:
+      - MFA fatigue / push approval or adversary-in-the-middle token theft
+    recommendedActions:
+      - Revoke sessions and tokens, review sign-ins and registered MFA methods
+
+commandsAndExpectedResults:
+  - command: Get-MessageTrace -SenderAddress <sender> -StartDate <date> -EndDate <date>
+    expectedResult: Recipients and delivery status of messages from the sender (Exchange Online).
+  - command: Get-InboxRule -Mailbox <user>
+    expectedResult: Mailbox rules; look for unexpected forwarding or delete rules.
+  - command: Revoke-MgUserSignInSession -UserId <user>
+    expectedResult: Refresh tokens revoked for the user (Microsoft Graph PowerShell; approved action).
+    warnings:
+      - Signs the user out everywhere; coordinate with the user.
+
+prerequisites:
+  - Access to the mail security console and message trace.
+  - Sandbox for links and attachments.
+  - Approval path for purge and account actions.
+
+permissions:
+  - Read access to mail logs for analysis.
+  - Purge, block and account actions only through the approved process.
+
+escalationCriteria:
+  - Credentials entered by a privileged user, or by many users.
+  - Malware executed on any host.
+  - Business email compromise or payment fraud attempt.
+
+ticketTemplate:
+  - Short Description: Phishing - <subject> from <sender> - SOP-041
+  - Description: |
+      Verdict <phishing/spam/legit>. Recipients <n>, clicked <n>, credentials entered <n>.
+      Indicators <domains/URLs/hashes>. Actions <purge, blocks, resets>.
+  - Priority: P2 if credentials entered or malware executed, else P3.
+  - Impacted Systems: <mailboxes>, <users>, <hosts>.
+  - Category: Security - Phishing.
+  - Assigned Group: SOC Tier 1.
+  - Related SOP: SOP-041.
+
+closureCriteria:
+  - Message removed, indicators blocked, exposed users and hosts contained.
+  - Timeline and lessons learned recorded.
+
+rollbackPrecautions:
+  - Keep a copy of the original message as evidence before purging.
+  - Remove temporary blocks that catch legitimate mail after review.
+
+safetyNotes:
+  - Never forward phishing to users or open it outside the sandbox.
+  - Verify identity before any account reset.
+  - Minimise personal data in the case.
+
+searchableKeywords:
+  - phishing, suspicious email, credential harvesting, spf, dkim, dmarc, message purge, business email compromise

@@ -1,0 +1,133 @@
+# SOP-040: SOC Alert Triage and Tiered Escalation
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: security
+# Estimated Duration: 30 minutes
+# Required Skills: SOC Analyst Tier 1, SOC Analyst Tier 2
+# Required Permissions: SIEM / log read access, alert and incident management
+# Tags: soc, triage, tier1, tier2, tier3, escalation, siem, incident-response, alert, nist
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-040
+status: draft
+versionNumber: 1
+category: security
+changeSummary: Initial version - Tier 1 triage of a security alert through the monitor, analyze, investigate, respond and recover cycle, with clear hand-offs to Tier 2 / Tier 3 and the specialist SOPs.
+
+steps:
+  - order: 1
+    action: Acknowledge and record the alert (Monitor)
+    description: Acknowledge the alert within the SLA, record its source (SIEM, IPS, EDR, firewall, identity provider), time, affected user / host / IP, and the rule that fired.
+    expectedResult: The alert is owned by a named analyst and the facts are in the ticket.
+    failureAction: If the alert cannot be acknowledged within SLA, notify the SOC lead.
+
+  - order: 2
+    action: Validate the alert (Analyze)
+    description: >-
+      Decide true positive, false positive or benign true positive using the raw events - is the
+      activity real, is the asset and user known, is it expected (change, scan, admin task). Check
+      the platform's Logs Explorer for the device, related alerts on the same host or user, and
+      threat-intelligence reputation of IPs, domains and hashes.
+    expectedResult: A verdict with the evidence that supports it.
+    warnings:
+      - Do not open suspicious links or files on your workstation; use the sandbox.
+    failureAction: If the verdict is not clear within 15 minutes, escalate to Tier 2 with what was found.
+
+  - order: 3
+    action: Classify and set severity
+    description: Classify the threat type (phishing, malware, suspicious login, brute force, data exfiltration, DDoS, insider activity, policy violation) and set severity from asset criticality and observed impact.
+    expectedResult: Type and severity recorded; the matching specialist SOP is chosen.
+    failureAction: Use the highest plausible severity when unsure.
+
+  - order: 4
+    action: Hand off to the specialist procedure (Investigate)
+    description: >-
+      Follow the SOP for the type - IPS/IDS alerts SOP-018, suspected compromise SOP-019, brute force /
+      password spraying SOP-020, malicious outbound / C2 SOP-021, phishing SOP-041, DDoS SOP-042.
+      Escalate to Tier 2 for deep analysis, and to Tier 3 / incident response for confirmed compromise,
+      multiple hosts, privileged accounts or data loss.
+    expectedResult: The right team owns the investigation, with the evidence attached.
+    failureAction: If no SOP fits, escalate to Tier 2 and note the gap for the SOP owner.
+
+  - order: 5
+    action: Contain and respond (Respond)
+    description: Containment (isolating a host, disabling an account, blocking an indicator) follows the approved containment SOPs (SOP-026, SOP-027, SOP-028) and needs the approval they require.
+    expectedResult: The threat is contained without unapproved disruptive actions.
+    warnings:
+      - Isolation and account disabling disrupt users; follow the approval rules in the containment SOPs.
+    failureAction: If approval cannot be obtained fast enough for a critical threat, follow the emergency escalation path.
+
+  - order: 6
+    action: Recover, close and improve (Recover and Improve)
+    description: Confirm recovery with the owner, close with the verdict and root cause, and record tuning for false positives or detection gaps found.
+    expectedResult: Closed ticket with verdict, actions and any rule tuning request.
+
+troubleshootingMatrix:
+  - symptom: High volume of the same alert
+    possibleCauses:
+      - Noisy detection rule or threshold
+      - Recurring incidents not deduplicated
+      - Real ongoing attack (spray, scan, DDoS)
+    recommendedActions:
+      - Check whether it is one source or many; tune with the rule owner, never silence without review
+  - symptom: Alert on a privileged or critical asset
+    possibleCauses:
+      - Admin activity outside change
+      - Compromised privileged account
+    recommendedActions:
+      - Escalate to Tier 2 immediately and verify with the asset owner
+  - symptom: Not enough data to decide
+    possibleCauses:
+      - Log source not onboarded or delayed
+      - Retention too short
+    recommendedActions:
+      - Record the gap; escalate with available evidence
+
+commandsAndExpectedResults:
+  - command: Logs Explorer filter host:<host> since:<time>
+    expectedResult: All events for the host around the alert time (platform Logs Explorer).
+  - command: Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625; StartTime=<time>}
+    expectedResult: Failed Windows logons around the alert time.
+  - command: last -F | head
+    expectedResult: Recent logins on a Linux host.
+
+prerequisites:
+  - Access to the SIEM / Logs Explorer, alert queue and threat-intelligence lookups.
+  - Current on-call and escalation contacts for Tier 2, Tier 3 and the incident manager.
+
+permissions:
+  - Read access to security logs and alerts.
+  - Containment actions only through the approved containment SOPs.
+
+escalationCriteria:
+  - Confirmed compromise, privileged account involvement, data exfiltration or several hosts affected.
+  - Verdict not possible within 15 minutes.
+  - Any regulatory or customer-notification impact.
+
+ticketTemplate:
+  - Short Description: Security alert triage - <rule> on <host/user> - SOP-040
+  - Description: |
+      Source <SIEM/IPS/EDR>. Time <time>. Entity <host/user/IP>. Verdict <TP/FP/benign>.
+      Type <type>, severity <severity>. Next SOP <number> / escalated to <tier>.
+  - Priority: From severity and asset criticality.
+  - Impacted Systems: <hosts>, <users>.
+  - Category: Security - Triage.
+  - Assigned Group: SOC Tier 1.
+  - Related SOP: SOP-040.
+
+closureCriteria:
+  - Verdict, evidence and actions recorded.
+  - Hand-off or closure confirmed; tuning requests raised for false positives.
+
+rollbackPrecautions:
+  - Triage itself changes nothing; containment rollbacks are in SOP-026 to SOP-028.
+
+safetyNotes:
+  - Never run suspicious samples outside the sandbox.
+  - Never paste credentials, tokens or personal data beyond what the case needs.
+  - Preserve evidence; do not reboot or wipe hosts during investigation.
+
+searchableKeywords:
+  - soc triage, security alert, tier 1, tier 2, escalation, true positive, false positive, siem, incident response

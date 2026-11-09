@@ -1,0 +1,131 @@
+# SOP-036: DHCP Address Assignment Failure Troubleshooting (DORA)
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: connectivity
+# Estimated Duration: 30 minutes
+# Required Skills: NOC Engineer, Network Engineer, System Administrator
+# Required Permissions: read-only device access, DHCP server read access
+# Tags: dhcp, dora, ip-helper, relay, apipa, scope, lease, windows-dhcp, fortigate
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-036
+status: draft
+versionNumber: 1
+category: connectivity
+changeSummary: Initial version - find which DORA step fails (Discover, Offer, Request, Acknowledge) when clients get no address or a wrong one.
+
+steps:
+  - order: 1
+    action: Confirm the client symptom
+    description: >-
+      On an affected client check its address. A 169.254.x.x (APIPA) address means no DHCP offer was
+      received; an address in the wrong subnet means another DHCP server or the wrong VLAN answered.
+      Note the client MAC, VLAN and switch port.
+    expectedResult: It is known whether clients get no address, the wrong address, or no gateway / DNS.
+    failureAction: If only one client is affected, check that client's port and VLAN (SOP-035) first.
+
+  - order: 2
+    action: Check the DHCP server and scope
+    description: On the DHCP server (Windows DHCP, FortiGate, router or switch), confirm the service runs, the scope for the client subnet is active, and free addresses remain; check the router, DNS and lease options.
+    expectedResult: The scope exists, is active, has free leases and correct options (gateway, DNS, domain).
+    warnings:
+      - A full scope is common after a device storm or very long lease times; look at lease counts before extending the scope.
+    failureAction: If the scope is exhausted, clear stale leases or extend the range under change control.
+
+  - order: 3
+    action: Check the relay when the server is on another subnet
+    description: >-
+      Discover is a broadcast and does not cross routers. The client VLAN's gateway (SVI or router
+      interface) needs a DHCP relay pointing to the server ("ip helper-address <server>" on Cisco,
+      DHCP relay on FortiGate). Confirm the relay is on the right interface and the server can route back.
+    expectedResult: The relay is configured on the client gateway and the path to the server is open (UDP 67/68).
+    failureAction: Add or correct the relay under change control.
+
+  - order: 4
+    action: Find the failing DORA step
+    description: Use the server log or a short, approved capture to see which messages arrive - Discover from the client, Offer from the server, Request from the client, Acknowledge (or NAK) from the server.
+    expectedResult: The step where the exchange stops is identified.
+    warnings:
+      - Packet captures need approval and must be limited to DHCP traffic.
+    failureAction: Escalate with the capture summary if the failing step is not clear.
+
+  - order: 5
+    action: Fix and verify
+    description: Apply the approved fix, renew the lease on an affected client and confirm address, mask, gateway and DNS.
+    expectedResult: Clients receive a correct lease and reach the gateway and DNS.
+
+troubleshootingMatrix:
+  - symptom: Clients get 169.254.x.x addresses
+    possibleCauses:
+      - No DHCP relay on the client VLAN gateway
+      - DHCP service down or scope deactivated
+      - UDP 67/68 blocked between relay and server
+    recommendedActions:
+      - Check the relay and server, then capture if needed
+  - symptom: Clients get addresses from the wrong subnet
+    possibleCauses:
+      - Rogue DHCP server on the LAN
+      - Port in the wrong VLAN
+    recommendedActions:
+      - Find the offering server's MAC and enable DHCP snooping by design
+  - symptom: Server sends NAK
+    possibleCauses:
+      - Client requests an address from another subnet (moved device)
+      - Lease conflict / duplicate address
+    recommendedActions:
+      - Release and renew on the client; check conflict detection on the server
+
+commandsAndExpectedResults:
+  - command: ipconfig /all
+    expectedResult: Client address, DHCP server, lease times, gateway and DNS (Windows).
+  - command: ipconfig /release && ipconfig /renew
+    expectedResult: The client completes DORA and receives a new lease.
+  - command: show ip dhcp binding
+    expectedResult: Leases issued by a Cisco IOS DHCP server.
+  - command: show running-config interface vlan <id> | include helper
+    expectedResult: The ip helper-address on the client VLAN gateway.
+  - command: Get-DhcpServerv4ScopeStatistics
+    expectedResult: Free and in-use addresses per scope (Windows DHCP server).
+  - command: execute dhcp lease-list
+    expectedResult: Leases issued by the FortiGate DHCP server.
+
+prerequisites:
+  - Client subnet, VLAN and the DHCP server for that subnet.
+  - Read access to the DHCP server and the client gateway.
+
+permissions:
+  - Read-only access for diagnosis.
+  - Scope, relay or snooping changes only under an approved change.
+
+escalationCriteria:
+  - Whole site or VLAN without addresses.
+  - Rogue DHCP server suspected (escalate to security).
+  - Scope exhaustion that needs re-addressing.
+
+ticketTemplate:
+  - Short Description: DHCP failure for <VLAN/subnet> at <site> - SOP-036
+  - Description: |
+      Clients receive <no address / APIPA / wrong subnet>. Server <server>, scope <scope>.
+      Failing DORA step: <Discover / Offer / Request / Acknowledge>. Fix: <action>.
+  - Priority: P2 for a whole VLAN or site, else P3.
+  - Impacted Systems: <DHCP server>, <gateway>, <VLAN>.
+  - Category: Network - DHCP.
+  - Assigned Group: Network Team.
+  - Related SOP: SOP-036.
+
+closureCriteria:
+  - Affected clients receive correct leases and reach the gateway and DNS.
+  - Root cause and fix recorded.
+
+rollbackPrecautions:
+  - Record scope and relay settings before changing them.
+  - Do not delete active leases in bulk; remove only stale or conflicting ones.
+
+safetyNotes:
+  - Changes only under an approved change.
+  - Captures limited to DHCP traffic and deleted after use.
+
+searchableKeywords:
+  - dhcp, dora, apipa, 169.254, ip helper-address, dhcp relay, scope exhausted, no ip address, lease

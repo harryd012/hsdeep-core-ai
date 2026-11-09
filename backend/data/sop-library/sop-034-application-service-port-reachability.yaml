@@ -1,0 +1,133 @@
+# SOP-034: Application Service Port Reachability Verification
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: connectivity
+# Estimated Duration: 25 minutes
+# Required Skills: NOC Engineer, Network Engineer, System Administrator
+# Required Permissions: read-only device access, host read access
+# Tags: ports, tcp, udp, firewall, dns, ssh, http, https, smtp, ldap, sql, snmp, reachability
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-034
+status: draft
+versionNumber: 1
+category: connectivity
+changeSummary: Initial version - check whether a service port is reachable end to end and find what blocks it, using the well-known port reference.
+
+steps:
+  - order: 1
+    action: Identify the service, transport and port
+    description: >-
+      Confirm which service fails and its port and transport from the reference below (for example DNS
+      53 TCP/UDP, SSH/SFTP 22 TCP, SMTP 25 TCP, HTTP 80, HTTPS 443, LDAP 389, LDAPS 636, SQL Server 1433,
+      Oracle 1521, SNMP 161 UDP). Confirm with the application owner if the service uses a non-standard port.
+    expectedResult: Source, destination, transport and port are known.
+    failureAction: If the port is unknown, check the listening ports on the server (step 2) before testing the network.
+
+  - order: 2
+    action: Check the service is listening on the server
+    description: On the destination host, list listening sockets and confirm the process and bound address (all interfaces vs localhost only).
+    expectedResult: The service listens on the expected port and address.
+    failureAction: If not listening, the issue is the service, not the network; hand over to the server owner.
+
+  - order: 3
+    action: Test from the source side
+    description: >-
+      From the source host or a host in the same network, test TCP ports with Test-NetConnection / nc
+      and UDP services with a protocol client (nslookup / dig for DNS, snmpget for SNMP). A UDP port
+      cannot be proven open by a port scan alone.
+    expectedResult: The test shows connected, refused (host answered, nothing listening) or timed out (something dropped it).
+    warnings:
+      - Do not run broad port scans; test only the specific ports in the ticket.
+    failureAction: If it times out, follow the path to find the device that drops it (step 4).
+
+  - order: 4
+    action: Check the path and firewall policy
+    description: Trace the route, then on each firewall in the path check the policy that should allow the source, destination and service, its hit count, and the session or deny logs for the test.
+    expectedResult: The device and rule (or missing rule) that blocks the traffic is found.
+    warnings:
+      - Use packet capture / flow trace only with approval; it may capture sensitive data.
+    failureAction: If no device shows the drop, capture on the destination host with approval.
+
+  - order: 5
+    action: Request the access change and verify
+    description: Raise a change for the firewall rule or host firewall exception with exact source, destination, port and business reason, then re-test after it is applied.
+    expectedResult: The port test succeeds and the application works.
+
+troubleshootingMatrix:
+  - symptom: Connection times out
+    possibleCauses:
+      - Firewall or ACL drops the traffic
+      - Host firewall blocks the port
+      - Routing asymmetry dropped by a stateful firewall
+    recommendedActions:
+      - Check deny logs and policy hits along the path
+  - symptom: Connection refused
+    possibleCauses:
+      - Service not running
+      - Service bound to localhost or another address
+    recommendedActions:
+      - Check listening sockets on the server
+  - symptom: Insecure protocol in use
+    possibleCauses:
+      - Telnet (23), FTP (20/21) or LDAP (389) without TLS used instead of SSH, SFTP or LDAPS
+    recommendedActions:
+      - Raise a security finding and plan migration to the encrypted protocol
+
+commandsAndExpectedResults:
+  - command: Test-NetConnection <host> -Port <port>
+    expectedResult: TcpTestSucceeded True when the TCP port is reachable (Windows PowerShell).
+  - command: nc -vz <host> <port>
+    expectedResult: succeeded / open for a reachable TCP port (Linux).
+  - command: ss -tulpn
+    expectedResult: Listening TCP/UDP sockets with process names (Linux server).
+  - command: netstat -ano | findstr LISTENING
+    expectedResult: Listening ports with process IDs (Windows server).
+  - command: nslookup <name> <dns-server>
+    expectedResult: The DNS server answers on 53 with the expected record.
+  - command: diagnose debug flow filter addr <ip>
+    expectedResult: FortiGate flow trace showing the policy that allows or denies the packet.
+    warnings:
+      - Debug on a production firewall needs approval; stop it with diagnose debug disable.
+
+prerequisites:
+  - Source, destination and business purpose of the connection are known.
+  - Read access to the firewalls in the path.
+
+permissions:
+  - Read-only firewall and host access for diagnosis.
+  - Firewall rule changes only through an approved change.
+
+escalationCriteria:
+  - Business-critical application unreachable.
+  - The required rule conflicts with security policy (needs security approval).
+  - Insecure protocol required by the application.
+
+ticketTemplate:
+  - Short Description: Port <port>/<tcp|udp> unreachable from <source> to <destination> - SOP-034
+  - Description: |
+      Service <service> on <destination>:<port>. Listening: <yes/no>. Test result: <connected/refused/timed out>.
+      Blocking device / rule: <device / policy>. Requested change: <rule>.
+  - Priority: Per application impact.
+  - Impacted Systems: <application>, <servers>, <firewalls>.
+  - Category: Network - Access.
+  - Assigned Group: Network Team.
+  - Related SOP: SOP-034.
+
+closureCriteria:
+  - The port test succeeds and the application owner confirms it works.
+  - Any rule added is documented with owner and review date.
+
+rollbackPrecautions:
+  - Remove any temporary rule added for testing.
+  - Stop all debug and packet captures before closing.
+
+safetyNotes:
+  - Test only the ports in scope; no broad scanning.
+  - Prefer encrypted protocols (SSH, SFTP, HTTPS, LDAPS) over cleartext ones.
+  - Never paste credentials or SNMP communities into the ticket.
+
+searchableKeywords:
+  - port unreachable, tcp port, udp port, firewall rule, connection refused, timed out, well-known ports

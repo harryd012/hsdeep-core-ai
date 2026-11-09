@@ -1,0 +1,131 @@
+# SOP-042: DDoS / Volumetric Attack Detection and Mitigation
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: security
+# Estimated Duration: 45 minutes
+# Required Skills: SOC Analyst Tier 2, Network Engineer, Firewall Engineer
+# Required Permissions: read-only firewall and router access, ISP / scrubbing contact, change approval
+# Tags: ddos, dos, volumetric, syn-flood, udp-flood, rate-limit, scrubbing, isp, firewall, soc
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-042
+status: draft
+versionNumber: 1
+category: security
+changeSummary: Initial version - confirm a denial-of-service attack, characterise it, and mitigate with the ISP / scrubbing service and edge controls under approval.
+
+steps:
+  - order: 1
+    action: Confirm it is an attack, not a capacity or fault issue
+    description: >-
+      Compare WAN interface traffic, firewall session counts and CPU with their normal baseline in the
+      platform (Network page, interface history). An attack shows a sudden traffic or session spike from
+      many sources or to one target, often with one protocol (SYN, UDP, DNS / NTP reflection). Rule out a
+      backup job, update rollout or link fault.
+    expectedResult: Attack confirmed or ruled out, with the target, protocol and start time.
+    failureAction: If not an attack, treat as a capacity or performance incident.
+
+  - order: 2
+    action: Characterise the traffic
+    description: Identify target IPs / services, protocols and ports, packet rates, and the top source addresses or ASNs from flow data, firewall logs or the ISP portal.
+    expectedResult: Attack profile (volumetric, protocol, application layer) recorded.
+    warnings:
+      - Source addresses in volumetric floods are often spoofed; do not rely on blocking them one by one.
+    failureAction: Ask the ISP for flow data if local data is insufficient.
+
+  - order: 3
+    action: Engage the ISP or scrubbing provider
+    description: For volumetric attacks that fill the internet link, contact the ISP / DDoS scrubbing service with the target, profile and start time; local controls cannot help once the link is full.
+    expectedResult: Provider ticket opened and mitigation (scrubbing, upstream filtering, blackhole of the target if agreed) in progress.
+    warnings:
+      - Remote-triggered blackholing drops all traffic to the target, including legitimate users; only with business approval.
+    failureAction: Escalate to the incident manager and provider's emergency line.
+
+  - order: 4
+    action: Apply edge controls under approval
+    description: For attacks the link can carry, apply approved controls on the firewall - DoS policies (SYN flood / session thresholds), rate limits per source, geo or ASN blocks if the business has no users there, and protection on the targeted service (WAF / CDN for web).
+    expectedResult: Attack traffic dropped at the edge; legitimate traffic continues.
+    warnings:
+      - Aggressive thresholds block real users; start in monitor mode where the platform supports it.
+    failureAction: Roll back controls that block legitimate traffic.
+
+  - order: 5
+    action: Monitor and stand down
+    description: Watch traffic, sessions and service availability until the attack stops; keep mitigation for the agreed period, then remove temporary rules.
+    expectedResult: Service restored; temporary controls removed or made permanent through a change.
+
+  - order: 6
+    action: Report and improve
+    description: Record the timeline, attack profile, peak rates, impact and actions; review baseline alerts, DoS policies and the provider contract.
+    expectedResult: Post-incident report with improvements.
+
+troubleshootingMatrix:
+  - symptom: Internet link saturated, firewall shows little
+    possibleCauses:
+      - Volumetric flood filling the ISP link before the firewall
+    recommendedActions:
+      - Engage the ISP / scrubbing service
+  - symptom: Firewall CPU or session table exhausted
+    possibleCauses:
+      - SYN flood or many half-open sessions
+      - Application-layer flood
+    recommendedActions:
+      - Enable DoS policy thresholds; check session table limits
+  - symptom: Web service slow but bandwidth normal
+    possibleCauses:
+      - Application-layer (HTTP) flood
+    recommendedActions:
+      - Rate limit and challenge at the WAF / CDN
+
+commandsAndExpectedResults:
+  - command: diagnose sys session stat
+    expectedResult: FortiGate session counts and setup rate (compare with baseline).
+  - command: get system performance status
+    expectedResult: FortiGate CPU, memory and session rates.
+  - command: show interfaces <wan-interface> | include rate
+    expectedResult: Current input / output rates on the WAN interface (Cisco).
+  - command: show ip cache flow
+    expectedResult: NetFlow top talkers where flow export is configured.
+
+prerequisites:
+  - ISP / scrubbing provider contacts and contract details.
+  - Normal traffic baseline for WAN links and key services.
+  - Approved emergency change path for edge controls.
+
+permissions:
+  - Read-only firewall and router access for diagnosis.
+  - Edge control changes and blackholing only under approval.
+
+escalationCriteria:
+  - Customer-facing services unavailable.
+  - Internet link saturated.
+  - Extortion or ransom demand associated with the attack (involve management and legal).
+
+ticketTemplate:
+  - Short Description: DDoS against <target> - SOP-042
+  - Description: |
+      Start <time>. Target <IP/service>. Profile <type, protocol, peak rate>.
+      Provider ticket <id>. Edge controls <list>. Impact <services, users>.
+  - Priority: P1 when customer-facing services are down.
+  - Impacted Systems: <targets>, <links>, <firewalls>.
+  - Category: Security - DDoS.
+  - Assigned Group: SOC Tier 2 / Network Team.
+  - Related SOP: SOP-042.
+
+closureCriteria:
+  - Attack stopped and services restored.
+  - Temporary controls removed or approved as permanent.
+  - Post-incident report filed.
+
+rollbackPrecautions:
+  - Record every temporary block, threshold and route added, with its removal command.
+  - Remove blackhole announcements as soon as mitigation allows.
+
+safetyNotes:
+  - Never attack, scan or flood the sources back.
+  - Blackholing and broad geo blocks need business approval.
+
+searchableKeywords:
+  - ddos, dos attack, syn flood, udp flood, volumetric, link saturated, scrubbing, rate limit, blackhole
