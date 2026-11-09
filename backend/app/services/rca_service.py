@@ -108,32 +108,9 @@ class RuleBasedRootCauseAnalyser:
         if session is self._sop_session:
             return  # already bound to exactly this session
         self._sop_session = session
-        from app.repositories.alert_repository import AlertRepository
-        from app.repositories.business_service_repository import BusinessServiceRepository
-        from app.repositories.device_repository import DeviceRepository
-        from app.repositories.monitoring_source_repository import MonitoringSourceRepository
-        from app.repositories.runbook_execution_repository import (
-            RunbookExecutionRepository,
-        )
-        from app.repositories.site_repository import SiteRepository
-        from app.repositories.sop_repository import SOPRepository
-        from app.services.priority.business_impact_engine import BusinessImpactEngine
+        from app.services.sop.recommendation_engine import build_sop_recommendation_engine
 
-        devices = DeviceRepository(session)
-        sites = SiteRepository(session)
-        self._sop_engine = SOPRecommendationEngine(
-            sop_repo=SOPRepository(session),
-            alert_repo=AlertRepository(session),
-            device_repo=devices,
-            site_repo=sites,
-            monitoring_source_repo=MonitoringSourceRepository(session),
-            runbook_execution_repo=RunbookExecutionRepository(session),
-            business_impact_engine=BusinessImpactEngine(
-                device_repo=devices,
-                site_repo=sites,
-                business_service_repo=BusinessServiceRepository(session),
-            ),
-        )
+        self._sop_engine = build_sop_recommendation_engine(session)
 
     async def analyse(self, incident: Incident, alerts: list[Alert]) -> RootCauseResult:
         root_cause_alert = self._pick_root_cause(alerts)

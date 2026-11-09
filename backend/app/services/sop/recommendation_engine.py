@@ -164,3 +164,25 @@ class SOPRecommendationEngine:
             region=region,
             priority=incident.priority,
         )
+
+
+def build_sop_recommendation_engine(session) -> SOPRecommendationEngine:
+    """A real engine on `session` - the one construction RCA and the incident
+    recommendations API share, so both score with the same repositories."""
+    from app.repositories.business_service_repository import BusinessServiceRepository
+
+    devices = DeviceRepository(session)
+    sites = SiteRepository(session)
+    return SOPRecommendationEngine(
+        sop_repo=SOPRepository(session),
+        alert_repo=AlertRepository(session),
+        device_repo=devices,
+        site_repo=sites,
+        monitoring_source_repo=MonitoringSourceRepository(session),
+        runbook_execution_repo=RunbookExecutionRepository(session),
+        business_impact_engine=BusinessImpactEngine(
+            device_repo=devices,
+            site_repo=sites,
+            business_service_repo=BusinessServiceRepository(session),
+        ),
+    )
