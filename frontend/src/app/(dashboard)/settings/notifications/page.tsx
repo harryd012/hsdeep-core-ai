@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { SaveBar } from "@/components/settings/SettingsSection";
 import { Banner, DataTable, PageShell, Panel, Pill, ago, titleCaseWords, type Column } from "@/components/ui/PageKit";
 import SettingsBackButton from "@/components/settings/SettingsBackButton";
+import NotificationPolicies from "@/components/settings/NotificationPolicies";
+import { destinationLabel } from "@/lib/notificationPolicies";
 import { useAuth } from "@/lib/auth-context";
 import {
   getNotificationSettings,
@@ -16,7 +18,7 @@ import {
 
 const DELIVERY_COLUMNS: Column<NotificationDelivery>[] = [
   { key: "when", header: "When", render: (d) => ago(d.sent_at ?? d.created_at), sortValue: (d) => d.sent_at ?? d.created_at },
-  { key: "channel", header: "Channel", render: (d) => titleCaseWords(d.channel) },
+  { key: "channel", header: "Channel", render: (d) => destinationLabel(d.channel) },
   { key: "event", header: "Event", render: (d) => (d.event === "opened" ? "Incident opened" : "Incident resolved") },
   {
     key: "status",
@@ -243,9 +245,11 @@ export default function NotificationsSettingsPage() {
             </Panel>
           </div>
 
+          <NotificationPolicies />
+
           <Panel
             title="Recent deliveries"
-            info="Incidents at warning or above notify email and Slack; PagerDuty uses its minimum severity. Each incident is sent once per channel when it opens and again when it resolves."
+            info="Without policies, incidents at warning or above notify email and Slack, and PagerDuty uses its minimum severity; with policies, each incident goes where a matching policy sends it. Each incident is sent once per destination when it opens and again when it resolves."
             aside={
               <button type="button" className="pk-button" onClick={onTest} disabled={testing || hasChanges}>
                 {testing ? "Sending…" : "Send test notification"}

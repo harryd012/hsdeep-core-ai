@@ -40,6 +40,7 @@ from app.api.routes import saved_dashboards
 from app.api.routes import logs as logs_explorer
 from app.api.routes import otlp as otlp_ingest
 from app.api.routes import traces as traces_routes
+from app.api.routes import notification_policies
 from app.api.routes import admin_tenants
 from app.api.routes import copilot
 from app.api.routes import billing, onboarding, stripe_webhook
@@ -632,5 +633,6 @@ app.include_router(saved_dashboards.router, prefix="/api")
 app.include_router(logs_explorer.router, prefix="/api")
 app.include_router(traces_routes.router, prefix="/api")
 app.include_router(otlp_ingest.router, prefix="/api/v1")
+app.include_router(notification_policies.router, prefix="/api")
 app.include_router(admin_tenants.router, prefix="/api")
 app.include_router(ingest.router, prefix="/api/v1")
