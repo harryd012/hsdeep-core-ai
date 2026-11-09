@@ -69,6 +69,7 @@ PUBLIC_WRITE_ROUTES = {
     ("POST", "/api/servicenow/webhooks/incoming/{connection_id}"),
     ("POST", "/api/v1/ingest/metrics"),
     ("POST", "/api/v1/ingest/events"),
+    ("POST", "/api/v1/ingest/otlp/v1/traces"),
 }
 
 VIEWER = resolve_role_permissions(DEFAULT_ROLES["Viewer"][1])

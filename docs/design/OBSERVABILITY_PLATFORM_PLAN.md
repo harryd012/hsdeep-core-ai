@@ -46,7 +46,7 @@ Earlier audits: `docs/REPOSITORY_AUDIT.md`, `docs/PLATFORM_LEDGER.md` (batches 1
 | P5 Infrastructure monitoring | Windows / Linux / VMware host views from existing collectors | **Slices 1–3 implemented and tested**: server fleet page and PRTG resource sensors (`tests/test_server_fleet.py`); infrastructure health overview with clouds (`tests/test_infrastructure_health_overview.py`); per-host detail already existed |
 | P6 Dashboards & topology | Widget registry over aggregated APIs, saved dashboards per tenant / role; topology already exists, add drill-down to sensors | **Slice 1 implemented** (frontend only): topology drill-down to sensors, alerts, host tabs and interface pages; **slice 2**: saved dashboards and the widget registry (`tests/test_saved_dashboards.py`) |
 | P7 Metrics / logs | Syslog receiver on the edge agent → normalized events, Logs Explorer over events | **Slice 1 implemented and tested**: syslog receiver (separate process), log-to-device linking at ingest, Logs Explorer API and page (`tests/test_logs_explorer.py`); not verified in a browser |
-| P8 APM / tracing | OTLP/HTTP ingest of traces → spans table, service map from span parent/child | planned (new ingestion path) |
+| P8 APM / tracing | OTLP/HTTP ingest of traces → spans table, service map from span parent/child | **Slice 1 implemented and tested**: OTLP/HTTP JSON trace ingest, spans table, services / traces / service map / trace APIs, Traces pages (`tests/test_tracing.py`); not verified in a browser |
 | P9 Alerting | Dynamic baselines, notification policies, Teams channel | planned (engine exists) |
 | P10 AI RCA / copilot | Copilot tools over the new sensor / history APIs | planned (engine exists) |
 | P11 Reporting | Sensor / interface / availability reports from stored metrics | planned (reports module exists) |
@@ -409,6 +409,42 @@ log search").
   Type-checked and linted; **not verified in a browser** (the dev servers were stopped).
 - **Not in this slice**: syslog over TCP / TLS, a log retention job for LOG events, saved log
   searches, log-based alert rules, and a log widget for dashboards.
+
+## 12. P8 slice 1: OpenTelemetry traces
+
+- **Ingest** (`POST /api/v1/ingest/otlp/v1/traces`): OTLP/HTTP with the JSON encoding, so an
+  OpenTelemetry SDK or collector works unchanged with `OTEL_EXPORTER_OTLP_ENDPOINT=<platform>/api/v1/ingest/otlp`,
+  `OTEL_EXPORTER_OTLP_PROTOCOL=http/json` and
+  `OTEL_EXPORTER_OTLP_HEADERS=X-HSDEEP-Collector-Credential=<credential>`. Authenticated by a
+  collector credential like the other ingest routes (tenant and source from the credential). The
+  protobuf encoding is answered with 415 and says how to switch: neither `protobuf` nor
+  `opentelemetry-proto` is a dependency, and the dependency files were being changed by another
+  session. Compressed bodies are refused (415); bodies over 8 MB get 413; up to 10,000 spans
+  per request. Response per OTLP: `{}`, or `partialSuccess` with the rejected count and first
+  reason.
+- **Decoding** (`app/services/tracing/otlp.py`, pure): hex trace / span ids (all-zero or malformed
+  rejected), enum values as numbers or names, 64-bit times as strings, a span that ends before it
+  starts rejected, `service.name` from the resource (else OpenTelemetry's `unknown_service`);
+  attributes (128), values (1,024 characters) and events (32) bounded.
+- **Storage** (`trace_spans`, migration `c4e8a2d6f1b3`): one row per span, unique per (tenant,
+  trace, span) so a resent batch is a no-op; indexes for the window, service and trace lookups.
+  Spans follow the metric retention (`metric_retention_days`, or the tenant's own metric
+  retention from S5), purged by the existing retention job.
+- **API** (`/api/traces`, `monitoring.read`, windows up to 7 days): `/services` (spans, error
+  spans and rate, traces, p50 / p95 / max of entry spans: server / consumer spans or spans
+  without a parent), `/` (traces: start, duration from first start to last end, spans, errors,
+  services, root span or the earliest span when the root has not arrived, filters for service,
+  errors, minimum duration and span-name text), `/{trace_id}` (all spans, orphan count),
+  `/service-map` (caller -> callee edges from parent / child spans across services, with calls,
+  errors, average and p95 callee duration).
+- **UI** ("Traces" under Observe): `/traces` with Services (tiles, a layered service map, the
+  services table) and Traces (filters, search, paging); `/traces/[traceId]` with the waterfall
+  (spans on the trace timeline, indented under their parent, coloured by service, failed spans
+  red) and the selected span's attributes, resource and events. Type-checked and linted; **not
+  verified in a browser** (another session's dev server holds this folder).
+- **Not in this slice**: protobuf encoding and gzip, metrics and logs over OTLP, linking spans to
+  hosts (`host.name`) and logs (trace ids in log lines), latency / error-rate alert rules,
+  sampling controls.
 
 ## 13. P5 slice 3: infrastructure health overview
 
