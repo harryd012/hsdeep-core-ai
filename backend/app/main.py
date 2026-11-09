@@ -43,6 +43,7 @@ from app.api.routes import traces as traces_routes
 from app.api.routes import notification_policies
 from app.api.routes import sensor_baselines
 from app.api.routes import admin_tenants
+from app.api.routes import platform_observability
 from app.api.routes import copilot
 from app.api.routes import billing, onboarding, stripe_webhook
 from app.api.routes import tickets, workflows, runbooks, servicenow, assets, assignments, itsm, sla
@@ -58,7 +59,9 @@ from app.api.routes import discovery_probe_jobs
 from app.api.routes import infrastructure_intelligence
 from app.api.routes import failover_intelligence
 from app.api.routes import ingest
+from app.core import metrics as platform_metrics
 from app.core.config import get_settings
+from app.core.http_metrics import HttpMetricsMiddleware
 from app.core.di import init_di
 from app.core.logging import configure_logging
 from app.scheduler.scheduler import _reconcile_stale_runs, start_scheduler, stop_scheduler
@@ -249,6 +252,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Platform metrics: identify this process's role on every /metrics scrape so
+# Prometheus can tell api / worker / scheduler targets apart.
+platform_metrics.set_build_info(app.version, settings.runtime_mode)
+
 # ---------------------------------------------------
 # CORS (environment-aware — see PRODUCTION_READINESS.md P0-3)
 # ---------------------------------------------------
@@ -432,6 +439,11 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
         self._limiter = _RateLimiter(requests_per_minute, session_rpm_per_user)
 
     async def dispatch(self, request: Request, call_next):
+        # Prometheus scrapes carry the metrics token as a Bearer header; it is
+        # not tenant traffic, so it skips the limiter and the API-key lookup
+        # (which would otherwise hit the database on every scrape).
+        if request.url.path == "/metrics":
+            return await call_next(request)
         key = self._limiter.key_for_request(request)
         rpm = await self._limiter.rpm_for(key)
         if key.startswith("user:"):
@@ -568,6 +580,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(_SecurityHeadersMiddleware)
+# Outermost: times the whole stack and counts responses made before routing
+# (rate-limit 429s, CORS preflights) as well as routed ones.
+app.add_middleware(HttpMetricsMiddleware)
 
 # ---------------------------------------------------
 # Routers
@@ -637,4 +652,5 @@ app.include_router(otlp_ingest.router, prefix="/api/v1")
 app.include_router(notification_policies.router, prefix="/api")
 app.include_router(sensor_baselines.router, prefix="/api")
 app.include_router(admin_tenants.router, prefix="/api")
+app.include_router(platform_observability.router, prefix="/api")
 app.include_router(ingest.router, prefix="/api/v1")

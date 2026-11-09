@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Response, status
 
+from app.core import metrics as platform_metrics
 from app.core.config import get_settings
 from app.core.db import check_db_connection
 from app.core.redis import redis_health
@@ -147,6 +148,10 @@ async def health():
     redis_state = await redis_health()
     redis_ok = redis_state == "up"
     ollama_status = await _check_ollama()
+    # Platform metrics ride on this check (readiness probes call it every few
+    # seconds), so dependency health needs no polling of its own.
+    platform_metrics.observe_dependency("database", db_ok)
+    platform_metrics.observe_dependency("redis", redis_ok)
 
     deps: dict[str, str] = {
         "database": "up" if db_ok else "down",

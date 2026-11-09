@@ -1,5 +1,5 @@
 import {
-  Activity, ArrowLeftRight, Bell, BookOpen, Bot, Building2, CreditCard, Database, DatabaseBackup, LayoutDashboard,
+  Activity, ArrowLeftRight, Bell, BookOpen, Bot, Building2, CreditCard, Database, DatabaseBackup, Gauge, LayoutDashboard,
   LayoutGrid, LayoutPanelLeft, LifeBuoy, Network, ScrollText, Server, Settings, Shield, Ticket, TriangleAlert, Waypoints, Workflow, type LucideIcon,
 } from "lucide-react";
 
@@ -39,6 +39,8 @@ export interface NavGroup {
   description: string;
   children?: NavChild[];
   permission?: string;
+  /** Platform internals (not tenant data): shown to platform superusers only. */
+  superuserOnly?: boolean;
 }
 
 export const NAV_CONFIG: NavGroup[] = [
@@ -164,13 +166,15 @@ export const NAV_CONFIG: NavGroup[] = [
       { label: "API Keys", route: "/settings/api-keys", keywords: "tokens" },
       { label: "Customers (Admin)", route: "/admin/customers", keywords: "tenants msp" },
     ] },
+  { id: "platform-observability", label: "Platform Observability", icon: Gauge, route: "/observability", section: "Manage", superuserOnly: true,
+    description: "Prometheus and Grafana for the HSDEEP platform itself: plan, metrics and references" },
 ];
 
 /** Groups the signed-in user may see. While the session resolves nothing is hidden. */
 export function visibleNav(user: { is_superuser: boolean; permissions: string[] } | null | undefined): NavGroup[] {
   if (!user || user.is_superuser) return NAV_CONFIG;
   const granted = new Set(user.permissions);
-  return NAV_CONFIG.filter((g) => !g.permission || granted.has(g.permission));
+  return NAV_CONFIG.filter((g) => !g.superuserOnly && (!g.permission || granted.has(g.permission)));
 }
 
 export interface LauncherEntry {

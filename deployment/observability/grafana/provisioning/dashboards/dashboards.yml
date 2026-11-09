@@ -1,0 +1,16 @@
+# Dashboard provider: every JSON file under grafana/dashboards is loaded into
+# the "HSDEEP Platform" folder. Files are the source of truth: UI edits are not
+# allowed and deleting a provisioned dashboard in the UI is blocked.
+apiVersion: 1
+
+providers:
+  - name: hsdeep-platform
+    orgId: 1
+    folder: HSDEEP Platform
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 60
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

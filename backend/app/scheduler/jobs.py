@@ -22,11 +22,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import text
 
+from app.core import metrics as platform_metrics
 from app.core.config import get_settings
 from app.core.db import AsyncSessionLocal, engine
 from app.repositories.alert_repository import AlertRepository
@@ -128,13 +130,20 @@ async def tick() -> None:
             logger.debug("Scheduler tick: advisory lock held by another worker, skipping.")
             return
 
+        started = time.perf_counter()
         try:
-            await _run_due_sources()
+            due = await _run_due_sources()
+        except Exception:
+            platform_metrics.observe_scheduler_tick_failure()
+            raise
+        else:
+            platform_metrics.observe_scheduler_tick(due or 0, time.perf_counter() - started)
         finally:
             await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": TICK_LOCK_KEY})
 
 
-async def _run_due_sources() -> None:
+async def _run_due_sources() -> int:
+    """Run every due source; returns how many were due this tick."""
     settings = get_settings()
     now = datetime.now(timezone.utc)
 
@@ -170,7 +179,7 @@ async def _run_due_sources() -> None:
 
     if not due_ids:
         logger.debug("Scheduler tick: no due sources.")
-        return
+        return 0
 
     logger.info("Scheduler tick: %s due source(s) found.", len(due_ids))
 
@@ -178,6 +187,7 @@ async def _run_due_sources() -> None:
     await asyncio.gather(
         *(_run_bounded(source_id, tenant_id, semaphore) for source_id, tenant_id in due_ids)
     )
+    return len(due_ids)
 
 
 async def _run_bounded(
