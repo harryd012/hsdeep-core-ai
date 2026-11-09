@@ -38,6 +38,7 @@ import SiteHoneycomb from "./SiteHoneycomb";
 import CoverageRow from "./CoverageRow";
 import AppearanceMenu from "@/components/AppearanceMenu";
 import SituationBriefing from "./SituationBriefing";
+import NetworkTopologyCard from "./NetworkTopologyCard";
 import { getAlertSummary, getBackupOverview, getTaskCounts, getWorkflowStatistics, type CloudOperationsKPI } from "@/lib/api";
 import { useCloudOperations } from "@/hooks/useCloudOperations";
 import { BarList, DayColumns } from "@/components/ui/PageKit";
@@ -615,6 +616,10 @@ export default function ExecutiveCommandCenter() {
       <KpiStrip brief={brief.data} loading={brief.isLoading && !brief.data} error={!!brief.error} />
 
       <CoverageRow />
+
+      <div className="ecc-row">
+        <NetworkTopologyCard siteId={filters.siteId} />
+      </div>
 
       <div className="ecc-row">
         <CardShell
