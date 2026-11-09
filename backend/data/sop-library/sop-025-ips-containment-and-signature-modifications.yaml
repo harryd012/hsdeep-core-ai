@@ -1,0 +1,128 @@
+# SOP-025: IPS Containment and Signature Modifications
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: security
+# Estimated Duration: 45 minutes
+# Required Skills: IPS Admin, Security Analyst
+# Required Permissions: IPS Admin
+# Tags: ips, containment, signature, security, authorized
+# read_only: false
+# resource_intensive: false
+# disruptive: true
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-025
+status: draft
+versionNumber: 1
+category: security
+changeSummary: Initial version - IPS containment and signature modifications
+
+steps:
+  - order: 1
+    action: Document the IPS containment action to be taken
+    description: Record the threat, affected systems, and containment action.
+    expectedResult: Containment documentation is complete with all required fields.
+    warnings: |
+      - Unauthorized IPS containment can disrupt legitimate traffic.
+      - Missing documentation can lead to incomplete rollbacks.
+    failureAction: Revert containment action and document the issue.
+  - order: 2
+    action: Apply IPS signature modifications
+    description: Add or modify IPS signatures to detect or prevent the threat.
+    expectedResult: IPS signatures are updated without affecting performance.
+    warnings: |
+      - Signature modifications can impact IPS performance.
+      - Incorrect signatures may block legitimate traffic.
+    failureAction: Revert signature modifications and document the issue.
+  - order: 3
+    action: Apply IPS containment action
+    description: Activate IPS containment to block the threat.
+    expectedResult: Threat is contained; affected traffic is blocked.
+    warnings: |
+      - Containment can disrupt legitimate traffic.
+      - Containment requires authorized change control.
+    failureAction: Release containment and document the issue.
+
+troubleshootingMatrix:
+  - symptom: IPS signatures are not detected
+    possibleCauses: |
+      - Signatures not properly installed
+      - Signature conflicts
+      - IPS performance issues
+    recommendedActions: |
+      - Review signature modifications
+      - Verify IPS performance
+      - Update signatures from vendor
+
+commandsAndExpectedResults:
+  - command: ips-cli list-signatures
+    expectedResult: Lists current IPS signatures; no error messages.
+    warnings: |
+      - Requires IPS admin privileges.
+      - May require service restart.
+  - command: ips-cli modify-signature
+    expectedResult: Signature is modified; no performance impact.
+    warnings: |
+      - Requires IPS admin privileges.
+      - May affect IPS performance.
+  - command: ips-cli apply-containment
+    expectedResult: Threat is contained; affected traffic is blocked.
+    warnings: |
+      - Requires authorized change control.
+      - Can disrupt legitimate traffic.
+
+prerequisites:
+  - IPS admin credentials are available.
+  - Change control approval is obtained for disruptive operations.
+  - Current IPS signature baseline is documented.
+
+permissions:
+  - IPS Admin membership.
+  - Read access to IPS configuration.
+  - Write access for signature modifications (approved changes only).
+
+escalationCriteria:
+  - Signature modifications disrupt legitimate traffic.
+  - Containment action blocks legitimate traffic.
+  - Signature modifications affect IPS performance.
+
+rollbackPrecautions:
+  - Revert signature modifications from backup if changes fail.
+  - Release containment if it blocks legitimate traffic.
+  - Document all changes and reasons for rollback.
+  - Obtain approval before re-attempting disruptive operations.
+
+ticketTemplate:
+  - Short Description: IPS containment and signature modifications - SOP-025
+  - Description: |
+      IPS signature modifications and containment actions.
+  - Priority: P3.
+  - Impacted Systems: <IPS Device Name>
+  - Category: IPS.
+  - Urgency: Medium.
+  - Assigned Group: Network Security Team.
+  - Tags: #ips #containment #signatures #security.
+  - Related SOP: SOP-025.
+
+closureCriteria:
+  - Signature modifications are documented and approved.
+  - Containment action is released if it blocked legitimate traffic.
+  - IPS performance is not degraded.
+  - Ticket is marked as resolved in the tracking system.
+
+safetyNotes:
+  - Do not automatically approve the SOP.
+  - Do not execute commands against production infrastructure during import or testing without authorization.
+  - IPS containment and signature modifications must require authorization.
+  - Secure-channel repair requires explicit authorization.
+  - Account unlock/reset requires identity verification and authorization.
+  - Domain unjoin/rejoin is a last resort and requires approved change control.
+  - Never expose passwords, credentials, or secrets.
+  - Do not disable MFA, endpoint security, firewall, or auditing.
+  - Respect existing tenant isolation and JWT-based tenant context.
+  - Do not trust tenant IDs supplied by the client.
+
+searchableKeywords:
+  - ips, containment, signature, security, authorized, IPS, intrusion prevention

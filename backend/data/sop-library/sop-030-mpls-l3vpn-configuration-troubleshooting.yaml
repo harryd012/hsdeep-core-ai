@@ -1,0 +1,105 @@
+# SOP-030: MPLS L3VPN Configuration & Troubleshooting
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: connectivity
+# Estimated Duration: 45 minutes
+# Required Skills: Network Engineer, MPLS Admin
+# Required Permissions: read configuration, read event log access
+# Tags: mpls, l3vpn, vpn, configuration, troubleshooting, label-switched, traffic-engineering
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-030
+status: draft
+versionNumber: 1
+category: connectivity
+changeSummary: Initial version - MPLS L3VPN
+
+troubleshootingMatrix:
+  - symptom: MPLS label-switched path (LSP) establishment failure
+    possibleCauses:
+      - Misconfigured label distribution
+      - Invalid traffic engineering parameters
+      - Packet loss on the LSP
+    recommendedActions:
+      - Verify LSP status with show mpls lsp
+      - Check label mapping table
+      - Validate traffic engineering configuration
+  
+  - symptom: Traffic engineering tunnel not bringing up
+    possibleCauses:
+      - Missing tunnel interface configuration
+      - Incorrect path options
+      - Resource limitations on ingress/egress
+    recommendedActions:
+      - Verify tunnel interface exists
+      - Check path options and filters
+      - Validate router resources
+
+steps:
+  - order: 1
+    action: Verify MPLS L3VPN topology
+    description: Confirm label-switched paths are established and traffic is flowing correctly.
+    expectedResult: MPLS topology verified; LSP status is up.
+
+commandsAndExpectedResults:
+  - command: show mpls lsp
+    expectedResult: LSP information displayed; status indicates up/down
+    warnings:
+      - May require re-authentication
+      - Output varies by vendor platform
+  
+  - command: show mpls traffic-eng tunnels
+    expectedResult: Tunnel status and path options displayed
+    warnings:
+      - May disrupt traffic if misapplied
+      - Requires appropriate admin privileges
+
+prerequisites:
+  - MPLS administrative access is available.
+  - Change control approval is obtained for configuration modifications.
+  - Current MPLS topology is documented and understood.
+
+permissions:
+  - MPLS Admin membership.
+  - Read access to MPLS configuration.
+  - Write access for operation modifications (approved changes only).
+
+escalationCriteria:
+  - LSP flaps prevent legitimate traffic flow.
+  - Traffic engineering modifications disrupt production traffic.
+  - Tunnel establishment fails after multiple attempts.
+
+ticketTemplate:
+  - Short Description: MPLS L3VPN configuration & troubleshooting - SOP-030
+  - Description: |
+      MPLS L3VPN configuration and troubleshooting operations.
+  - Priority: P3.
+  - Impacted Systems: <MPLS Router>, <LSP Name>.
+  - Category: MPLS.
+  - Urgency: Medium.
+  - Assigned Group: Network Team.
+  - Tags: #mpls #l3vpn #vpn #configuration #troubleshooting.
+  - Related SOP: SOP-030.
+
+closureCriteria:
+  - LSP status is verified as up and carrying traffic.
+  - Traffic engineering parameters are confirmed.
+  - Ticket is marked as resolved in the tracking system.
+
+safetyNotes:
+  - Do not automatically approve the SOP.
+  - Do not execute commands against production infrastructure during import or testing without authorization.
+  - MPLS configuration changes must require authorization.
+  - Secure-channel repair requires explicit authorization.
+  - Account unlock/reset requires identity verification and authorization.
+  - Domain unjoin/rejoin is a last resort and requires approved change control.
+  - Never expose passwords, credentials, or secrets.
+  - Do not disable MFA, endpoint security, firewall, or auditing.
+  - Respect existing tenant isolation and JWT-based tenant context.
+  - Do not trust tenant IDs supplied by the client.
+
+searchableKeywords:
+  - mpls, l3vpn, vpn, configuration, troubleshooting, label-switched, traffic-engineering
+

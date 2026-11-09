@@ -1,0 +1,172 @@
+# SOP-023: Active Directory L2 Domain Login Troubleshooting
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: connectivity
+# Estimated Duration: 60 minutes
+# Required Skills: Windows Admin, Domain Admin
+# Required Permissions: Domain Admin, read event log access
+# Tags: Active Directory, AD, AD DS, Windows 11, Domain Login, Domain Controller, DNS, Netlogon, Kerberos, Secure Channel, Trust Relationship, Account Lockout, Domain Unavailable
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-023
+status: draft
+versionNumber: 1
+category: connectivity
+changeSummary: Initial version - Active Directory L2 Domain Login Troubleshooting
+
+steps:
+  - order: 1
+    action: Check workstation network connectivity
+    description: Verify the workstation has physical network connectivity and can reach the network.
+    expectedResult: Network connection is active; ping to default gateway succeeds.
+    warnings: |
+      - If using wireless, verify SSID and signal strength.
+      - If using wired, check cable seating and link lights.
+    failureAction: Document connectivity failures; proceed to DNS/domain controller checks.
+  - order: 2
+    action: Validate DNS and domain controller discovery
+    description: Verify DNS resolution and locate domain controllers.
+    expectedResult: nslookup of Active Directory domain name returns domain controller IP addresses; ping to domain controllers succeeds.
+    warnings: |
+      - Verify DNS suffix is correctly configured on the workstation.
+      - If using split-brain DNS, verify both internal and external resolution.
+    failureAction: Document DNS resolution failures; proceed to domain controller reachability checks.
+  - order: 3
+    action: Check domain controller reachability and AD services
+    description: Verify domain controllers are reachable and AD services are running.
+    expectedResult: Domain controllers pingable; LDAP (port 389) and Kerberos (port 88) ports accessible.
+    warnings: |
+      - Check for domain controller availability issues during maintenance windows.
+      - Verify site latency does not exceed AD replication thresholds.
+    failureAction: Document domain controller issues; check AD health via dcdiag and repadmin.
+  - order: 4
+    action: Validate the Active Directory user account
+    description: Verify the user account exists and is not locked out or disabled.
+    expectedResult: User account exists in AD; not locked out; not disabled; can authenticate.
+    warnings: |
+      - Check for recent password changes that may not have replicated.
+      - Verify the user is not a member of groups with logon restrictions.
+    failureAction: Document account issues; request password reset or account unlock if authorized.
+  - order: 5
+    action: Check and safely repair workstation domain trust / secure channel
+    description: Verify and repair the workstation's secure channel to the domain.
+    expectedResult: Successful registration of the workstation with the domain; netdom trust shows OK.
+    warnings: |
+      - Secure-channel repair requires explicit authorization.
+      - Running netdom resetpwd requires credentials with Domain Admin rights.
+      - Domain unjoin/rejoin is a last resort and requires approved change control.
+    failureAction: |
+      - If secure channel is broken, attempt: netdom resetpwd /domain:DOMAIN /userD:domain_admin
+      - If that fails, document the issue and escalate.
+      - Domain unjoin/rejoin is a last resort and requires approved change control.
+  - order: 6
+    action: Review Windows event logs
+    description: Review Windows System, Security, Netlogon, DNS and authentication event logs.
+    expectedResult: Relevant events examined; no critical errors related to authentication or domain membership.
+    warnings: |
+      - Do not disable MFA, endpoint security, firewall, or auditing.
+      - Do not trust event logs from unsecured or compromised workstations.
+    failureAction: Document event log findings; correlate with AD diagnostics.
+  - order: 7
+    action: Verify successful domain login or escalate
+    description: Verify the workstation can successfully log into the domain or escalate to higher level.
+    expectedResult: Successful domain login; workstation is joined to the correct AD domain.
+    warnings: |
+      - If login fails repeatedly, do not attempt unlimited login attempts that may trigger account lockout.
+      - Escalate to Tier 2/3 if domain join issues persist or if sensitive data is at risk.
+    failureAction: Escalate to Tier 2/3 with full incident details; consider domain join/rejoin with approved change control.
+
+troubleshootingMatrix:
+  - symptom: Workstation cannot join domain
+    possibleCauses: |
+      - Network connectivity issues
+      - DNS misconfiguration
+      - Domain controller unreachable
+      - Secure channel broken
+      - Account locked out or disabled
+    recommendedActions: |
+      - Follow steps 1-5 in order
+      - Verify network connectivity first
+      - Check DNS resolution second
+      - Verify domain controller reachability third
+
+commandsAndExpectedResults:
+  - command: ipconfig /all
+    expectedResult: IPv4 address, subnet mask, default gateway, and DNS servers are configured; wireless/wired adapter shows media state .connected.
+  - command: ping -n 3 <DC_IP>
+    expectedResult: Reply from <DC_IP> with time <1ms; no timeout errors.
+  - command: nslookup <domain_name>
+    expectedResult: Returns domain controller IP address; no SERVFAIL or NXDOMAIN responses.
+  - command: netdom query fsmo
+    expectedResult: Returns FSMO role holders; no error messages.
+  - command: dcdiag /test:systemlog
+    expectedResult: All tests pass; no critical errors in system log.
+  - command: netdom resetpwd /domain:DOMAIN /userD:domain_admin
+    expectedResult: The secure channel has been reset; confirmation message displayed.
+    warnings: |
+      - Requires Domain Admin credentials.
+      - Does not disable MFA, endpoint security, firewall, or auditing.
+
+prerequisites:
+  - Workstation is physically connected to the network (or wireless with valid credentials).
+  - Administrative credentials for domain admin or equivalent are available.
+  - DNS is configured and reachable.
+  - At least one domain controller is reachable.
+  - Event log read access is configured.
+
+permissions:
+  - Domain Admin membership OR equivalent elevated privileges.
+  - Read access to Windows Event Log (System, Security, Application).
+  - Netdom and dcdiag utilities must be available on the workstation or a management host.
+
+escalationCriteria:
+  - Secure channel repair fails after netdom resetpwd attempt.
+  - Account is locked out or disabled and cannot be unlocked with authorized credentials.
+  - Domain controller is unreachable after network connectivity is verified.
+  - Repeated login failures that trigger account lockout.
+  - Domain join/rejoin is required and requires approved change control.
+  - Sensitive data or compliance risk is involved.
+
+rollbackPrecautions:
+  - If domain join/rejoin is performed, ensure user profiles and mapped drives are reconciled.
+  - If secure channel is reset, verify that all dependent services (VPN, printers, file shares) reconnect successfully.
+  - Document any data loss or configuration changes in the incident ticket.
+  - Obtain approval before re-attempting domain join operations.
+
+ticketTemplate:
+  - Short Description: Workstation domain login failure - AD L2 Troubleshooting
+  - Description: |
+      Workstation unable to log into Active Directory domain.
+      Following SOP-023: Active Directory L2 Domain Login Troubleshooting.
+  - Priority: P2 or P3 based on impact.
+  - Impacted Systems: <Workstation Name>
+  - Affected User: <Username>
+  - Category: Active Directory
+  - Urgency: Medium
+  - Assigned Group: Network Infrastructure Team
+  - Tags: #AD #DomainLogin #Troubleshooting #Windows11
+  - Related SOP: SOP-023
+
+closureCriteria:
+  - Workstation successfully logs into the domain.
+  - All seven SOP steps have been completed and documented.
+  - Event log shows no new authentication or domain membership errors.
+  - Secure channel is healthy (netdom trust shows OK).
+  - User can access network resources (file shares, printers, VPN).
+  - Ticket is marked as resolved in the tracking system.
+
+safetyNotes:
+  - Do not automatically approve the SOP.
+  - Do not execute commands against production infrastructure during import or testing without authorization.
+  - Secure-channel repair requires explicit authorization.
+  - Account unlock/reset requires identity verification and authorization.
+  - Domain unjoin/rejoin is a last resort and requires approved change control.
+  - Never expose passwords, credentials, or secrets.
+  - Do not disable MFA, endpoint security, firewall, or auditing.
+  - Respect existing tenant isolation and JWT-based tenant context.
+  - Do not trust tenant IDs supplied by the client.
+
+searchableKeywords:
+  - Active Directory, AD, AD DS, Windows 11, Domain Login, Domain Controller, DNS, Netlogon, Kerberos, Secure Channel, Trust Relationship, Account Lockout, Domain Unavailable
