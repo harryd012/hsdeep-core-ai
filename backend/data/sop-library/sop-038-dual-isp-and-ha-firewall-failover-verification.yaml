@@ -1,0 +1,145 @@
+# SOP-038: Dual-ISP Internet Edge and HA Firewall Failover Verification
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: availability
+# Estimated Duration: 60 minutes
+# Required Skills: Network Engineer, Firewall Engineer
+# Required Permissions: read-only firewall access, change approval for failover tests
+# Tags: ha, high-availability, failover, dual-isp, sd-wan, fortigate, firewall, core-switch, redundancy
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-038
+status: draft
+versionNumber: 1
+category: availability
+changeSummary: Initial version - check the health of a medium-office edge (two ISPs, HA firewall pair, core switch stack, Layer 3 distribution) and run a controlled failover test.
+
+steps:
+  - order: 1
+    action: Map the redundant path
+    description: >-
+      From the design, list each redundant element - ISP 1 and ISP 2, the HA firewall pair, the core
+      switch stack, the Layer 3 distribution switches and the uplinks between them. Confirm which links
+      each ISP and each firewall member use.
+    expectedResult: A list of every redundant pair and which member is active.
+    failureAction: If the design is not documented, capture HA status, routes and LLDP neighbours first and record them.
+
+  - order: 2
+    action: Check HA cluster health
+    description: Check both firewall members are in the cluster, which is primary, that configuration is in sync, and that the heartbeat links are up. Check the monitored interfaces and the HA priority / override settings.
+    expectedResult: Both members present, configuration in sync, heartbeat up, the expected member is primary.
+    warnings:
+      - An out-of-sync secondary may take over with an old configuration.
+    failureAction: If out of sync or a member is missing, stop and escalate; do not run a failover test.
+
+  - order: 3
+    action: Check both ISP links and their health checks
+    description: Check each WAN interface, its gateway reachability and the SD-WAN / link-monitor health checks (latency, jitter, loss), and that the default routes for both ISPs are present with the intended priority or distance.
+    expectedResult: Both ISPs pass health checks; primary and backup routes match the design.
+    failureAction: If an ISP fails its health check, raise it with the provider; failover should already be using the other ISP.
+
+  - order: 4
+    action: Check the switching core
+    description: Check the core stack members and stack links, and the uplinks from the firewalls and distribution switches (port-channels with all members up).
+    expectedResult: All stack members ready; port-channels have every member bundled.
+    failureAction: A single stack member or link down is a lost redundancy; open a separate incident.
+
+  - order: 5
+    action: Run the failover test in an approved window
+    description: >-
+      With an approved change, a maintenance window in the platform and users informed, fail over one
+      element at a time - HA failover of the firewall, then disable the primary ISP link (or its health
+      check) - while a continuous ping and a test session run from inside. Record the outage time for each.
+    expectedResult: Traffic moves to the standby firewall and the backup ISP within the agreed time, and moves back cleanly.
+    warnings:
+      - A failover test interrupts sessions (VoIP calls, VPNs); never run it outside an approved window.
+      - Set a maintenance window in the platform first so expected alerts do not open incidents.
+    failureAction: Fail back immediately and escalate with timings.
+
+  - order: 6
+    action: Restore and report
+    description: Return the original primary members, confirm HA in sync and both ISPs healthy, close the maintenance window and record results.
+    expectedResult: Normal state restored; failover times recorded against the target.
+
+troubleshootingMatrix:
+  - symptom: HA cluster split brain (both members primary)
+    possibleCauses:
+      - Heartbeat links down
+      - Heartbeat on a switch VLAN that failed
+    recommendedActions:
+      - Restore heartbeat links; escalate immediately
+  - symptom: Failover to backup ISP does not happen
+    possibleCauses:
+      - Health check targets unreachable on both links or wrongly configured
+      - Backup route has the same or lower priority, or is missing
+      - NAT or policy only for the primary interface
+    recommendedActions:
+      - Check SD-WAN members and rules, link-monitor and routes for the backup ISP
+  - symptom: Sessions drop on firewall failover
+    possibleCauses:
+      - Session pickup not enabled
+      - Upstream switch MAC tables slow to update
+    recommendedActions:
+      - Review session pickup and gratuitous ARP settings with the firewall team
+
+commandsAndExpectedResults:
+  - command: get system ha status
+    expectedResult: FortiGate HA mode, members, primary, and configuration sync state.
+  - command: diagnose sys ha checksum cluster
+    expectedResult: Matching checksums on all members (configuration in sync).
+  - command: diagnose sys sdwan health-check
+    expectedResult: Each SD-WAN member's health check state, latency, jitter and loss.
+  - command: get router info routing-table all
+    expectedResult: Default routes for the active ISP (and backup by priority / distance).
+  - command: show switch
+    expectedResult: Cisco stack members ready and their roles.
+  - command: show etherchannel summary
+    expectedResult: Port-channels with all members bundled (P).
+  - command: execute ha failover set 1
+    expectedResult: Forces the HA failover on a FortiGate (approved test only).
+    warnings:
+      - Disruptive; only in an approved window. Clear it afterwards with execute ha failover unset 1.
+
+prerequisites:
+  - Edge and core design with both ISP details and provider contacts.
+  - Approved change and maintenance window for any failover test.
+  - Console or out-of-band access to both firewalls.
+
+permissions:
+  - Read-only firewall and switch access for health checks.
+  - Failover tests only under an approved change.
+
+escalationCriteria:
+  - HA out of sync, a member missing or split brain.
+  - Failover takes longer than the agreed target or fails.
+  - Both ISPs degraded.
+
+ticketTemplate:
+  - Short Description: Edge redundancy check / failover test at <site> - SOP-038
+  - Description: |
+      HA status <output>. ISP 1 <state>, ISP 2 <state>. Core stack <state>.
+      Failover test results - firewall <seconds>, ISP <seconds>.
+  - Priority: P3 (P1 if the site is down).
+  - Impacted Systems: <firewalls>, <ISPs>, <core switches>.
+  - Category: Network - Edge.
+  - Assigned Group: Network Team.
+  - Related SOP: SOP-038.
+
+closureCriteria:
+  - Every redundant element is healthy, or a separate incident is open for the one that is not.
+  - Failover test results recorded and normal state restored.
+
+rollbackPrecautions:
+  - Restore the original HA primary and ISP preference after the test.
+  - Remove any forced failover or disabled health check.
+  - Close the platform maintenance window only after both members are healthy.
+
+safetyNotes:
+  - Failover tests only in an approved window with users informed.
+  - Never change HA priority or override on a live cluster without a change.
+  - Never paste firewall credentials or VPN keys into the ticket.
+
+searchableKeywords:
+  - ha failover, high availability, dual isp, sd-wan, backup internet, split brain, core stack, redundancy test

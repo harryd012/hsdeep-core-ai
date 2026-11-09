@@ -1,0 +1,148 @@
+# SOP-039: HTTPS / TLS Handshake and Certificate Alert Troubleshooting
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: security
+# Estimated Duration: 30 minutes
+# Required Skills: System Administrator, Security Analyst
+# Required Permissions: read-only server access, certificate management (approved changes only)
+# Tags: https, tls, ssl, certificate, expiry, handshake, cipher, pki, prtg, ssl-certificate-sensor, ssl-security-check
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-039
+status: draft
+versionNumber: 1
+category: security
+changeSummary: Initial version - handle certificate expiry and TLS handshake / weak protocol alerts (including PRTG SSL Certificate and SSL Security Check sensors) by checking each phase of the HTTPS connection.
+
+steps:
+  - order: 1
+    action: Read the alert and identify the endpoint
+    description: >-
+      Note the host, port and what the sensor reported - certificate expiry or validity (for example PRTG
+      SSL Certificate Sensor), weak protocols or ciphers (PRTG SSL Security Check), or the handshake failing.
+      Mail ports such as 465 (SMTPS), 993 (IMAPS) and 995 (POP3S) carry TLS too.
+    expectedResult: Endpoint (host:port), service and the exact finding are known.
+    failureAction: If the same finding repeats on every poll, check the sensor is not opening a new incident each time and that duplicates are merged.
+
+  - order: 2
+    action: Check the TCP connection
+    description: Confirm the TCP handshake (SYN, SYN-ACK, ACK) completes to the port from the monitoring probe's network.
+    expectedResult: The port accepts TCP connections.
+    failureAction: If TCP fails, it is a reachability issue, not TLS - follow SOP-034.
+
+  - order: 3
+    action: Check the certificate the server presents
+    description: Retrieve the certificate chain and check its subject / SAN covers the name used, the validity dates, the issuer and that the full chain (intermediates) is sent and trusted.
+    expectedResult: Certificate valid for the name, not expired or close to expiry, chain complete and trusted.
+    warnings:
+      - A certificate valid on one node of a load-balanced service may be expired on another; check each node.
+    failureAction: If expiring or invalid, plan renewal (step 5).
+
+  - order: 4
+    action: Check the TLS handshake parameters
+    description: >-
+      Check which protocol versions and cipher suites the server accepts. The client and server agree a
+      version and cipher, authenticate the server with its certificate, and exchange keys to derive the
+      symmetric session key used for the data. Current guidance accepts TLS 1.2 and 1.3 only, with
+      forward-secret (ECDHE) suites; SSLv3, TLS 1.0 and TLS 1.1 should be disabled.
+    expectedResult: Only TLS 1.2 / 1.3 with strong ciphers are accepted, or the weak ones are listed for remediation.
+    warnings:
+      - Disabling old protocols can break legacy clients (old printers, scanners, mail clients); check with the owner first.
+    failureAction: Record the weak protocols / ciphers and raise a remediation change.
+
+  - order: 5
+    action: Renew or remediate under change control
+    description: Renew the certificate (or request it from the PKI / CA), install it with the full chain on every node, or disable the weak protocols and ciphers, through an approved change; restart or reload the service as its documentation requires.
+    expectedResult: The new certificate is served and weak settings are removed.
+    warnings:
+      - Never copy private keys into tickets, chat or email; use the certificate store / vault.
+    failureAction: Restore the previous certificate binding or configuration.
+
+  - order: 6
+    action: Verify and close
+    description: Re-check the endpoint, confirm the monitoring sensor returns to normal and record the new expiry date.
+    expectedResult: Sensor is green, certificate expiry is recorded, renewal reminder set.
+
+troubleshootingMatrix:
+  - symptom: Certificate expired or expiring soon
+    possibleCauses:
+      - Renewal missed or automated renewal (ACME) failing
+      - New certificate installed on some nodes only
+    recommendedActions:
+      - Renew and install on every node; fix the automation
+  - symptom: Browser or client reports untrusted certificate
+    possibleCauses:
+      - Missing intermediate certificate
+      - Self-signed or internal CA not trusted by the client
+      - Name not in the SAN list
+    recommendedActions:
+      - Serve the full chain; issue a certificate with the correct SAN
+  - symptom: SSL Security Check reports weak protocols or ciphers
+    possibleCauses:
+      - SSLv3 / TLS 1.0 / TLS 1.1 still enabled
+      - RC4, 3DES or export ciphers allowed
+    recommendedActions:
+      - Disable them after confirming no business client needs them
+  - symptom: Handshake fails for some clients only
+    possibleCauses:
+      - Client supports only protocols the server disabled
+      - SNI not sent by the client
+    recommendedActions:
+      - Identify the client version; plan its upgrade rather than re-enabling weak protocols
+
+commandsAndExpectedResults:
+  - command: openssl s_client -connect <host>:<port> -servername <name> -showcerts
+    expectedResult: The handshake completes and shows the certificate chain, protocol and cipher.
+  - command: openssl s_client -connect <host>:<port> -tls1_1
+    expectedResult: The handshake fails when TLS 1.1 is correctly disabled.
+  - command: openssl x509 -noout -dates -subject -ext subjectAltName
+    expectedResult: Validity dates, subject and SAN names of a certificate (pipe the certificate in).
+  - command: nmap --script ssl-enum-ciphers -p <port> <host>
+    expectedResult: Accepted protocol versions and cipher suites with a grade.
+    warnings:
+      - Run only against hosts you are authorised to test.
+  - command: Get-ChildItem Cert:\LocalMachine\My | Select Subject, NotAfter, Thumbprint
+    expectedResult: Certificates in the Windows machine store and their expiry.
+
+prerequisites:
+  - Endpoint owner and the CA / PKI process for renewals.
+  - Approved change for certificate replacement or protocol changes.
+
+permissions:
+  - Read-only checks need no server access (client-side tools).
+  - Certificate installation and protocol changes only under an approved change.
+
+escalationCriteria:
+  - Customer-facing certificate already expired.
+  - Private key suspected compromised (revoke and re-issue; involve security).
+  - Weak protocols required by a business-critical legacy system (risk acceptance needed).
+
+ticketTemplate:
+  - Short Description: TLS / certificate finding on <host>:<port> - SOP-039
+  - Description: |
+      Finding <expiry / untrusted / weak protocol / handshake failure>. Certificate expires <date>.
+      Protocols accepted <list>. Remediation: <renewal / protocol change>.
+  - Priority: P2 if expired on a customer-facing service, else P3 / P4.
+  - Impacted Systems: <host>, <service>, <port>.
+  - Category: Security - Certificates.
+  - Assigned Group: Server / Security Team.
+  - Related SOP: SOP-039.
+
+closureCriteria:
+  - Valid certificate served on every node with its expiry recorded.
+  - Weak protocols removed or a documented risk acceptance exists.
+  - Monitoring sensor back to normal.
+
+rollbackPrecautions:
+  - Keep the previous certificate and binding until the new one is verified.
+  - Record protocol / cipher settings before changing them.
+
+safetyNotes:
+  - Never share private keys or PFX passwords.
+  - Do not re-enable weak protocols to clear an alert.
+  - Scan only systems in scope.
+
+searchableKeywords:
+  - ssl certificate, tls, https, certificate expired, ssl security check, weak cipher, tls 1.0, handshake failure, port 443, 465, 993, 995

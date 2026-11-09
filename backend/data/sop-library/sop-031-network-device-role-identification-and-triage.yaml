@@ -1,0 +1,138 @@
+# SOP-031: Network Device Role Identification and First-Response Triage
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: connectivity
+# Estimated Duration: 20 minutes
+# Required Skills: NOC Engineer, Network Engineer
+# Required Permissions: read-only device access, monitoring read access
+# Tags: router, switch, layer2, layer3, firewall, triage, osi, device-role, first-response
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-031
+status: draft
+versionNumber: 1
+category: connectivity
+changeSummary: Initial version - identify whether the alerting device is a router, Layer 2 switch, Layer 3 switch or firewall and pick the right first checks for its OSI layer.
+
+steps:
+  - order: 1
+    action: Identify the device and its role
+    description: >-
+      From the alert, open the host in the platform and read its device type, vendor, model and site.
+      Confirm the role from the device itself - a router forwards between networks by IP routing
+      table (Layer 3), a Layer 2 switch forwards inside one LAN by MAC address table, a Layer 3 switch
+      does both (switching plus hardware inter-VLAN routing), and a firewall forwards by IP, port,
+      protocol and security policy (Layer 3/4).
+    expectedResult: The device role and the OSI layer it works at are known and recorded in the ticket.
+    warnings:
+      - Do not trust the hostname alone; confirm the role with show version / get system status.
+      - A Layer 3 switch can look like a plain switch in inventory; check whether IP routing is enabled.
+    failureAction: If the role cannot be confirmed, treat the device as Layer 3 and escalate to the network team with what was observed.
+
+  - order: 2
+    action: Check reachability and management plane
+    description: Ping and SSH/HTTPS to the management address from the collector or jump host; check the device's uptime for a recent reboot.
+    expectedResult: The device answers on its management address and uptime shows whether it restarted.
+    failureAction: If unreachable, follow SOP-001 (outage response) and check the upstream device first.
+
+  - order: 3
+    action: Run the first checks for the device's layer
+    description: >-
+      Router - interfaces up/up, routing table has the expected routes, WAN/BGP/OSPF neighbours up (SOP-032, SOP-033).
+      Layer 2 switch - port status, errors, VLAN membership and trunks, MAC table, spanning-tree state (SOP-035).
+      Layer 3 switch - the Layer 2 checks plus SVIs up and inter-VLAN routing (SOP-037).
+      Firewall - interfaces, HA state, sessions, policy hits and VPN tunnels (SOP-017, SOP-038).
+    expectedResult: The failing layer (physical, data link, network or policy) is narrowed down.
+    warnings:
+      - Read-only commands only in this SOP; any change needs the change process.
+    failureAction: Collect the command outputs and escalate to Tier 2 network.
+
+  - order: 4
+    action: Check blast radius
+    description: In the platform, open the device's topology neighbours, sites and dependent services; check whether other devices at the site are alerting.
+    expectedResult: It is known whether this is a single device, a site or a wider outage, and the incident priority matches.
+    failureAction: If several sites are affected, raise the priority and notify the incident manager.
+
+  - order: 5
+    action: Record findings and hand over
+    description: Record role, layer, checks run, outputs and the next SOP to follow in the ticket.
+    expectedResult: The ticket has enough evidence for the next engineer without re-running checks.
+
+troubleshootingMatrix:
+  - symptom: Hosts in one VLAN cannot reach another VLAN
+    possibleCauses:
+      - Inter-VLAN routing not configured or SVI down on the Layer 3 switch
+      - Router-on-a-stick subinterface or 802.1Q tag mismatch
+      - Firewall policy blocking traffic between zones
+    recommendedActions:
+      - Follow SOP-037 for the Layer 3 switch or router
+      - Check firewall policy hits for the source and destination
+  - symptom: Hosts on the same switch cannot reach each other
+    possibleCauses:
+      - Ports in different access VLANs
+      - Port error-disabled by port security or BPDU guard
+      - Duplex or speed mismatch
+    recommendedActions:
+      - Follow SOP-035
+  - symptom: Site cannot reach the internet but LAN works
+    possibleCauses:
+      - Default route missing or pointing to a dead next hop
+      - NAT or outbound policy issue on the firewall
+      - ISP link down
+    recommendedActions:
+      - Follow SOP-032 and SOP-038
+
+commandsAndExpectedResults:
+  - command: show version
+    expectedResult: Model, software version and uptime (Cisco IOS / IOS-XE / NX-OS).
+  - command: get system status
+    expectedResult: Model, FortiOS version, HA mode and uptime (FortiGate).
+  - command: show ip interface brief
+    expectedResult: Every expected interface is up/up with the right address.
+  - command: show ip route summary
+    expectedResult: Route counts per source; a Layer 2-only switch has only connected/default routes.
+  - command: show interfaces status
+    expectedResult: Port state, VLAN, duplex and speed per port (switches).
+  - command: show spanning-tree summary
+    expectedResult: Spanning-tree mode and blocked ports are as designed.
+
+prerequisites:
+  - Read-only credentials for the device from the credential vault.
+  - Access to the platform's host, topology and alert pages.
+
+permissions:
+  - devices.read and monitoring.read in the platform.
+  - Read-only (privilege 1-7 or read-only admin profile) on the device.
+
+escalationCriteria:
+  - The device or more than one site is unreachable for over 15 minutes.
+  - The failing layer cannot be identified with read-only checks.
+  - A configuration change is needed.
+
+ticketTemplate:
+  - Short Description: Network device triage - <device> (<role>) - SOP-031
+  - Description: |
+      Alert on <device> at <site>. Role confirmed as <router / L2 switch / L3 switch / firewall>.
+      Checks run and outputs attached. Suspected layer: <physical / data link / network / policy>.
+  - Priority: Per the alert's impact.
+  - Impacted Systems: <device>, <site>, <dependent services>.
+  - Category: Network.
+  - Assigned Group: NOC.
+  - Related SOP: SOP-031.
+
+closureCriteria:
+  - The device role and failing layer are recorded.
+  - The issue is resolved or handed over under the follow-up SOP named in the ticket.
+
+rollbackPrecautions:
+  - This SOP is read-only; nothing to roll back.
+
+safetyNotes:
+  - Use read-only commands only; no configuration mode in this SOP.
+  - Never paste credentials, SNMP communities or keys into the ticket.
+  - Debug commands are out of scope here; they need authorization (see SOP-017).
+
+searchableKeywords:
+  - router, layer 2 switch, layer 3 switch, firewall, osi layer, device role, triage, first response

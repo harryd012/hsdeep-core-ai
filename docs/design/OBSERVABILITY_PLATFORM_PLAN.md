@@ -47,7 +47,7 @@ Earlier audits: `docs/REPOSITORY_AUDIT.md`, `docs/PLATFORM_LEDGER.md` (batches 1
 | P6 Dashboards & topology | Widget registry over aggregated APIs, saved dashboards per tenant / role; topology already exists, add drill-down to sensors | **Slice 1 implemented** (frontend only): topology drill-down to sensors, alerts, host tabs and interface pages; **slice 2**: saved dashboards and the widget registry (`tests/test_saved_dashboards.py`) |
 | P7 Metrics / logs | Syslog receiver on the edge agent → normalized events, Logs Explorer over events | **Slice 1 implemented and tested**: syslog receiver (separate process), log-to-device linking at ingest, Logs Explorer API and page (`tests/test_logs_explorer.py`); not verified in a browser |
 | P8 APM / tracing | OTLP/HTTP ingest of traces → spans table, service map from span parent/child | **Slice 1 implemented and tested**: OTLP/HTTP JSON trace ingest, spans table, services / traces / service map / trace APIs, Traces pages (`tests/test_tracing.py`); not verified in a browser |
-| P9 Alerting | Dynamic baselines, notification policies, Teams channel | planned (engine exists) |
+| P9 Alerting | Dynamic baselines, notification policies, Teams channel | **Slice 1 implemented and tested**: notification policies (severity / priority / site routing) and a Microsoft Teams channel per policy (`tests/test_notification_policies.py`); **slice 2**: opt-in dynamic baselines per sensor (`tests/test_sensor_baselines.py`) |
 | P10 AI RCA / copilot | Copilot tools over the new sensor / history APIs | planned (engine exists) |
 | P11 Reporting | Sensor / interface / availability reports from stored metrics | planned (reports module exists) |
 | P12 Integration center | One page over `monitoring_sources` + integrations with health, sync history | planned |
@@ -471,3 +471,77 @@ of the topology. It is now a health overview (layout inspired by the reference p
   text are gone (Hosts and Topology cover them); the unused `InfrastructureKpiRow` was removed.
 - **Not collected yet**: serverless, storage, database and container services of the clouds
   (the connectors list VMs, networks, security rules and load balancers only).
+
+## 13. P9 slice 1: notification policies and Microsoft Teams
+
+Before this slice a tenant had one notification setting: email, Slack and PagerDuty on or off,
+each at a minimum severity, and every enabled channel received every incident at or above it.
+There was no Teams channel and no way to send different incidents to different people.
+
+- **Policies** (`notification_policies`, migration `e3a9c5f7b2d8`, a new table: the existing
+  notification tables are owned by `postgres` in the test database, so none was altered): name,
+  on / off, order, minimum severity, optional priorities (P1-P4) and sites, the tenant channels
+  it sends to (email / Slack / PagerDuty), optional email recipients of its own, and an optional
+  Microsoft Teams webhook of its own. At most 50 per tenant, unique names.
+- **Routing** (`NotificationDispatcher.destinations`): with no enabled policy, delivery is exactly
+  as before. With enabled policies an incident goes only where a matching policy sends it: a
+  tenant channel once (still at its own minimum, e.g. PagerDuty's), a policy's own recipients or
+  Teams webhook as its own destination (`email:<policy>`, `teams:<policy>` in the delivery log).
+  The existing guarantees hold per destination: sent once, retried up to 3 times, "resolved"
+  only where the opening was sent, no flood of history when a destination is set up (incidents
+  older than the policy, or 24 hours, are skipped). A tenant whose only destination is a Teams
+  webhook needs no notification-settings row.
+- **Teams**: an Adaptive Card (title by severity, severity / status / priority / times, an
+  "Open the incident" button), the format both the classic Teams connector and the Workflows
+  webhooks accept. Only https URLs on `*.webhook.office.com`, `*.logic.azure.com` and
+  `*.api.powerplatform.com` are accepted, so a tenant URL cannot make the platform call internal
+  addresses. The webhook is stored encrypted (`SecretCrypto`), returned only masked (last 4
+  characters), kept when the masked value is sent back, and never written to the audit log.
+- **API** (`/api/settings/notifications/policies`, admin only like the other notification
+  settings, writes need an active subscription): list, create, update, delete, and `/test`
+  (a labelled test to the policy's destinations, recorded nowhere; it reports channels the
+  policy names but the organization has not enabled). Sites must belong to the tenant. Every
+  change is audited (`notification_policy.*`).
+- **UI**: a "Notification policies" panel on Settings > Notifications (add, edit, enable / turn
+  off, test, delete, a line saying whether policies are in force) and policy destinations named
+  in the delivery log. Type-checked and linted; **not verified in a browser** (another session's
+  dev server holds this folder).
+- **Not in this slice**: dynamic baselines (slice 2), quiet hours and escalation steps, routing
+  by device environment or business service.
+
+## 14. P9 slice 2: dynamic baselines
+
+Fixed thresholds miss what is normal for a sensor at a given time: 70 % CPU at noon can be
+fine and alarming at 3 a.m.
+
+- **Learning** (`app/services/monitoring/baseline_service.py`): opt-in per sensor. From the
+  sensor's own primary-channel history (P1) over the last 14 days, in SQL: mean, standard
+  deviation and count per hour of the day (UTC) and overall. Relearned hourly by the job, and at
+  once when the settings change.
+- **Judging** (`baseline_math.judge`, pure): the latest reading against its hour (or the overall
+  figures when that hour has fewer than 5 samples), as z = distance from the expected value in
+  standard deviations. Anomalous at or beyond the sensitivity (2-6, default 3), higher, lower or
+  either. Honesty rules: under 3 days or 30 readings of history the sensor is "learning" and never
+  alerts; a flat series gets a spread floor (5 % of its mean) instead of alarming on any change;
+  an anomaly clears only below 75 % of the sensitivity, so a value at the limit does not flap; a
+  reading older than 2 hours is not judged ("stale") and a paused or disabled sensor is not judged
+  ("paused"), and in both cases an open anomaly alert resolves.
+- **Alerts** (`AlertService.evaluate_baseline`): a warning alert, `source = baseline`, keyed as a
+  signal (`baseline:<sensor id>` on the sensor's source) rather than by sensor id, so the sensor's
+  own status alert is never touched and the one-active-alert-per-sensor rule holds. It says what
+  the sensor reads, what it usually reads at this hour and how far off it is; it correlates,
+  updates and auto-resolves like other alerts, so incidents and notification policies (slice 1)
+  apply.
+- **Storage** (`sensor_baselines`, migration `f4b1d7e9c3a5`): one row per sensor with its
+  settings, learned figures and latest verdict.
+- **Job** (`sensor_baselines`, every 5 minutes): enabled baselines (and any still anomalous),
+  least recently checked first, at most 2,000 per pass.
+- **API**: `GET` / `PUT /api/monitoring/sensors/{id}/baseline` (read `monitoring.read`; change
+  `monitoring.update` and an active subscription, audited as `sensor.baseline_updated`) and
+  `GET /api/monitoring/baselines` (anomalous first).
+- **UI**: a "Dynamic baseline" panel on the sensor page: state, the usual range for the current
+  hour and what it is based on, the latest reading and its distance, how much history is used;
+  with permission, turn on / off, direction and sensitivity. Type-checked and linted; **not
+  verified in a browser**.
+- **Not in this slice**: day-of-week seasonality, baselines for interface channels, and turning
+  baselines on in bulk from the sensor library.

@@ -1,0 +1,143 @@
+# SOP-032: Static and Default Route Configuration and Verification
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: configuration
+# Estimated Duration: 30 minutes
+# Required Skills: Network Engineer
+# Required Permissions: read-only device access, configuration change (approved changes only)
+# Tags: routing, static-route, default-route, next-hop, cisco, fortigate, gateway, wan
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-032
+status: draft
+versionNumber: 1
+category: configuration
+changeSummary: Initial version - verify, add or correct static and default routes under change control.
+
+steps:
+  - order: 1
+    action: Confirm the routing symptom
+    description: >-
+      From an affected host, trace to the destination (traceroute / tracert) and note the last hop
+      that answers. On the router, look up the destination in the routing table to see which route
+      (if any) it uses.
+    expectedResult: It is known whether the destination has no route, the wrong route or a route via a dead next hop.
+    failureAction: If the path stops before the router, check the LAN side first (SOP-031).
+
+  - order: 2
+    action: Verify the next hop
+    description: Ping the next-hop address from the router and confirm it is in a connected subnet and answers ARP.
+    expectedResult: The next hop answers and is the correct gateway for the destination.
+    warnings:
+      - A static route to an unreachable next hop stays in the table on some platforms unless tracked; check route tracking / link monitor.
+    failureAction: If the next hop is down, follow the upstream device or ISP procedure instead of changing routes.
+
+  - order: 3
+    action: Prepare the route change
+    description: >-
+      Write the exact command and its rollback in the change. Cisco IOS -
+      "ip route <destination> <mask> <next-hop> [distance]"; the default route is
+      "ip route 0.0.0.0 0.0.0.0 <next-hop>". FortiGate - config router static, set dst, gateway and device.
+      Use an administrative distance that does not override a working dynamic route unless intended.
+    expectedResult: An approved change with command, rollback and verification steps.
+    warnings:
+      - A wrong default route can cut off the whole site including your management session.
+      - Floating static routes need a higher administrative distance than the primary route.
+    failureAction: Do not apply without approval.
+
+  - order: 4
+    action: Apply and verify
+    description: Apply in the change window from out-of-band or a session that does not depend on the route being changed; verify the route is installed and traffic flows.
+    expectedResult: The route shows in the routing table and traceroute from an affected host reaches the destination.
+    failureAction: Remove the new route (rollback) and restore the saved configuration.
+
+  - order: 5
+    action: Save and document
+    description: Save the running configuration and record the change and verification output in the ticket.
+    expectedResult: Startup configuration matches running; the ticket holds before/after outputs.
+
+troubleshootingMatrix:
+  - symptom: Route configured but not in the routing table
+    possibleCauses:
+      - Next-hop interface down or next hop not in a connected subnet
+      - A route with a lower administrative distance is preferred
+      - Route tracking marked the next hop down
+    recommendedActions:
+      - show ip route <destination> and show ip static route
+      - Check track objects / FortiGate link-monitor status
+  - symptom: Traffic leaves the wrong interface
+    possibleCauses:
+      - More specific route elsewhere wins (longest prefix match)
+      - Policy-based routing overrides the table
+    recommendedActions:
+      - show ip route <host-address> to see the matching prefix
+      - Check route-maps / FortiGate policy routes
+  - symptom: Internet down after a change
+    possibleCauses:
+      - Default route removed or pointed to the wrong gateway
+      - NAT not matching the new egress interface
+    recommendedActions:
+      - Roll back the change
+      - Follow SOP-038 for dual-ISP edges
+
+commandsAndExpectedResults:
+  - command: show ip route <destination>
+    expectedResult: The matching route, its source, administrative distance and next hop.
+  - command: show ip route static
+    expectedResult: All configured static routes that are installed.
+  - command: show running-config | include ip route
+    expectedResult: Configured static routes, including ones not installed.
+  - command: ip route 192.168.1.0 255.255.255.0 10.0.0.1
+    expectedResult: Example static route to 192.168.1.0/24 via 10.0.0.1 (configuration mode, approved change only).
+    warnings:
+      - Configuration command; change control required.
+  - command: ip route 0.0.0.0 0.0.0.0 192.168.1.1
+    expectedResult: Example default route via 192.168.1.1 (approved change only).
+    warnings:
+      - Can isolate the site if wrong; have out-of-band access ready.
+  - command: get router info routing-table all
+    expectedResult: FortiGate routing table with static, connected and dynamic routes.
+
+prerequisites:
+  - Current configuration backed up before any change.
+  - Network diagram showing next hops and ISP gateways.
+  - Approved change request for any route addition or removal.
+  - Out-of-band or console access for default-route changes.
+
+permissions:
+  - Read-only device access for steps 1-2.
+  - Configuration privilege for steps 3-5, only under an approved change.
+
+escalationCriteria:
+  - The fix needs a default-route change on a production site outside a change window.
+  - Routing loops or flapping routes are observed.
+  - The next hop belongs to a provider and is down.
+
+ticketTemplate:
+  - Short Description: Static/default route change on <device> - SOP-032
+  - Description: |
+      Destination <prefix> unreachable / misrouted from <site>. Current route: <output>.
+      Proposed change: <command>. Rollback: <command>.
+  - Priority: P3 (P2 if a site has no internet).
+  - Impacted Systems: <device>, <site>.
+  - Category: Network - Routing.
+  - Assigned Group: Network Team.
+  - Related SOP: SOP-032.
+
+closureCriteria:
+  - The route is installed and traffic reaches the destination.
+  - Configuration is saved and the change is closed with before/after evidence.
+
+rollbackPrecautions:
+  - Keep the exact "no ip route ..." (or FortiGate delete) command for every route you add.
+  - Restore the saved configuration if verification fails.
+  - Never remove the route your own management session depends on without out-of-band access.
+
+safetyNotes:
+  - Configuration changes only under an approved change.
+  - Never expose device credentials in the ticket.
+
+searchableKeywords:
+  - static route, default route, ip route, next hop, gateway of last resort, administrative distance

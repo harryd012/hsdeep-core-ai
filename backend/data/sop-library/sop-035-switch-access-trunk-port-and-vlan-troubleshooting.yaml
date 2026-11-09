@@ -1,0 +1,138 @@
+# SOP-035: Switch Access and Trunk Port Configuration and VLAN Mismatch Troubleshooting
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: configuration
+# Estimated Duration: 30 minutes
+# Required Skills: Network Engineer
+# Required Permissions: read-only device access, configuration change (approved changes only)
+# Tags: switch, vlan, access-port, trunk, 802.1q, native-vlan, port-security, cisco, catalyst
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-035
+status: draft
+versionNumber: 1
+category: configuration
+changeSummary: Initial version - check and correct access and trunk port settings when an end device lands in the wrong VLAN or VLANs do not pass between switches.
+
+steps:
+  - order: 1
+    action: Locate the port and its intended role
+    description: >-
+      Find the switch port the device or uplink uses (MAC address table, CDP/LLDP neighbours). Decide
+      its role - an access port connects one end device (PC, printer, IP phone) and carries one untagged
+      VLAN; a trunk port connects to another switch, router or firewall and carries several VLANs tagged
+      with 802.1Q.
+    expectedResult: The port and whether it should be access or trunk are known.
+    failureAction: If the device's MAC is not learned anywhere, check cabling and the port's link state.
+
+  - order: 2
+    action: Check the port's current mode and VLANs
+    description: Compare the port's operational mode, access VLAN or allowed VLAN list, and native VLAN with the design and with the port on the other end of the link.
+    expectedResult: Any difference (wrong access VLAN, VLAN missing from the trunk allowed list, native VLAN mismatch, mode mismatch) is found.
+    warnings:
+      - A native VLAN mismatch leaks traffic between VLANs and is reported by CDP; fix it on both ends.
+    failureAction: If both ends match the design, check that the VLAN exists and is active on every switch in the path.
+
+  - order: 3
+    action: Check port health and protection features
+    description: Check errors, duplex/speed, err-disabled state (port security, BPDU guard) and spanning-tree state for the VLAN on the port.
+    expectedResult: The port is up, forwarding in spanning tree for the VLAN, with no err-disable.
+    warnings:
+      - Do not bounce an err-disabled port before finding why it was disabled (possible loop or unauthorised device).
+    failureAction: If err-disabled by BPDU guard or port security, find the cause before re-enabling.
+
+  - order: 4
+    action: Correct the configuration under change control
+    description: >-
+      Access port - "switchport mode access" and "switchport access vlan <id>" (plus voice VLAN for phones).
+      Trunk port - "switchport mode trunk" and "switchport trunk allowed vlan <list>", using
+      "switchport trunk allowed vlan add <id>" to add a VLAN without removing the others.
+    expectedResult: The approved change is applied and the device or VLAN works.
+    warnings:
+      - Without the add keyword, switchport trunk allowed vlan replaces the whole list and can drop every other VLAN on the uplink.
+      - Changing an uplink can isolate downstream switches; use console or out-of-band access.
+    failureAction: Restore the previous port configuration.
+
+  - order: 5
+    action: Verify and save
+    description: Confirm the device gets an address in the right subnet and reaches its gateway; for trunks, confirm the VLAN is allowed and forwarding on both ends; save the configuration.
+    expectedResult: Traffic flows in the correct VLAN and the configuration is saved.
+
+troubleshootingMatrix:
+  - symptom: Device gets an address from the wrong subnet
+    possibleCauses:
+      - Access port in the wrong VLAN
+      - Port left as dynamic and negotiated a trunk
+    recommendedActions:
+      - Set the correct access VLAN and static access mode
+  - symptom: A VLAN works on one switch but not across the uplink
+    possibleCauses:
+      - VLAN missing from the trunk allowed list on one end
+      - VLAN not created on the far switch
+      - VLAN blocked by spanning tree on the trunk
+    recommendedActions:
+      - show interfaces trunk on both ends; add the VLAN with "allowed vlan add"
+  - symptom: Port suddenly down after a device was plugged in
+    possibleCauses:
+      - Port security violation
+      - BPDU guard triggered by a switch connected to an access port
+    recommendedActions:
+      - show interfaces status err-disabled and find the cause before recovery
+
+commandsAndExpectedResults:
+  - command: show interfaces <interface> switchport
+    expectedResult: Administrative and operational mode, access VLAN, native VLAN and allowed VLANs.
+  - command: show interfaces trunk
+    expectedResult: Trunks, their native VLAN, allowed VLANs and VLANs forwarding in spanning tree.
+  - command: show vlan brief
+    expectedResult: VLANs that exist on the switch and their access ports.
+  - command: show mac address-table address <mac>
+    expectedResult: The port and VLAN where the device's MAC is learned.
+  - command: show interfaces status err-disabled
+    expectedResult: Ports disabled by a protection feature and the reason.
+  - command: switchport trunk allowed vlan add 30
+    expectedResult: Example of adding VLAN 30 to a trunk without removing existing VLANs (approved change only).
+    warnings:
+      - Never omit "add" unless you intend to replace the whole list.
+
+prerequisites:
+  - VLAN plan and the intended mode of the port.
+  - Switch configuration backed up.
+  - Approved change for configuration changes.
+
+permissions:
+  - Read-only switch access for diagnosis.
+  - Configuration privilege only under an approved change.
+
+escalationCriteria:
+  - An uplink or trunk carrying several VLANs is affected.
+  - A spanning-tree loop is suspected.
+  - Unauthorised device detected on a port (escalate to security).
+
+ticketTemplate:
+  - Short Description: VLAN/port issue on <switch> <port> - SOP-035
+  - Description: |
+      Device <device / MAC> on <switch> <port>. Intended <access VLAN x / trunk VLANs y>.
+      Found <current settings>. Proposed fix and rollback: <commands>.
+  - Priority: P3 (P2 for an uplink).
+  - Impacted Systems: <switch>, <port>, <VLANs>.
+  - Category: Network - Switching.
+  - Assigned Group: Network Team.
+  - Related SOP: SOP-035.
+
+closureCriteria:
+  - The device or VLAN works and the port matches the design.
+  - Configuration saved and change closed with before/after outputs.
+
+rollbackPrecautions:
+  - Record the full previous port configuration (show running-config interface <interface>) before changing it.
+  - For trunks, record the full allowed VLAN list before any change.
+
+safetyNotes:
+  - Configuration changes only under an approved change.
+  - Do not disable port security or BPDU guard to make a device work.
+
+searchableKeywords:
+  - access port, trunk port, vlan mismatch, native vlan, 802.1q, allowed vlan, err-disabled, port security

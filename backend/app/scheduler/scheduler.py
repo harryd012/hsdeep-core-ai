@@ -17,7 +17,7 @@ from app.core.db import AsyncSessionLocal
 from app.repositories.collector_run_repository import CollectorRunRepository
 from app.scheduler.discovery_jobs import DISCOVERY_SCHEDULE_INTERVAL_SECONDS, discovery_schedule_job
 from app.scheduler.email_jobs import EMAIL_DELIVERY_INTERVAL_SECONDS, deliver_email_outbox_job
-from app.scheduler.metric_jobs import METRIC_RETENTION_INTERVAL_SECONDS, metric_retention_job
+from app.scheduler.metric_jobs import BASELINE_INTERVAL_SECONDS, METRIC_RETENTION_INTERVAL_SECONDS, baseline_job, metric_retention_job
 from app.scheduler.incident_lifecycle import close_stale_incidents_job
 from app.scheduler.notification_jobs import NOTIFICATION_INTERVAL_SECONDS, dispatch_incident_notifications_job
 from app.scheduler.jobs import tick
@@ -134,6 +134,15 @@ def start_scheduler(app: "FastAPI") -> AsyncIOScheduler:
         "interval",
         seconds=METRIC_RETENTION_INTERVAL_SECONDS,
         id="metric_retention",
+        max_instances=1,
+        coalesce=True,
+    )
+    # Dynamic baselines: learn per-sensor normal ranges and alert on anomalies (opt-in per sensor).
+    scheduler.add_job(
+        baseline_job,
+        "interval",
+        seconds=BASELINE_INTERVAL_SECONDS,
+        id="sensor_baselines",
         max_instances=1,
         coalesce=True,
     )
