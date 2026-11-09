@@ -1,7 +1,9 @@
 # Prometheus + Grafana platform observability: Phase 0 audit and plan
 
-Status: **Phase 0 complete, awaiting approval** (2026-11-09). Audited against `origin/main`
-at `40465dc87`. No source code has been changed.
+Status: **Phase 0 approved; Phase 1 implemented and tested** (2026-11-09). Audited against
+`origin/main` at `40465dc87`. Approved decisions: an `__unmatched__` route bucket, the Next.js
+page for platform superusers only, and Docker Compose plus the scrape NetworkPolicy now (K8s
+Prometheus/Grafana manifests later).
 
 Scope rule: Prometheus and Grafana monitor **the HSDEEP platform itself**: its API, worker and
 scheduler processes and its pipelines. Customer infrastructure stays on the existing
@@ -34,6 +36,10 @@ network center, logs explorer).
    only the default `python_*` and `process_*` collectors today. The same is true of
    `services/servicenow/metrics.py`. A dashboard built on the current names would be empty.
    Most of Phases 1–2 is wiring these up, not defining new metrics.
+   **The ServiceNow metrics must not be loaded as they are:** every one except the two queue
+   gauges is labelled by `connection_id`, a per-tenant UUID, which breaks the no-tenant-label
+   rule. Phase 1 leaves that module unloaded. Relabelling it (drop `connection_id`) is a
+   Phase 2 item.
 2. **No HTTP request metrics exist.** `hsdeep_http_*` must be added. The label must be the
    **route template** (`request.scope["route"].path`, e.g. `/api/incidents/{incident_id}`), not
    `request.url.path`, which contains IDs and would be unbounded.
@@ -93,3 +99,26 @@ in a running Prometheus and Grafana will be reported as **implemented but not li
    (recommended: Compose plus the NetworkPolicy now, K8s manifests later).
 
 No phase needs a database migration.
+
+## 7. Phase 1 result: IMPLEMENTED AND TESTED (not live-verified in Prometheus)
+
+Files created: `backend/app/core/http_metrics.py`, `backend/tests/test_platform_metrics.py`.
+Files modified: `backend/app/core/metrics.py`, `backend/app/main.py`.
+
+- New metrics: `hsdeep_http_requests_total{method,route,status}`,
+  `hsdeep_http_request_duration_seconds{method,route}`,
+  `hsdeep_http_requests_in_progress{method}`, `hsdeep_http_errors_total{method,route,status}`
+  (5xx and unhandled exceptions), `hsdeep_build_info{version,runtime_mode}`.
+- `HttpMetricsMiddleware` is a plain ASGI middleware installed outermost. It reads the route
+  template after routing. For responses made before routing (rate-limit 429s, CORS
+  preflights) it matches the path against the app's routes. Unmatched paths go to
+  `__unmatched__`, and non-standard methods to `OTHER`. `/health*`, `/metrics` and the docs
+  are excluded, the same list as the request log.
+- `app.main` now imports `app.core.metrics`, so every existing `hsdeep_*` family appears on
+  `/metrics`, but stays at zero until Phase 2 calls the helpers.
+- `/metrics` skips `_RateLimitMiddleware` (no per-IP wait, no API-key DB lookup). Its token
+  check is unchanged.
+- Tests: `tests/test_platform_metrics.py` covers route-template labels, the unmatched bucket,
+  exclusions, 5xx/exception errors, a pre-routing 429, the in-progress gauge, method bounding,
+  the real-app scrape (families and runtime role), no UUID/IP label values, the scrape
+  skipping the limiter, and single registration.

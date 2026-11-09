@@ -1,8 +1,9 @@
 """
-Prometheus metrics for the Monitoring Collector Framework.
+Prometheus platform metrics for HSDEEP CORE AI (the platform itself, never
+customer infrastructure, which stays in PostgreSQL).
 
-Tracks collection pipeline health, alert creation rates, and scheduler
-status. Exposed at the /metrics endpoint for scraping by Prometheus or any
+Tracks HTTP API traffic, collection pipeline health, alert creation rates and
+scheduler status. Exposed at the /metrics endpoint for scraping by Prometheus or any
 OpenMetrics-compatible collector.
 
 Security note: metrics are intentionally global counters, not tenant-scoped.
@@ -140,3 +141,60 @@ def observe_scheduler_tick(queue_depth: int) -> None:
     """Record scheduler tick metrics."""
     scheduler_queue_depth.set(queue_depth)
     scheduler_last_tick_timestamp.set(datetime.now(timezone.utc).timestamp())
+
+# -- HTTP API ----------------------------------------------------------------
+#
+# Labels are bounded on purpose: ``route`` is the route TEMPLATE
+# (``/api/incidents/{incident_id}``), never the raw path; anything that matches
+# no route is ``__unmatched__`` so scanners cannot mint new series; ``method``
+# outside the standard verbs is ``OTHER``. No tenant, user, IP or credential
+# ever becomes a label. Recorded by ``app.core.http_metrics``.
+
+UNMATCHED_ROUTE = "__unmatched__"
+
+http_requests_total = Counter(
+    name="hsdeep_http_requests_total",
+    documentation="HTTP requests handled, by method, route template and status code",
+    labelnames=["method", "route", "status"],
+)
+
+http_request_duration = Histogram(
+    name="hsdeep_http_request_duration_seconds",
+    documentation="HTTP request duration in seconds, by method and route template",
+    labelnames=["method", "route"],
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, float("inf")),
+)
+
+http_requests_in_progress = Gauge(
+    name="hsdeep_http_requests_in_progress",
+    documentation="HTTP requests currently being handled, by method",
+    labelnames=["method"],
+)
+
+http_errors_total = Counter(
+    name="hsdeep_http_errors_total",
+    documentation="HTTP requests that ended in a 5xx or an unhandled exception",
+    labelnames=["method", "route", "status"],
+)
+
+# -- Process identity ----------------------------------------------------------
+
+build_info = Gauge(
+    name="hsdeep_build_info",
+    documentation="Always 1; labels identify the app version and runtime role of this process",
+    labelnames=["version", "runtime_mode"],
+)
+
+
+def observe_http_request(method: str, route: str, status: int, duration_seconds: float) -> None:
+    """Record one finished HTTP request."""
+    code = str(status)
+    http_requests_total.labels(method=method, route=route, status=code).inc()
+    http_request_duration.labels(method=method, route=route).observe(duration_seconds)
+    if status >= 500:
+        http_errors_total.labels(method=method, route=route, status=code).inc()
+
+
+def set_build_info(version: str, runtime_mode: str) -> None:
+    """Publish this process's version and runtime role (api/worker/scheduler/all)."""
+    build_info.labels(version=version, runtime_mode=runtime_mode).set(1)
