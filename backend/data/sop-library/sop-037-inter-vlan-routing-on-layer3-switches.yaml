@@ -1,0 +1,130 @@
+# SOP-037: Inter-VLAN Routing Troubleshooting on Layer 3 Switches (SVI)
+# SOP Version: 1.0
+# Lifecycle Status: draft
+# Category: connectivity
+# Estimated Duration: 40 minutes
+# Required Skills: Network Engineer
+# Required Permissions: read-only device access, configuration change (approved changes only)
+# Tags: inter-vlan, svi, layer3-switch, ip-routing, router-on-a-stick, vlan, distribution, core
+
+---
+apiVersion: Sop/v1
+kind: SOPVersion
+sopId: SOP-037
+status: draft
+versionNumber: 1
+category: connectivity
+changeSummary: Initial version - restore routing between VLANs on a Layer 3 (distribution / core) switch or router-on-a-stick.
+
+steps:
+  - order: 1
+    action: Confirm where inter-VLAN routing is done
+    description: >-
+      From the design, confirm which device routes between the VLANs - a Layer 3 switch with SVIs
+      (usual in campus distribution/core, routing at wire speed in hardware), a router with 802.1Q
+      subinterfaces (router-on-a-stick), or a firewall between security zones.
+    expectedResult: The routing device and each VLAN's gateway address are known.
+    failureAction: If traffic between the VLANs must pass a firewall by design, check its policy (SOP-034) instead.
+
+  - order: 2
+    action: Check the hosts' gateway settings
+    description: On a host in each VLAN, confirm its address, mask and default gateway match the SVI address of its VLAN, and that it can ping its own gateway.
+    expectedResult: Each host reaches its own VLAN gateway.
+    failureAction: If a host cannot reach its own gateway, the issue is Layer 2 in that VLAN (SOP-035) or DHCP options (SOP-036).
+
+  - order: 3
+    action: Check routing is enabled and SVIs are up
+    description: >-
+      On the Layer 3 switch confirm "ip routing" is enabled and each SVI (interface Vlan<id>) is up/up.
+      An SVI stays down when the VLAN does not exist or no port in that VLAN (access or trunk forwarding
+      the VLAN) is up - autostate.
+    expectedResult: Routing is enabled and every SVI involved is up/up with the right address.
+    warnings:
+      - Enabling ip routing on a switch that uses a default-gateway setting changes how the switch forwards its own traffic; plan its default route.
+    failureAction: Create the missing VLAN or bring up a port in it under change control.
+
+  - order: 4
+    action: Check routes and filters between the subnets
+    description: Confirm both subnets are connected routes on the switch, and that no ACL on the SVIs, VRF separation or policy blocks the traffic. For router-on-a-stick, confirm each subinterface's encapsulation dot1Q tag matches the VLAN on the switch trunk.
+    expectedResult: Both subnets are in the same routing table and nothing filters the flow.
+    failureAction: If VRFs separate them by design, the traffic must go through the firewall; confirm with the architect.
+
+  - order: 5
+    action: Fix and verify
+    description: Apply the approved change (missing SVI, wrong address, ACL entry, subinterface tag) and test host-to-host between the VLANs.
+    expectedResult: Hosts in the VLANs reach each other as the design allows.
+
+troubleshootingMatrix:
+  - symptom: SVI is down/down
+    possibleCauses:
+      - VLAN not created on the switch
+      - No active port in the VLAN (autostate)
+      - SVI shut down
+    recommendedActions:
+      - show vlan brief, show interfaces trunk, no shutdown on the SVI under change
+  - symptom: Hosts reach their gateway but not the other VLAN
+    possibleCauses:
+      - ip routing disabled
+      - ACL on an SVI
+      - Subnets in different VRFs
+      - Host has a wrong mask and treats the other subnet as local
+    recommendedActions:
+      - show ip route, show ip interface vlan <id> for ACLs, check host mask
+  - symptom: Router-on-a-stick only routes one VLAN
+    possibleCauses:
+      - Subinterface dot1Q tag does not match
+      - VLAN not allowed on the switch trunk to the router
+      - Native VLAN mismatch
+    recommendedActions:
+      - show interfaces <subinterface>, show interfaces trunk on the switch
+
+commandsAndExpectedResults:
+  - command: show ip interface brief | include Vlan
+    expectedResult: Each SVI up/up with its gateway address.
+  - command: show running-config | include ip routing
+    expectedResult: ip routing present on a routing switch.
+  - command: show ip route connected
+    expectedResult: Every VLAN subnet appears as a connected route.
+  - command: show ip interface vlan <id>
+    expectedResult: Inbound and outbound access lists on the SVI, if any.
+  - command: show interfaces trunk
+    expectedResult: Trunks to access switches forward the VLANs that need routing.
+
+prerequisites:
+  - VLAN and IP plan (VLAN IDs, subnets, gateway addresses).
+  - Configuration of the Layer 3 switch backed up.
+  - Approved change for configuration changes.
+
+permissions:
+  - Read-only device access for diagnosis.
+  - Configuration privilege only under an approved change.
+
+escalationCriteria:
+  - Distribution or core switch routing for several VLANs is affected.
+  - A change to VRFs or ACLs that implement security segmentation is needed (security approval).
+
+ticketTemplate:
+  - Short Description: Inter-VLAN routing failure VLAN <a> to VLAN <b> on <switch> - SOP-037
+  - Description: |
+      Hosts in VLAN <a> cannot reach VLAN <b>. Routing device <device>. SVI state: <output>.
+      Cause: <cause>. Fix and rollback: <commands>.
+  - Priority: P2 for several VLANs, else P3.
+  - Impacted Systems: <switch>, <VLANs>.
+  - Category: Network - Routing.
+  - Assigned Group: Network Team.
+  - Related SOP: SOP-037.
+
+closureCriteria:
+  - Hosts in the affected VLANs reach each other as designed.
+  - Configuration saved and change closed with evidence.
+
+rollbackPrecautions:
+  - Record SVI and ACL configuration before changes.
+  - Do not remove an ACL that enforces segmentation; add a reviewed entry instead.
+
+safetyNotes:
+  - Changes only under an approved change.
+  - Segmentation between VLANs may be a security control; confirm before opening it.
+
+searchableKeywords:
+  - inter-vlan routing, svi, interface vlan, ip routing, layer 3 switch, router on a stick, dot1q subinterface

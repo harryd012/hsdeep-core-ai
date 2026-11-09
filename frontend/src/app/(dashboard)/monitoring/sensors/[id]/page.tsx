@@ -9,6 +9,7 @@ import { ApiError, getSensor, getSensorHistory, updateSensor, type SensorDetail,
 import { useAuth } from "@/lib/auth-context";
 import { classifySensorState } from "@/lib/sensorState";
 import AddToDashboard from "@/components/dashboards/AddToDashboard";
+import BaselinePanel from "@/components/monitoring/BaselinePanel";
 import { Banner, DataTable, LineChart, PageShell, Panel, Pill, StatStrip, StatTile, Tabs, ago, titleCaseWords, type Column, type Tone } from "@/components/ui/PageKit";
 
 /**
@@ -227,6 +228,8 @@ export default function SensorPage() {
               </div>
             )}
           </Panel>
+
+          <BaselinePanel sensorId={s.id} unit={s.unit} canEdit={canEdit} />
         </div>
       )}
     </PageShell>

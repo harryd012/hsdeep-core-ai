@@ -441,6 +441,80 @@ class AlertService:
         await self._correlate(created)
         return AlertEvaluation(alert=created, action="opened")
 
+    async def evaluate_baseline(
+        self, sensor: Sensor, *, anomalous: bool, value: float | None, expected: float | None,
+        z: float | None, low: float | None, high: float | None,
+    ) -> AlertEvaluation:
+        """Baseline counterpart to evaluate_sensor() (observability plan P9):
+        opens, updates or auto-resolves the sensor's anomaly alert. The alert
+        is keyed as a signal (monitoring source + "baseline:<sensor id>"),
+        not by sensor_id, so the sensor's own status alert is never touched.
+        Always a warning: a baseline says "unusual", not "broken"."""
+        now = datetime.now(timezone.utc)
+        key = f"baseline:{sensor.id}"
+        active = await self.alert_repo.get_active_for_signal(sensor.monitoring_source_id, key)
+        if not anomalous:
+            if active is None:
+                return AlertEvaluation(alert=None, action="noop")
+            resolved = await self.alert_repo.resolve(active, resolved_by=None, auto=True)
+            await self._record_history(resolved, event_type="resolved", message="Auto-resolved: back within its baseline.")
+            if resolved.incident_id is not None:
+                incident = await self.incident_repo.get(resolved.incident_id, resolved.tenant_id)
+                await resolve_on_clear(self.alert_repo, self.incident_repo, incident)
+            return AlertEvaluation(alert=resolved, action="resolved")
+
+        band = f"{low:.4g} to {high:.4g}" if low is not None and high is not None else "its usual range"
+        description = (
+            f"{sensor.name} reads {value:.4g}{' ' + sensor.unit if sensor.unit else ''}; for this hour it usually reads "
+            f"{expected:.4g} ({band}), {abs(z or 0):.1f} standard deviations {'above' if (z or 0) > 0 else 'below'}."
+        )
+        if active is not None:
+            updated = await self.alert_repo.record_occurrence(
+                active, triggered_value=value, threshold_value=expected, severity="warning", occurred_at=now,
+            )
+            await self._record_history(updated, event_type="updated", message=f"Still outside its baseline (z {z}).")
+            await self._correlate(updated)
+            return AlertEvaluation(alert=updated, action="updated")
+
+        category = event_classifier.classify(metric_type=sensor.metric_type)
+        vendor, region = await self._resolve_vendor_region(
+            device_id=sensor.device_id, monitoring_source_id=sensor.monitoring_source_id
+        )
+        created = await self.alert_repo.create(
+            tenant_id=sensor.tenant_id,
+            site_id=await self._resolve_site_id(sensor.device_id),
+            device_id=sensor.device_id,
+            sensor_id=None,
+            interface_id=sensor.interface_id,
+            monitoring_source_id=sensor.monitoring_source_id,
+            title=f"Unusual {sensor.metric_type.replace('_', ' ')} — {sensor.name}",
+            description=description,
+            severity="warning",
+            status="open",
+            metric_type=sensor.metric_type,
+            category=category,
+            vendor=vendor,
+            region=region,
+            source="baseline",
+            signal_external_id=key,
+            triggered_value=value,
+            threshold_value=expected,
+            triggered_at=now,
+            last_occurred_at=now,
+            occurrence_count=1,
+        )
+        await self.alert_repo.set_confidence_score(
+            created,
+            confidence_score=alert_confidence(
+                device_resolved=sensor.device_id is not None,
+                category_matched=category != "other",
+                severity_source="threshold",
+            ),
+        )
+        await self._record_history(created, event_type="opened", message=f"Alert opened: {created.title}")
+        await self._correlate(created)
+        return AlertEvaluation(alert=created, action="opened")
+
     # -- operator actions ----------------------------------------------------
     async def acknowledge(
         self, alert_id: uuid.UUID, tenant_id: uuid.UUID, acknowledged_by: uuid.UUID | None

@@ -96,6 +96,8 @@ from app.models.discovery_scope import DiscoveryScope
 from app.models.host_saved_view import HostSavedView
 from app.models.saved_dashboard import SavedDashboard
 from app.models.trace_span import TraceSpan
+from app.models.notification_policy import NotificationPolicy
+from app.models.sensor_baseline import SensorBaseline
 from app.models.auth_session import AuthSession
 from app.models.user_mfa import MfaRecoveryCode, UserMfa
 from app.models.tenant_ip_rule import TenantIpRule
@@ -187,6 +189,8 @@ ___all__ = [
     "HostSavedView",
     "SavedDashboard",
     "TraceSpan",
+    "NotificationPolicy",
+    "SensorBaseline",
     "AuthSession",
     "UserMfa",
     "MfaRecoveryCode",
