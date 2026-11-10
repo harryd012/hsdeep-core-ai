@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # `Authorization: Bearer <token>`. When unset, /metrics is open outside
     # production and answers 404 in production (not published by default).
     metrics_bearer_token: str = ""
+    # Base URL of the platform Prometheus (deployment/observability), read
+    # server-side only by GET /api/platform/observability/prometheus to show
+    # scrape-target health on the superuser Platform Observability page.
+    # "" = not configured. Never exposed to the browser.
+    prometheus_url: str = ""
     # POST /api/billing/signup. Off for an invite-only pilot: tenants are then
     # created by an operator (scripts/seed_admin.py), never by the public.
     public_signup_enabled: bool = True

@@ -52,3 +52,13 @@ test("tones follow the alert thresholds", () => {
   assert.equal(toneLowerWorse(0.9, THRESHOLDS.collectionSuccessWarn, THRESHOLDS.collectionSuccessBad), "warn");
   assert.equal(toneLowerWorse(0.5, THRESHOLDS.collectionSuccessWarn, THRESHOLDS.collectionSuccessBad), "bad");
 });
+
+test("prometheus target helpers: zero-time scrape and problem text", async () => {
+  const { scrapedAt, prometheusProblem } = await import("../../src/lib/observability/platformMetrics.ts");
+  assert.equal(scrapedAt("0001-01-01T00:00:00Z"), null, "never scraped");
+  assert.equal(scrapedAt("2026-11-11T00:00:00Z"), "2026-11-11T00:00:00Z");
+  const base = { checked_at: "2026-11-11T00:00:00Z", targets: [], jobs: [] };
+  assert.match(prometheusProblem({ ...base, configured: false, reachable: false, error: null }) ?? "", /PROMETHEUS_URL/);
+  assert.match(prometheusProblem({ ...base, configured: true, reachable: false, error: "timeout" }) ?? "", /3 seconds/);
+  assert.equal(prometheusProblem({ ...base, configured: true, reachable: true, error: null }), null);
+});
