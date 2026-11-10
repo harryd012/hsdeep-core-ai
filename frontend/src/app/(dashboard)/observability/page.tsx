@@ -99,9 +99,9 @@ export default function PlatformObservabilityPage() {
     >
       <Banner tone="info">
         <span style={{ overflowWrap: "anywhere" }}>
-          Live figures below come from this backend process only, cumulative since it started. History, time windows and
-          the worker and scheduler processes appear in Grafana once Phases 3–4 are deployed
-          {GRAFANA_URL ? "" : " and NEXT_PUBLIC_GRAFANA_URL is set"}.
+          Scrape targets come from Prometheus and cover every process. The live figures below come from this backend
+          process only, cumulative since it started. For history and time windows across every process, use Grafana
+          {GRAFANA_URL ? "" : " (set NEXT_PUBLIC_GRAFANA_URL to link it here)"}.
         </span>
       </Banner>
 
