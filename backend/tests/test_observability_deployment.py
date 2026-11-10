@@ -76,9 +76,15 @@ class TestPrometheusConfig:
         assert "credentials" not in job["authorization"]
         return job
 
-    def test_development_scrapes_host_backend(self):
+    def test_development_scrapes_host_backend_from_target_files(self):
         job = self._backend_job("prometheus.yml")
-        assert job["static_configs"][0]["targets"] == ["host.docker.internal:8000"]
+        assert job["file_sd_configs"][0]["files"] == ["/etc/prometheus/targets/*.yml"]
+        (group,) = _yaml(OBS / "prometheus" / "targets" / "backend.yml")
+        assert group["targets"] == ["host.docker.internal:8000"]
+        ignore = (OBS / "prometheus" / "targets" / ".gitignore").read_text(encoding="utf-8")
+        assert "local-*.yml" in ignore
+        compose = _yaml(OBS / "docker-compose.yml")
+        assert "./prometheus/targets:/etc/prometheus/targets:ro" in compose["services"]["prometheus"]["volumes"]
 
     def test_production_scrapes_each_role_by_pod(self):
         job = self._backend_job("prometheus.production.yml")
@@ -164,3 +170,60 @@ def test_servicenow_metrics_carry_no_connection_id():
     for collector in (sn.push_latency_seconds, sn.pull_latency_seconds, sn.webhook_latency_seconds,
                       sn.retry_total, sn.conflict_total, sn.failed_sync_total, sn.queue_depth):
         assert "connection_id" not in collector._labelnames, collector
+
+
+class TestPrometheusTargets:
+    """GET /api/platform/observability/prometheus reads Prometheus's targets."""
+
+    @staticmethod
+    def _client(handler):
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def test_not_configured(self):
+        from app.services.prometheus_targets import fetch_targets
+
+        out = await fetch_targets("")
+        assert out["configured"] is False and out["targets"] == []
+
+    @pytest.mark.parametrize("url", ["ftp://x", "not a url", "http://user:pw@prom:9090"])
+    async def test_invalid_url_never_called(self, url):
+        from app.services.prometheus_targets import fetch_targets
+
+        def boom(request):
+            raise AssertionError("must not be called")
+
+        out = await fetch_targets(url, self._client(boom))
+        assert out == {**out, "configured": True, "reachable": False, "error": "invalid_url"}
+
+    async def test_targets_parsed_and_grouped(self):
+        from app.services.prometheus_targets import fetch_targets
+
+        def handler(request):
+            assert request.url.path == "/api/v1/targets"
+            return httpx.Response(200, json={"status": "success", "data": {"activeTargets": [
+                {"labels": {"job": "api", "component": "api", "instance": "10.0.0.5:8000"}, "health": "up",
+                 "lastScrape": "2026-11-11T00:00:00Z", "lastScrapeDuration": 0.012, "lastError": ""},
+                {"labels": {"job": "worker", "component": "worker", "instance": "10.0.0.6:8001"}, "health": "down",
+                 "lastScrape": "2026-11-11T00:00:00Z", "lastScrapeDuration": 0.0, "lastError": "x" * 500},
+            ]}})
+
+        out = await fetch_targets("http://prom:9090/", self._client(handler))
+        assert out["reachable"] is True
+        assert out["jobs"] == [{"job": "api", "up": 1, "total": 1}, {"job": "worker", "up": 0, "total": 1}]
+        assert len(out["targets"][1]["last_error"]) == 200
+
+    async def test_unreachable_is_a_category_not_a_message(self):
+        from app.services.prometheus_targets import fetch_targets
+
+        def handler(request):
+            raise httpx.ConnectError("connect to http://secret-host:9090 failed")
+
+        out = await fetch_targets("http://prom:9090", self._client(handler))
+        assert out["reachable"] is False and out["error"] == "unreachable"
+        assert "secret-host" not in str(out)
+
+    async def test_endpoint_requires_auth(self):
+        from app.main import app
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            assert (await client.get("/api/platform/observability/prometheus")).status_code == 401

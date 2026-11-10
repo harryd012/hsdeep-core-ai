@@ -130,3 +130,42 @@ export function averagePerMinute(total: number, uptimeSeconds: number): number |
   if (!Number.isFinite(uptimeSeconds) || uptimeSeconds < 60 || total <= 0) return null;
   return total / (uptimeSeconds / 60);
 }
+
+// -- Prometheus scrape targets (GET /api/platform/observability/prometheus) ----
+
+export const PROMETHEUS_TARGETS_PATH = "/api/platform/observability/prometheus";
+
+export interface PrometheusTarget {
+  job: string;
+  component: string | null;
+  instance: string;
+  health: "up" | "down" | "unknown";
+  last_scrape: string | null;
+  last_scrape_seconds: number | null;
+  last_error: string | null;
+}
+
+export interface PrometheusTargets {
+  /** False when the backend has no PROMETHEUS_URL. */
+  configured: boolean;
+  reachable: boolean;
+  /** A category, never a raw message: "invalid_url" | "timeout" | "unreachable". */
+  error: "invalid_url" | "timeout" | "unreachable" | null;
+  checked_at: string;
+  targets: PrometheusTarget[];
+  jobs: { job: string; up: number; total: number }[];
+}
+
+/** Prometheus reports a never-scraped target's lastScrape as the zero time. */
+export function scrapedAt(iso: string | null): string | null {
+  if (!iso || iso.startsWith("0001-")) return null;
+  return iso;
+}
+
+export function prometheusProblem(t: PrometheusTargets): string | null {
+  if (!t.configured) return "Not configured: set PROMETHEUS_URL on the backend (for example http://127.0.0.1:9090).";
+  if (t.error === "invalid_url") return "PROMETHEUS_URL is not a valid http(s) URL.";
+  if (t.error === "timeout") return "Prometheus did not answer within 3 seconds.";
+  if (!t.reachable) return "Prometheus is configured but could not be reached.";
+  return null;
+}

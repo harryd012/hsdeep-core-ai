@@ -24,10 +24,13 @@ scrape_configs:
     authorization:
       type: Bearer
       credentials_file: /run/secrets/metrics_token
-    static_configs:
-      - targets: ["host.docker.internal:8000"]
-        labels:
-          component: all
+    # Targets come from files so a local backend on another port can be added
+    # without touching this config: targets/backend.yml is the default
+    # (host :8000); add targets/local-*.yml (git ignored) for anything else.
+    # Prometheus re-reads these files on change; no restart needed.
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/*.yml"]
+        refresh_interval: 30s
 
   - job_name: prometheus
     static_configs:

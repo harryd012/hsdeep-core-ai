@@ -4,6 +4,7 @@ import { ExternalLink, Gauge } from "lucide-react";
 
 import { Banner, DataTable, PageShell, Panel, Pill, StatStrip, StatTile, type Column } from "@/components/ui/PageKit";
 import PlatformLiveMetrics from "@/components/observability/PlatformLiveMetrics";
+import PrometheusTargetsPanel from "@/components/observability/PrometheusTargetsPanel";
 import { useAuth } from "@/lib/auth-context";
 import {
   APPROVED_DECISIONS,
@@ -103,6 +104,8 @@ export default function PlatformObservabilityPage() {
           {GRAFANA_URL ? "" : " and NEXT_PUBLIC_GRAFANA_URL is set"}.
         </span>
       </Banner>
+
+      <PrometheusTargetsPanel />
 
       <PlatformLiveMetrics />
 
