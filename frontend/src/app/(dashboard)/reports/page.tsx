@@ -3,7 +3,7 @@
 import Link from "next/link";
 import type { ComponentType, ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, BellRing, BookOpenCheck, FileBarChart, Server } from "lucide-react";
+import { Activity, BellRing, BookOpenCheck, FileBarChart, Gauge, Network, Server, ShieldCheck } from "lucide-react";
 import { getAlertSummary, getCollectorHealth, getExplorerHosts, listRunbookHistory, listSops } from "@/lib/api";
 import { PageShell, Pill, type Tone } from "@/components/ui/PageKit";
 
@@ -92,6 +92,30 @@ export default function ReportsPage() {
           headline={c ? (runsTotal ? `${Math.round((runsOk / runsTotal) * 100)}% success` : "No runs") : "—"}
           detail={c ? `${c.failing_count} failing · ${c.healthy_count} healthy · last 7 days` : undefined}
           status={c ? (c.failing_count > 0 ? { tone: "bad", label: `${c.failing_count} failing` } : { tone: "good", label: "Collecting" }) : undefined}
+        />
+        <ReportCard
+          title="Availability"
+          href="/reports/availability"
+          icon={ShieldCheck}
+          desc="Per-device availability over a period, from recorded reachability checks; CSV export."
+          headline="By period"
+          detail="24 hours to 90 days"
+        />
+        <ReportCard
+          title="Sensor Performance"
+          href="/reports/sensors"
+          icon={Gauge}
+          desc="Average, p95 and peak readings per sensor and its time in alert; CSV export."
+          headline="By period"
+          detail="24 hours to 90 days"
+        />
+        <ReportCard
+          title="Interface Traffic"
+          href="/reports/interfaces"
+          icon={Network}
+          desc="Average and peak traffic, utilization and errors per interface; CSV export."
+          headline="By period"
+          detail="24 hours to 90 days"
         />
         <ReportCard
           title="SOP Execution Log"
