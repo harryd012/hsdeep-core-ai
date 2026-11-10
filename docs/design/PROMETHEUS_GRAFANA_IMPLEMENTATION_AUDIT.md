@@ -167,3 +167,22 @@ chart has the same behind `networkPolicy.metricsScrape.enabled`.
 Checked by `backend/tests/test_observability_deployment.py`, `helm lint` / `helm template`
 and `kubectl kustomize`. **Not run yet:** Docker was not running on the build machine, so
 `docker compose up`, a live target and Grafana's datasource connection remain to be verified.
+
+## 11. Live verification and frontend integration (2026-11-11): IMPLEMENTED AND TESTED
+
+- Docker Desktop: Prometheus `v3.5.0` and Grafana `12.1.1` healthy on `127.0.0.1:9090` and
+  `127.0.0.1:3002`. Both Prometheus configs pass `promtool check config`. The backend targets
+  were **up** through `host.docker.internal` with the token file, and `hsdeep_*` series were
+  queryable. Grafana's provisioned datasource reported healthy and answered PromQL, and
+  anonymous Grafana requests were refused (401).
+- The development scrape targets moved to `prometheus/targets/*.yml` (file_sd), so another
+  local backend port is one git-ignored file, picked up without a restart.
+- `GET /api/platform/observability/prometheus` (superuser only, new `PROMETHEUS_URL` setting)
+  returns Prometheus's own per-target health for every role. The Platform Observability page
+  shows it as "Prometheus scrape targets", next to the "Open Grafana" link. This was checked
+  signed in: all targets up, then a deliberately unreachable worker target shown as **Down**
+  with Prometheus's error.
+- Caveat found live: the Compose project name is fixed, so every checkout on a machine shares
+  one stack and its Grafana volume. Grafana reads the admin password only on first start
+  (see README for the reset command).
+
