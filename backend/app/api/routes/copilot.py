@@ -14,7 +14,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_tenant_id, require_permission
+from app.core.auth import Principal, get_tenant_id, require_permission
 from app.core.db import get_db
 from app.schemas.copilot import CopilotChatRequest, CopilotChatResponse
 from app.services.copilot_router import CopilotRouter
@@ -28,13 +28,17 @@ def get_copilot_router(db: AsyncSession = Depends(get_db)) -> CopilotRouter:
     return CopilotRouter(db)
 
 
-@router.post("/chat", response_model=CopilotChatResponse, dependencies=[Depends(require_permission("incidents.read"))])
+@router.post("/chat", response_model=CopilotChatResponse)
 async def copilot_chat(
     payload: CopilotChatRequest,
     tenant_id: uuid.UUID = Depends(get_tenant_id),
+    principal: Principal = Depends(require_permission("incidents.read")),
     copilot: CopilotRouter = Depends(get_copilot_router),
 ):
     """Answer a free-text message: either create + route a real Task
     (command intent) or summarize real platform data (query intent). The
     response always includes context_used for audit/debuggability."""
-    return await copilot.handle_message(tenant_id, payload.message)
+    # Observability context (sensors, network, logs, traces ...) only for callers who may read monitoring data.
+    return await copilot.handle_message(
+        tenant_id, payload.message, can_read_monitoring=principal.has_permission("monitoring.read")
+    )

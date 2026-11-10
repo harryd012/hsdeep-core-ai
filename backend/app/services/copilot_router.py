@@ -39,6 +39,7 @@ from app.repositories.sensor_repository import SensorRepository
 from app.schemas.command_center import CommandIntake
 from app.schemas.copilot import CopilotChatResponse
 from app.services.ai_insight_service import AIInsightService
+from app.services.copilot_observability import observability_context
 from app.services.command_center_service import (
     _DEPT_KEYWORDS,
     CommandCenterService,
@@ -113,7 +114,7 @@ class CopilotRouter:
         self.command_center = CommandCenterService(db)
 
     async def handle_message(
-        self, tenant_id: uuid.UUID, message: str
+        self, tenant_id: uuid.UUID, message: str, *, can_read_monitoring: bool = False
     ) -> CopilotChatResponse:
         keyword_dept = _keyword_department_hit(message)
 
@@ -133,7 +134,7 @@ class CopilotRouter:
 
         if intent == "command":
             return await self._command_path(tenant_id, message, keyword_dept, llm)
-        return await self._query_path(tenant_id, message, keyword_dept, llm)
+        return await self._query_path(tenant_id, message, keyword_dept, llm, can_read_monitoring=can_read_monitoring)
 
     # ------------------------------------------------------------------ #
     # Command path                                                        #
@@ -231,9 +232,11 @@ class CopilotRouter:
         message: str,
         keyword_dept: str | None,
         llm,  # IntentResult
+        *,
+        can_read_monitoring: bool = False,
     ) -> CopilotChatResponse:
         _t_start = time.perf_counter()
-        context, notes = await self._build_query_context(tenant_id, message)
+        context, notes = await self._build_query_context(tenant_id, message, can_read_monitoring=can_read_monitoring)
         _t_ctx = time.perf_counter()
         logger.info(
             "AI_REQUEST_START request=query EVENT_QUERY_DURATION=%.3f CONTEXT_BUILD_DURATION=%.3f",
@@ -283,7 +286,7 @@ class CopilotRouter:
         )
 
     async def _build_query_context(
-        self, tenant_id: uuid.UUID, message: str
+        self, tenant_id: uuid.UUID, message: str, *, can_read_monitoring: bool = False
     ) -> tuple[dict, list[str]]:
         """Assemble the query context from EXISTING repos/services only.
 
@@ -372,5 +375,12 @@ class CopilotRouter:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Copilot query: sops unavailable: %s", exc)
                 notes.append("sops unavailable")
+
+        # Observability (P10): sensors, network, logs, traces, baselines,
+        # coverage and named hosts - only for callers who may read monitoring data.
+        if can_read_monitoring:
+            observability, more = await observability_context(self.db, tenant_id, message)
+            context.update(observability)
+            notes.extend(more)
 
         return context, notes
