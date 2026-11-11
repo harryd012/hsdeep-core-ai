@@ -50,29 +50,71 @@
 }
 .hs-sidebar__group > button .hs-sidebar__badge + .hs-sidebar__chev { margin-left: 4px; }
 
-/* -- collapsed icon rail --------------------------------------------------------- */
-:root[data-nav="collapsed"] { --sidebar-width: 64px; }
-:root[data-nav="collapsed"] .hs-sidebar { padding-left: 8px; padding-right: 8px; overflow-x: hidden; }
-:root[data-nav="collapsed"] .hs-brand { flex-direction: column; gap: 6px; padding: 0; }
-:root[data-nav="collapsed"] .hs-brand__collapse { margin: 0; }
-:root[data-nav="collapsed"] .hs-brand__text,
-:root[data-nav="collapsed"] .hs-search span,
-:root[data-nav="collapsed"] .hs-search kbd,
-:root[data-nav="collapsed"] .hs-sidebar__ctx,
-:root[data-nav="collapsed"] .hs-sidebar__section-label,
-:root[data-nav="collapsed"] .hs-sidebar__group > button > span,
-:root[data-nav="collapsed"] .hs-sidebar__chev,
-:root[data-nav="collapsed"] .hs-sidebar__children,
-:root[data-nav="collapsed"] .system-status,
-:root[data-nav="collapsed"] .apx--sidebar .theme-toggle span { display: none; }
-:root[data-nav="collapsed"] .hs-search,
-:root[data-nav="collapsed"] .apx--sidebar .theme-toggle { justify-content: center; padding: 0; }
-:root[data-nav="collapsed"] .hs-sidebar__group > button { justify-content: center; padding-left: 0; padding-right: 0; }
-:root[data-nav="collapsed"] .hs-sidebar__section { margin-top: 4px; border-top: 1px solid var(--line); padding-top: 4px; }
-:root[data-nav="collapsed"] .hs-sidebar__badge {
-  position: absolute; top: 2px; right: 4px; min-width: 16px; height: 14px; padding: 0 4px; font-size: 9px; margin: 0;
+/* -- collapsed icon rail (desktop only; phones get the drawer below) ------------ */
+@media (min-width: 768px) {
+  :root[data-nav="collapsed"] { --sidebar-width: 64px; }
+  :root[data-nav="collapsed"] .hs-sidebar { padding-left: 8px; padding-right: 8px; overflow-x: hidden; }
+  :root[data-nav="collapsed"] .hs-brand { flex-direction: column; gap: 6px; padding: 0; }
+  :root[data-nav="collapsed"] .hs-brand__collapse { margin: 0; }
+  :root[data-nav="collapsed"] .hs-brand__text,
+  :root[data-nav="collapsed"] .hs-search span,
+  :root[data-nav="collapsed"] .hs-search kbd,
+  :root[data-nav="collapsed"] .hs-sidebar__ctx,
+  :root[data-nav="collapsed"] .hs-sidebar__section-label,
+  :root[data-nav="collapsed"] .hs-sidebar__group > button > span,
+  :root[data-nav="collapsed"] .hs-sidebar__chev,
+  :root[data-nav="collapsed"] .hs-sidebar__children,
+  :root[data-nav="collapsed"] .system-status,
+  :root[data-nav="collapsed"] .apx--sidebar .theme-toggle span { display: none; }
+  :root[data-nav="collapsed"] .hs-search,
+  :root[data-nav="collapsed"] .apx--sidebar .theme-toggle { justify-content: center; padding: 0; }
+  :root[data-nav="collapsed"] .hs-sidebar__group > button { justify-content: center; padding-left: 0; padding-right: 0; }
+  :root[data-nav="collapsed"] .hs-sidebar__section { margin-top: 4px; border-top: 1px solid var(--line); padding-top: 4px; }
+  :root[data-nav="collapsed"] .hs-sidebar__badge {
+    position: absolute; top: 2px; right: 4px; min-width: 16px; height: 14px; padding: 0 4px; font-size: 9px; margin: 0;
+  }
+  :root[data-nav="collapsed"] .hs-sidebar__group > button.active::before { left: -8px; }
 }
-:root[data-nav="collapsed"] .hs-sidebar__group > button.active::before { left: -8px; }
+
+/* -- phone-width overlay drawer (lib/mobile-nav.ts MOBILE_NAV_QUERY) ------------- */
+.hs-mobilebar, .hs-drawer-backdrop { display: none; }
+@media (max-width: 767px) {
+  /* Selectors are doubled/child-scoped to beat dashboard.css, which loads later.
+     The sidebar reserves no width: offsets keyed on it (Copilot bar) go flush left. */
+  :root:root { --sidebar-width: 0px; }
+  .hs-app.hs-app { flex-direction: column; }
+  .hs-app > .hs-main { width: 100%; }
+  .hs-mobilebar {
+    position: sticky; top: 0; z-index: 60; display: flex; align-items: center; gap: 10px;
+    height: 48px; padding: 0 16px; flex: none;
+    background: var(--bg); border-bottom: 1px solid var(--line);
+  }
+  .hs-mobilebar .hs-brand__mark { width: 26px; height: 26px; border-radius: 7px; }
+  .hs-mobilebar__title { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hs-mobilebar__menu {
+    all: unset; cursor: pointer; width: 36px; height: 36px; margin-left: -8px; border-radius: 8px;
+    display: grid; place-items: center; color: var(--text); flex-shrink: 0;
+  }
+  .hs-mobilebar__menu:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+  .hs-mobilebar__menu:focus-visible { outline: 2px solid var(--ecc-accent, #2563eb); }
+  .hs-app > .hs-sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0; z-index: 210;
+    width: min(280px, 85vw); height: 100dvh;
+    transform: translateX(-100%); visibility: hidden;
+    transition: transform 0.2s ease, visibility 0s linear 0.2s;
+  }
+  .hs-app > .hs-sidebar[data-drawer-open] {
+    transform: none; visibility: visible; box-shadow: 0 0 40px rgba(2, 6, 23, 0.5);
+    transition: transform 0.2s ease, visibility 0s;
+  }
+  .hs-drawer-backdrop {
+    display: block; position: fixed; inset: 0; z-index: 205;
+    background: rgba(2, 6, 23, 0.5); backdrop-filter: blur(2px);
+  }
+}
+@media (max-width: 767px) and (prefers-reduced-motion: reduce) {
+  .hs-app > .hs-sidebar, .hs-app > .hs-sidebar[data-drawer-open] { transition: none; }
+}
 
 /* -- Apps launcher ---------------------------------------------------------------- */
 .lnc-backdrop {

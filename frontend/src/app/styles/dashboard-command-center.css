@@ -975,32 +975,7 @@
   }
 }
 
-/* Mobile shell: preserve navigation without reserving desktop sidebar width. */
-@media (max-width: 700px) {
-  .hs-app:has(.hs-dashboard) {
-    flex-direction: column;
-  }
-  .hs-app:has(.hs-dashboard) > .hs-sidebar {
-    position: static;
-    width: 100%;
-    height: auto;
-    padding: 12px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-    overflow: visible;
-  }
-  .hs-app:has(.hs-dashboard) > .hs-sidebar nav {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px;
-  }
-  .hs-app:has(.hs-dashboard) .hs-sidebar__ctx {
-    grid-column: 1 / -1;
-  }
-  .hs-app:has(.hs-dashboard) > .hs-main {
-    width: 100%;
-  }
-}
+/* Phone-width shell (sidebar as an overlay drawer) lives in navigation.css. */
 
 /* Keep intrinsic table widths inside their existing panels, not clipped by
    the outer SOC card at intermediate viewport widths. */
