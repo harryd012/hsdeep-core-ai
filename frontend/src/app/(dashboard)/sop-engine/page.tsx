@@ -1,11 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
   BookOpen, ChevronDown, ChevronRight, Clock, FileText,
   Loader2, RefreshCw, Search,
 } from "lucide-react";
 import { getSop, listSops, type SOP, type SOPVersion } from "@/lib/api";
+import { isSocPlaybook } from "@/lib/socPlaybooks";
 
 const SOP_CATEGORY_COLORS: Record<string, string> = {
   availability: "#ff4d4f",
@@ -248,6 +250,15 @@ function SopEngine() {
                       {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                       View
                     </button>
+                    {isSocPlaybook(sop) && (
+                      <Link
+                        href={`/soc-playbooks?sop=${encodeURIComponent(sop.sop_number)}`}
+                        title="Full procedure: commands per platform, expected results and failure matrix"
+                        className="inline-flex items-center gap-1 rounded-md border border-cyan-600 px-3 py-1.5 text-xs font-semibold text-cyan-700 hover:bg-cyan-50"
+                      >
+                        Full procedure
+                      </Link>
+                    )}
                     <button
                       disabled
                       title="SOP editing is not wired up yet"
