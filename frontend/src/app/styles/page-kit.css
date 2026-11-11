@@ -473,3 +473,11 @@ a.pk-barlist__row:hover { background: var(--ecc-surface-raised); }
   .sp-matrix dl > div { grid-template-columns: 1fr; gap: 0; }
   .sp-causes { columns: 1; }
 }
+
+/* -- phone width: card headers wrap so a tab strip or long aside never
+      widens the page (selectors doubled to win regardless of load order) -- */
+@media (max-width: 767px) {
+  .ecc-card .ecc-card__header { flex-wrap: wrap; }
+  .ecc-card .ecc-card__aside { min-width: 0; max-width: 100%; white-space: normal; }
+  .pk-tabs.pk-tabs { flex-wrap: wrap; max-width: 100%; }
+}
