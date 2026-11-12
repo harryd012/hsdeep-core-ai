@@ -1,0 +1,47 @@
+# Collection pipeline (worker role in production, all in development).
+#
+# Thresholds:
+#   failure ratio per source type > 20 % for 15 m, with at least 0.01 runs/s
+#     (about one run every 2 minutes) so one failure on a rarely polled source
+#     does not fire
+#   p95 run duration per source type > 60 s for 15 m
+#
+# Notifications: not configured (see hsdeep-api-alerts.yml).
+groups:
+  - name: hsdeep-collector
+    rules:
+      - alert: HsdeepWorkerTargetDown
+        expr: up{component="worker"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "HSDEEP worker {{ $labels.instance }} is not answering scrapes"
+          description: "The worker process runs collections and event consumers. It has not been scrapeable for 5 minutes."
+          runbook_url: "deployment/observability/README.md#hsdeepworkertargetdown"
+
+      - alert: HsdeepCollectorFailureRatioHigh
+        expr: |
+          hsdeep:collection_failure:ratio15m > 0.2
+            and on (component, source_type)
+          sum by (component, source_type) (rate(hsdeep_collection_run_total{status=~"success|error"}[15m])) > 0.01
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.source_type }} collections failing: {{ $value | humanizePercentage }}"
+          description: "More than 20% of {{ $labels.source_type }} collection runs on {{ $labels.component }} have failed over 15 minutes. hsdeep_collection_failures_total shows which stage (authenticate / collect / normalize / persist) is failing."
+          runbook_url: "deployment/observability/README.md#hsdeepcollectorfailureratiohigh"
+
+      - alert: HsdeepCollectorLatencyHigh
+        expr: hsdeep:collection_duration_seconds:p95_15m > 60
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.source_type }} collection p95 is {{ $value | humanizeDuration }}"
+          description: "95th percentile run time for {{ $labels.source_type }} on {{ $labels.component }} has been above 60 s for 15 minutes. Check hsdeep_collector_phase_duration_seconds for the slow phase."
+          runbook_url: "deployment/observability/README.md#hsdeepcollectorlatencyhigh"

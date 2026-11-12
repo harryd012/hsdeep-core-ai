@@ -1,0 +1,57 @@
+# Scheduler.
+#
+# Several processes may run the scheduler (scheduler and worker roles, or
+# `all` in development); a Postgres advisory lock lets only one tick at a
+# time. So freshness is judged on the NEWEST tick across all processes, not
+# per process. The scheduler ticks every minute.
+#
+# Thresholds:
+#   newest tick older than 5 minutes, for 5 m
+#   more than 2 failed ticks in 15 minutes
+#
+# Notifications: not configured (see hsdeep-api-alerts.yml).
+groups:
+  - name: hsdeep-scheduler
+    rules:
+      - alert: HsdeepSchedulerTargetDown
+        expr: up{component="scheduler"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "HSDEEP scheduler {{ $labels.instance }} is not answering scrapes"
+          description: "The scheduler process has not been scrapeable for 5 minutes."
+          runbook_url: "deployment/observability/README.md#hsdeepschedulertargetdown"
+
+      - alert: HsdeepSchedulerTickStale
+        expr: time() - max(hsdeep_scheduler_last_tick_timestamp_seconds > 0) > 300
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "No HSDEEP scheduler tick for {{ $value | humanizeDuration }}"
+          description: "No process has completed a scheduler tick for over 5 minutes, so due collections are not starting."
+          runbook_url: "deployment/observability/README.md#hsdeepschedulertickstale"
+
+      - alert: HsdeepSchedulerNeverTicked
+        expr: max(hsdeep_scheduler_last_tick_timestamp_seconds) == 0
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "HSDEEP scheduler has not ticked since its processes started"
+          description: "Processes that run the scheduler are being scraped, but none has completed a tick in 15 minutes."
+          runbook_url: "deployment/observability/README.md#hsdeepschedulerneverticked"
+
+      - alert: HsdeepSchedulerTicksFailing
+        expr: sum(increase(hsdeep_scheduler_tick_failures_total[15m])) > 2
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $value | humanize }} HSDEEP scheduler ticks failed in 15 minutes"
+          description: "Scheduler ticks are raising before finishing (often a database problem). Check the scheduler logs for 'Scheduler tick'."
+          runbook_url: "deployment/observability/README.md#hsdeepschedulerticksfailing"

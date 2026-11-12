@@ -1,0 +1,33 @@
+# Recording rules: the RED and pipeline ratios the alerts and dashboards share,
+# so each is computed once, the same way everywhere. Grouped by `component`
+# (api / worker / scheduler in production, all in development).
+# CORS preflights (OPTIONS) are left out of latency: middleware answers them in
+# microseconds and they would hide real response times.
+groups:
+  - name: hsdeep-recording
+    interval: 30s
+    rules:
+      - record: hsdeep:http_requests:rate5m
+        expr: sum by (component) (rate(hsdeep_http_requests_total{method!="OPTIONS"}[5m]))
+
+      - record: hsdeep:http_5xx:ratio5m
+        expr: |
+          sum by (component) (rate(hsdeep_http_requests_total{method!="OPTIONS", status=~"5.."}[5m]))
+            /
+          sum by (component) (rate(hsdeep_http_requests_total{method!="OPTIONS"}[5m]))
+
+      - record: hsdeep:http_latency_seconds:p95_5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (component, le) (rate(hsdeep_http_request_duration_seconds_bucket{method!="OPTIONS"}[5m])))
+
+      - record: hsdeep:collection_failure:ratio15m
+        expr: |
+          sum by (component, source_type) (rate(hsdeep_collection_run_total{status="error"}[15m]))
+            /
+          sum by (component, source_type) (rate(hsdeep_collection_run_total{status=~"success|error"}[15m]))
+
+      - record: hsdeep:collection_duration_seconds:p95_15m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (component, source_type, le) (rate(hsdeep_collection_run_duration_seconds_bucket[15m])))
