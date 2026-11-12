@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     # scrape-target health on the superuser Platform Observability page.
     # "" = not configured. Never exposed to the browser.
     prometheus_url: str = ""
+    # Server-side health checks for the platform page (GET /api/health on
+    # Grafana; GET /-/healthy on Alertmanager). Internal URLs, never sent to
+    # the browser; "" = not configured. The browser's Grafana link is the
+    # separate NEXT_PUBLIC_GRAFANA_URL.
+    grafana_url: str = ""
+    alertmanager_url: str = ""
     # POST /api/billing/signup. Off for an invite-only pilot: tenants are then
     # created by an operator (scripts/seed_admin.py), never by the public.
     public_signup_enabled: bool = True

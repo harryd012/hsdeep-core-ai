@@ -1,8 +1,13 @@
 "use client";
 
 import { ExternalLink, Gauge } from "lucide-react";
+import { useEffect, useState } from "react";
 
-import { Banner, DataTable, PageShell, Panel, Pill, StatStrip, StatTile, type Column } from "@/components/ui/PageKit";
+import { Banner, DataTable, PageShell, Panel, Pill, StatStrip, StatTile, Tabs, type Column } from "@/components/ui/PageKit";
+import AlertRulesPanel from "@/components/observability/AlertRulesPanel";
+import GrafanaDashboardsPanel from "@/components/observability/GrafanaDashboardsPanel";
+import PlatformChartsPanel from "@/components/observability/PlatformChartsPanel";
+import PlatformHealthPanel from "@/components/observability/PlatformHealthPanel";
 import PlatformLiveMetrics from "@/components/observability/PlatformLiveMetrics";
 import PrometheusTargetsPanel from "@/components/observability/PrometheusTargetsPanel";
 import { useAuth } from "@/lib/auth-context";
@@ -58,8 +63,40 @@ const metricColumns: Column<CatalogueMetric>[] = [
         : <Pill tone="neutral">Declared, not yet recorded</Pill> },
 ];
 
+/** Page sections; the URL hash (#health, #targets, ...) selects one, so nav
+ * sub-items and shared links open the right section. */
+const SECTIONS = [
+  { key: "health", label: "Platform Health" },
+  { key: "performance", label: "Application Performance" },
+  { key: "targets", label: "Scrape Targets" },
+  { key: "alerts", label: "Alert Rules" },
+  { key: "grafana", label: "Grafana Dashboards" },
+  { key: "plan", label: "Plan & Metrics" },
+] as const;
+
+type SectionKey = (typeof SECTIONS)[number]["key"];
+
+function sectionFromHash(): SectionKey {
+  if (typeof window === "undefined") return "health";
+  const h = window.location.hash.replace("#", "");
+  return (SECTIONS.find((s) => s.key === h)?.key ?? "health") as SectionKey;
+}
+
 export default function PlatformObservabilityPage() {
   const { user, isLoading } = useAuth();
+  const [section, setSection] = useState<SectionKey>("health");
+
+  useEffect(() => {
+    const sync = () => setSection(sectionFromHash());
+    sync();
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
+  }, []);
+
+  function choose(key: SectionKey) {
+    setSection(key);
+    window.history.replaceState(null, "", `#${key}`);
+  }
 
   if (isLoading) {
     return (
@@ -99,16 +136,31 @@ export default function PlatformObservabilityPage() {
     >
       <Banner tone="info">
         <span style={{ overflowWrap: "anywhere" }}>
-          Scrape targets come from Prometheus and cover every process. The live figures below come from this backend
-          process only, cumulative since it started. For history and time windows across every process, use Grafana
-          {GRAFANA_URL ? "" : " (set NEXT_PUBLIC_GRAFANA_URL to link it here)"}.
+          Platform health, scrape targets and alert rules come from Prometheus and cover every process. Application
+          Performance shows this backend process only, cumulative since it started. For history and time windows, use
+          Grafana{GRAFANA_URL ? "" : " (set NEXT_PUBLIC_GRAFANA_URL to link it here)"}. Customer infrastructure is
+          monitored in the Command Center, not here.
         </span>
       </Banner>
 
-      <PrometheusTargetsPanel />
+      <div style={{ overflowX: "auto" }}>
+        <Tabs label="Platform Observability sections" value={section} onChange={choose}
+          tabs={SECTIONS.map((s) => ({ key: s.key, label: s.label }))} />
+      </div>
 
-      <PlatformLiveMetrics />
+      {section === "health" && <PlatformHealthPanel />}
+      {section === "performance" && (
+        <>
+          <PlatformChartsPanel />
+          <h2 style={{ margin: "8px 0 0", fontSize: 14, fontWeight: 600 }}>This backend process, since it started</h2>
+          <PlatformLiveMetrics />
+        </>
+      )}
+      {section === "targets" && <PrometheusTargetsPanel />}
+      {section === "alerts" && <AlertRulesPanel />}
+      {section === "grafana" && <GrafanaDashboardsPanel grafanaUrl={GRAFANA_URL} />}
 
+      {section === "plan" && (<>
       <h2 style={{ margin: "8px 0 0", fontSize: 15, fontWeight: 600 }}>Delivery plan</h2>
       <StatStrip>
         <StatTile label="Phases delivered" value={`${done} of ${PLAN_PHASES.length}`}
@@ -187,6 +239,7 @@ export default function PlatformObservabilityPage() {
           </Panel>
         </div>
       </div>
+      </>)}
     </PageShell>
   );
 }

@@ -62,3 +62,23 @@ test("prometheus target helpers: zero-time scrape and problem text", async () =>
   assert.match(prometheusProblem({ ...base, configured: true, reachable: false, error: "timeout" }) ?? "", /3 seconds/);
   assert.equal(prometheusProblem({ ...base, configured: true, reachable: true, error: null }), null);
 });
+
+test("timeseries formatting and grafana dashboard links", async () => {
+  const m = await import("../../src/lib/observability/platformMetrics.ts");
+  assert.equal(m.formatUnit("ratio", 0.0042), "0.42%");
+  assert.equal(m.formatUnit("ratio", 0.5), "50.0%");
+  assert.equal(m.formatUnit("seconds", 0.25), "250 ms");
+  assert.equal(m.formatUnit("reqps", 1.234), "1.23/s");
+  assert.equal(m.formatUnit("count", 12), "12");
+  assert.equal(m.formatUnit("count", Number.NaN), m.NOT_MEASURED);
+  assert.equal(m.grafanaDashboardUrl(null, "hsdeep-api"), null);
+  assert.equal(m.grafanaDashboardUrl("http://127.0.0.1:3002", "hsdeep-api", "now-24h"),
+    "http://127.0.0.1:3002/d/hsdeep-api?from=now-24h&to=now");
+  assert.deepEqual(m.GRAFANA_DASHBOARDS.map((d) => d.uid).sort(),
+    ["hsdeep-alerts", "hsdeep-api", "hsdeep-collectors", "hsdeep-executive", "hsdeep-scheduler"]);
+  const counts = m.healthCounts([
+    { key: "a", name: "A", status: "CRITICAL", reason: "", evidence: {}, rules: [] },
+    { key: "b", name: "B", status: "UNKNOWN", reason: "", evidence: {}, rules: [] },
+  ]);
+  assert.deepEqual(counts.map((c) => c.count), [1, 0, 0, 0, 1]);
+});
