@@ -27,6 +27,7 @@ services:
     volumes:
       - ./prometheus/${PROMETHEUS_CONFIG:-prometheus.yml}:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/rules:/etc/prometheus/rules:ro
+      - ./prometheus/targets:/etc/prometheus/targets:ro
       - ./secrets/metrics_token:/run/secrets/metrics_token:ro
       - prometheus-data:/prometheus
     ports:

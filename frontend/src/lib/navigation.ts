@@ -78,6 +78,9 @@ export const NAV_CONFIG: NavGroup[] = [
       { label: "Alert Analysis", route: "/reports/alert-analysis", keywords: "mttr trends" },
       { label: "Collector Performance", route: "/reports/collector-performance", keywords: "sync lag" },
       { label: "Infrastructure Summary", route: "/reports/infrastructure-summary", keywords: "inventory" },
+      { label: "Availability", route: "/reports/availability", keywords: "uptime sla reachability" },
+      { label: "Sensor Performance", route: "/reports/sensors", keywords: "p95 time in alert" },
+      { label: "Interface Traffic", route: "/reports/interfaces", keywords: "bandwidth utilization errors" },
       { label: "SOP Execution Log", route: "/reports/sop-execution-log", keywords: "runbook history" },
     ] },
 

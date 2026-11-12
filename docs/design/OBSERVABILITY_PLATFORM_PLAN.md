@@ -48,8 +48,8 @@ Earlier audits: `docs/REPOSITORY_AUDIT.md`, `docs/PLATFORM_LEDGER.md` (batches 1
 | P7 Metrics / logs | Syslog receiver on the edge agent → normalized events, Logs Explorer over events | **Slice 1 implemented and tested**: syslog receiver (separate process), log-to-device linking at ingest, Logs Explorer API and page (`tests/test_logs_explorer.py`); not verified in a browser |
 | P8 APM / tracing | OTLP/HTTP ingest of traces → spans table, service map from span parent/child | **Slice 1 implemented and tested**: OTLP/HTTP JSON trace ingest, spans table, services / traces / service map / trace APIs, Traces pages (`tests/test_tracing.py`); **slice 2**: APM section with per-service time series, operations, callers / callees and grouped errors (`tests/test_apm_services.py`); neither verified in a browser |
 | P9 Alerting | Dynamic baselines, notification policies, Teams channel | **Slice 1 implemented and tested**: notification policies (severity / priority / site routing) and a Microsoft Teams channel per policy (`tests/test_notification_policies.py`); **slice 2**: opt-in dynamic baselines per sensor (`tests/test_sensor_baselines.py`) |
-| P10 AI RCA / copilot | Copilot tools over the new sensor / history APIs | planned (engine exists) |
-| P11 Reporting | Sensor / interface / availability reports from stored metrics | planned (reports module exists) |
+| P10 AI RCA / copilot | Copilot tools over the new sensor / history APIs | **Slice 1 implemented and tested**: the Copilot answers from sensors, network, logs, traces, baselines, coverage and named hosts (`tests/test_copilot_observability.py`) |
+| P11 Reporting | Sensor / interface / availability reports from stored metrics | **Slice 1 implemented and tested**: availability, sensor performance and interface traffic reports over a period, with CSV export (`tests/test_observability_reports.py`) |
 | P12 Integration center | One page over `monitoring_sources` + integrations with health, sync history | planned |
 | P13 RBAC, metering, scale | New roles as permission bundles; metering of metrics / logs / traces | planned |
 | P14 Hardening | Performance benchmarks, retention jobs | planned |
@@ -546,7 +546,60 @@ fine and alarming at 3 a.m.
 - **Not in this slice**: day-of-week seasonality, baselines for interface channels, and turning
   baselines on in bulk from the sensor library.
 
-## 15. P8 slice 2: APM section
+## 15. P10 slice 1: Copilot over observability data
+
+The Copilot's query path builds a bounded, real-data context from keyword matches (alerts,
+incidents, tickets, SOPs) and lets the local model explain it; it never invents data. None of
+the observability data from P1-P9 reached it.
+
+- **Context providers** (`app/services/copilot_observability.py`), included only when the
+  question is about them (whole-word matching, so "login" or "report" trigger nothing):
+  sensors (counts by status, failing sensors), network (interface totals, busiest links,
+  interfaces down while enabled, VPN tunnels down), logs (warning / critical lines in the last
+  hour, latest 10), traces (services by error rate and p95, last hour), unusual readings
+  (anomalous baselines, furthest first) and monitoring coverage (hosts per gap rule).
+- **Named hosts**: a question naming a device by name, hostname or address (up to 3) gets that
+  device's failing sensors, enabled-but-down interfaces, open alerts and recent warning /
+  critical log lines, which is the evidence an operator would collect first.
+- **Bounds and safety**: read-only, tenant-scoped, at most 10 items per list and 200 characters
+  per log line; each provider runs in its own savepoint and degrades to a note instead of
+  failing the turn. Observability context is included only for callers with `monitoring.read`
+  (the chat itself still needs `incidents.read`); everyone else gets exactly the previous
+  context.
+- **Tested** with the language model stubbed: the assembled context on real rows, tenant
+  isolation, and the chat route with and without `monitoring.read`. The answers a real model
+  gives over this context were not evaluated.
+- **Not in this slice**: feeding the same evidence into the RCA engine, and LLM tool calling.
+
+## 16. P11 slice 1: period reports
+
+The existing reports (infrastructure summary, alert analysis, collector performance, SOP log)
+show current state from live APIs; none covers a period from recorded history or exports.
+
+- **Availability** (`GET /api/reports/availability`): per device, the share of recorded
+  reachability checks that were up (the canonical `reachability` telemetry written at each
+  collection), with checks, failed checks and first / last check. Devices with no check in the
+  period are counted as not measured, never as available. Summary: fleet availability (up checks
+  over all checks), devices under 99.9 % and under 99 %. A percentage of checks, not of
+  wall-clock time, and stated as such.
+- **Sensor performance** (`GET /api/reports/sensors`, optional `metric_type`): per sensor,
+  average / minimum / maximum / p95 of its primary-channel readings, and the number of its
+  status alerts and the minutes they were open within the period (time outside the period is not
+  counted).
+- **Interface traffic** (`GET /api/reports/interfaces`): per interface, average and peak inbound
+  / outbound traffic and utilization and peak error rates, from the P4 history.
+- All computed in the database, read-only, `monitoring.read`, tenant-scoped, a window of up to 90
+  days (default 7), at most 2,000 rows.
+- **UI**: three report pages under Reports (cards on the Reports page and in the sidebar), each
+  with presets from 24 hours to 90 days or custom dates (UTC), summary tiles, the table and CSV
+  export through the existing formula-safe CSV helper. Type-checked and linted; the three pages
+  were checked in a browser against the dev tenant on 2026-11-11 (90-day availability, sensor
+  table and empty interface state render, no console errors). Run against the dev tenant for September to early October (read-only): 10 devices
+  measured at 91.2 % fleet availability, one at 29.5 %, 259 not measured; 20 sensors with alerts
+  in the period; no interface history (it starts with P4).
+- **Not in this slice**: scheduled / emailed reports, PDF, and availability weighted by time.
+
+## 17. P8 slice 2: APM section
 
 Per-service health over time on the spans P8 slice 1 stores. No new table or migration: the
 existing `(tenant, service, start)` and `(tenant, start)` indexes cover every query.

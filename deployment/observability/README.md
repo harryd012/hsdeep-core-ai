@@ -36,9 +36,18 @@ docker compose up -d
 - Prometheus: http://127.0.0.1:9090. Under **Status → Targets**, `hsdeep-backend` should be **UP**.
 - Grafana: http://127.0.0.1:3002, user `admin`, password from `secrets/grafana_admin_password`.
   The Prometheus datasource is provisioned already.
-- For the app's Platform Observability page to link to Grafana, set
-  `NEXT_PUBLIC_GRAFANA_URL=http://127.0.0.1:3002` in `frontend/.env.local`. That URL is the
-  only observability value the frontend ever gets.
+- **Connect the app's Platform Observability page:**
+  - backend: `PROMETHEUS_URL=http://127.0.0.1:9090`. The page then shows Prometheus's own
+    scrape-target health for every role, read server-side and superuser-only.
+  - frontend: `NEXT_PUBLIC_GRAFANA_URL=http://127.0.0.1:3002` in `frontend/.env.local` adds an
+    "Open Grafana" button. That link is the only observability value the browser ever gets.
+- **A backend on another port:** add `prometheus/targets/local-<name>.yml` (git ignored), for
+  example `- targets: ["host.docker.internal:8012"]`. Prometheus picks it up within 30 s.
+- **One stack per machine:** the Compose project name is fixed (`hsdeep-observability`), so
+  running it from another checkout reuses the same containers and volumes. Grafana reads the
+  admin password only on first start; if the stored one no longer matches your
+  `secrets/grafana_admin_password`, run
+  `docker compose exec grafana sh -c 'grafana cli admin reset-admin-password "$(cat /run/secrets/grafana_admin_password)"'`.
 
 A development backend without `METRICS_BEARER_TOKEN` serves `/metrics` openly and ignores
 the header. When the backend has a token, put the same value in `secrets/metrics_token`.
@@ -93,9 +102,10 @@ A process that nobody probes has no reading, so alert on staleness too.
 
 - Implemented and unit-tested: the metrics above, and these configuration files (structure
   checked by `backend/tests/test_observability_deployment.py`).
-- **Not live-verified yet:** `docker compose up`, a Prometheus target scraping a real
-  backend, and Grafana loading the datasource. Docker was not running on the machine where
-  this was built.
+- Live-verified on Docker Desktop (2026-11-11): both containers healthy, both configs pass
+  `promtool check config`, backend targets **up** through `host.docker.internal` with the
+  token file, `hsdeep_*` series queryable, Grafana's provisioned datasource healthy and
+  answering PromQL, and anonymous Grafana access refused (401).
 - Not implemented yet: dashboards (Phase 4) and alert rules (Phase 5).
 
 ## References
