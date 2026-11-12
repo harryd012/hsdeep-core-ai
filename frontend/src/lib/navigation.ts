@@ -175,7 +175,15 @@ export const NAV_CONFIG: NavGroup[] = [
       { label: "Customers (Admin)", route: "/admin/customers", keywords: "tenants msp" },
     ] },
   { id: "platform-observability", label: "Platform Observability", icon: Gauge, route: "/observability", section: "Manage", superuserOnly: true,
-    description: "Prometheus and Grafana for the HSDEEP platform itself: plan, metrics and references" },
+    description: "Health of the HSDEEP platform itself: services, performance, Prometheus targets, alert rules, Grafana",
+    children: [
+      { label: "Platform Health", route: "/observability#health", keywords: "status healthy degraded critical database redis" },
+      { label: "Application Performance", route: "/observability#performance", keywords: "latency p95 requests errors red" },
+      { label: "Scrape Targets", route: "/observability#targets", keywords: "prometheus up down worker scheduler" },
+      { label: "Alert Rules", route: "/observability#alerts", keywords: "prometheus alerts firing pending" },
+      { label: "Grafana Dashboards", route: "/observability#grafana", keywords: "grafana dashboards" },
+      { label: "Plan & Metrics", route: "/observability#plan", keywords: "metric catalogue references roadmap" },
+    ] },
 ];
 
 /** Groups the signed-in user may see. While the session resolves nothing is hidden. */

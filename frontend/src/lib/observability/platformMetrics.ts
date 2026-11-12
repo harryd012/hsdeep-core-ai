@@ -169,3 +169,137 @@ export function prometheusProblem(t: PrometheusTargets): string | null {
   if (!t.reachable) return "Prometheus is configured but could not be reached.";
   return null;
 }
+
+// -- Platform health (GET /api/platform/observability/health) -----------------
+
+export const PLATFORM_HEALTH_PATH = "/api/platform/observability/health";
+
+export type HealthStatus = "HEALTHY" | "DEGRADED" | "WARNING" | "CRITICAL" | "UNKNOWN";
+
+export interface ServiceHealth {
+  key: string;
+  name: string;
+  status: HealthStatus;
+  reason: string;
+  evidence: Record<string, unknown>;
+  rules: string[];
+}
+
+export interface PlatformHealth {
+  checked_at: string;
+  overall: HealthStatus;
+  services: ServiceHealth[];
+  not_available: { key: string; name: string; needs: string }[];
+}
+
+export const HEALTH_TONE: Record<HealthStatus, "good" | "info" | "warn" | "bad" | "neutral"> = {
+  HEALTHY: "good",
+  DEGRADED: "info",
+  WARNING: "warn",
+  CRITICAL: "bad",
+  UNKNOWN: "neutral",
+};
+
+/** Counts per status, worst first, for the summary strip. */
+export function healthCounts(services: ServiceHealth[]): { status: HealthStatus; count: number }[] {
+  const order: HealthStatus[] = ["CRITICAL", "WARNING", "DEGRADED", "HEALTHY", "UNKNOWN"];
+  return order.map((status) => ({ status, count: services.filter((s) => s.status === status).length }));
+}
+
+// -- Alert rules (GET /api/platform/observability/alerts) ---------------------
+
+export const ALERT_RULES_PATH = "/api/platform/observability/alerts";
+
+export interface ActiveAlert {
+  state: "pending" | "firing";
+  active_at: string | null;
+  value: string | null;
+  labels: Record<string, string>;
+  summary: string | null;
+}
+
+export interface AlertRule {
+  group: string;
+  name: string;
+  state: "inactive" | "pending" | "firing";
+  severity: string | null;
+  summary: string | null;
+  description: string | null;
+  for_seconds: number | null;
+  health: string | null;
+  last_error: string | null;
+  alerts: ActiveAlert[];
+}
+
+export interface AlertRules {
+  configured: boolean;
+  reachable: boolean;
+  error: "invalid_url" | "timeout" | "unreachable" | null;
+  checked_at: string;
+  rules: AlertRule[];
+  firing: number;
+  pending: number;
+}
+
+// -- Grafana dashboards -----------------------------------------------------
+
+/** The provisioned dashboards (deployment/observability/grafana/build_dashboards.py). */
+export const GRAFANA_DASHBOARDS = [
+  { uid: "hsdeep-executive", title: "Executive Platform Health", about: "Availability, RED, collection success, scheduler freshness, dependencies" },
+  { uid: "hsdeep-api", title: "API Performance", about: "Requests, 4xx / 5xx, p50 / p95 / p99, slowest and busiest routes" },
+  { uid: "hsdeep-collectors", title: "Collector Operations", about: "Runs by source type, failures by stage, durations, items saved" },
+  { uid: "hsdeep-scheduler", title: "Scheduler & Worker Health", about: "Tick age and duration, process availability, DB pool, memory and CPU" },
+  { uid: "hsdeep-alerts", title: "Alert Pipeline", about: "Alerts opened by severity and source, persist-phase timing and failures" },
+] as const;
+
+/** Grafana dashboard URL with the same time range, or null without a Grafana base. */
+export function grafanaDashboardUrl(base: string | null, uid: string, from = "now-6h", to = "now"): string | null {
+  if (!base) return null;
+  const url = new URL(`d/${encodeURIComponent(uid)}`, base.endsWith("/") ? base : `${base}/`);
+  url.searchParams.set("from", from);
+  url.searchParams.set("to", to);
+  return url.toString();
+}
+
+// -- Time series (GET /api/platform/observability/timeseries) -----------------
+
+export const TIMESERIES_PATH = "/api/platform/observability/timeseries";
+export const TIMESERIES_RANGES = ["1h", "6h", "24h", "7d"] as const;
+export type TimeseriesRange = (typeof TIMESERIES_RANGES)[number];
+
+export interface TimeseriesSeries {
+  key: string;
+  label: string;
+  unit: "reqps" | "ratio" | "seconds" | "count";
+  group: "http" | "collection" | "scheduler" | "alerts";
+  error: string | null;
+  lines: { name: string; points: [number, number][] }[];
+}
+
+export interface Timeseries {
+  configured: boolean;
+  reachable: boolean;
+  error: string | null;
+  range: TimeseriesRange;
+  step_seconds: number;
+  checked_at: string;
+  series: TimeseriesSeries[];
+}
+
+/** Axis / legend formatter for a series unit. */
+export function formatUnit(unit: TimeseriesSeries["unit"], v: number): string {
+  if (!Number.isFinite(v)) return NOT_MEASURED;
+  if (unit === "seconds") return formatSeconds(v);
+  if (unit === "ratio") return formatRatio(v, v !== 0 && Math.abs(v) < 0.01 ? 2 : 1);
+  if (unit === "reqps") return `${v < 10 ? v.toFixed(2) : v.toFixed(0)}/s`;
+  return v < 10 && !Number.isInteger(v) ? v.toFixed(2) : Math.round(v).toLocaleString("en-US");
+}
+
+/** Dashed reference lines, matching the alert rules. */
+export const SERIES_THRESHOLDS: Record<string, { value: number; label: string; color: string }[]> = {
+  http_error_ratio: [{ value: 0.05, label: "alert 5%", color: "var(--ecc-bad)" }],
+  http_latency: [{ value: 2.5, label: "alert p95 2.5 s", color: "var(--ecc-bad)" }],
+  collection_success_ratio: [{ value: THRESHOLDS.collectionSuccessWarn, label: "95%", color: "var(--ecc-warn)" }],
+  scheduler_tick_age: [{ value: 300, label: "alert 5 min", color: "var(--ecc-bad)" }],
+  db_pool_saturation: [{ value: 0.9, label: "alert 90%", color: "var(--ecc-bad)" }],
+};

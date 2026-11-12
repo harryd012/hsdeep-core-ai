@@ -15,6 +15,7 @@ collector exposes pool state, and ServiceNow metrics carry no connection_id.
 """
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from pathlib import Path
@@ -227,3 +228,76 @@ class TestPrometheusTargets:
 
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             assert (await client.get("/api/platform/observability/prometheus")).status_code == 401
+
+
+class TestDashboardsAndRules:
+    """Phase 4 dashboards and Phase 5 rules only use metrics that exist."""
+
+    DASH = OBS / "grafana" / "dashboards"
+
+    @staticmethod
+    def _families() -> set[str]:
+        import app.main  # noqa: F401 - registers every platform metric
+
+        return {m.name for m in REGISTRY.collect()}
+
+    @staticmethod
+    def _recorded() -> set[str]:
+        doc = _yaml(OBS / "prometheus" / "rules" / "hsdeep-recording.yml")
+        return {r["record"] for g in doc["groups"] for r in g["rules"]}
+
+    def _check_exprs(self, exprs: list[str], where: str) -> None:
+        families, recorded = self._families(), self._recorded()
+        for expr in exprs:
+            for name in re.findall(r"\bhsdeep_[a-z_]+", expr):
+                base = re.sub(r"_(bucket|sum|count|total)$", "", name)
+                assert name in families or base in families, (where, name)
+            for name in re.findall(r"\bhsdeep:[a-z0-9_:]+", expr):
+                assert name in recorded, (where, name)
+
+    def test_five_dashboards_read_only_and_tagged(self):
+        files = sorted(p.name for p in self.DASH.glob("*.json"))
+        assert files == ["alert-pipeline.json", "api-performance.json", "collector-operations.json",
+                         "executive-platform-health.json", "scheduler-worker-health.json"]
+        uids = set()
+        for path in self.DASH.glob("*.json"):
+            d = json.loads(path.read_text(encoding="utf-8"))
+            assert d["editable"] is False and "hsdeep-platform" in d["tags"]
+            assert d["refresh"] and d["time"]["from"].startswith("now-")
+            uids.add(d["uid"])
+            for panel in d["panels"]:
+                if panel["type"] in ("row", "text"):
+                    continue
+                assert panel["datasource"]["uid"] == "hsdeep-prometheus", (path.name, panel["title"])
+                self._check_exprs([t["expr"] for t in panel["targets"]], f"{path.name}:{panel['title']}")
+        assert uids == {"hsdeep-executive", "hsdeep-api", "hsdeep-collectors", "hsdeep-scheduler", "hsdeep-alerts"}
+
+    def test_dashboards_match_generator(self, tmp_path, monkeypatch):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("build_dashboards", OBS / "grafana" / "build_dashboards.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        monkeypatch.setattr(mod, "OUT", tmp_path)
+        mod.main()
+        for path in tmp_path.glob("*.json"):
+            committed = (self.DASH / path.name).read_text(encoding="utf-8").replace("\r\n", "\n")
+            assert json.loads(path.read_text(encoding="utf-8")) == json.loads(committed), path.name
+
+    def test_rules_reference_existing_metrics_and_carry_metadata(self):
+        for path in (OBS / "prometheus" / "rules").glob("*.yml"):
+            doc = _yaml(path)
+            for group in doc["groups"]:
+                for rule in group["rules"]:
+                    self._check_exprs([rule["expr"]], f"{path.name}:{rule.get('alert') or rule.get('record')}")
+                    if "alert" in rule:
+                        assert rule["labels"]["severity"] in ("critical", "warning"), rule["alert"]
+                        assert {"summary", "description", "runbook_url"} <= set(rule["annotations"]), rule["alert"]
+
+    def test_every_runbook_anchor_exists_in_readme(self):
+        readme = (OBS / "README.md").read_text(encoding="utf-8").lower()
+        for path in (OBS / "prometheus" / "rules").glob("*-alerts.yml"):
+            for group in _yaml(path)["groups"]:
+                for rule in group["rules"]:
+                    anchor = rule["annotations"]["runbook_url"].split("#", 1)[1]
+                    assert f"### {rule['alert'].lower()}" in readme, anchor
