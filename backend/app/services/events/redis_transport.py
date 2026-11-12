@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import socket
 import uuid
 from dataclasses import dataclass
@@ -52,6 +53,29 @@ class StreamNames:
     done_prefix: str = "hsdeep:events:done:"
 
 
+_TRACEPARENT = re.compile(r"^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$")
+
+
+def _carrier(value) -> dict:
+    """Only a well-formed W3C carrier crosses the stream: ``traceparent`` and
+    an optional bounded ``tracestate``. Anything else is dropped."""
+    if not isinstance(value, dict):
+        return {}
+    parent = value.get("traceparent")
+    if not isinstance(parent, str) or not _TRACEPARENT.match(parent):
+        return {}
+    out = {"traceparent": parent}
+    state = value.get("tracestate")
+    if isinstance(state, str) and len(state) <= 512:
+        out["tracestate"] = state
+    return out
+
+
+def _trace_id(value) -> str | None:
+    parent = _carrier(value).get("traceparent")
+    return _TRACEPARENT.match(parent).group(1) if parent else None
+
+
 def encode(event, *, source: str) -> str:
     """Versioned envelope (JSON). Payload values that are not JSON-native
     (UUID, datetime) are written as strings."""
@@ -64,7 +88,8 @@ def encode(event, *, source: str) -> str:
             "source": source,
             "created_at": event.timestamp.isoformat(),
             "correlation_id": event.correlation_id,
-            "trace_id": getattr(event, "trace_id", None),
+            "trace_id": _trace_id(getattr(event, "trace_context", None)),
+            "trace_context": _carrier(getattr(event, "trace_context", None)),
             "payload": event.payload or {},
         },
         default=str,
@@ -96,6 +121,7 @@ def decode(raw: str):
     return DomainEvent(
         event_type=event_type, tenant_id=tenant_id, timestamp=created_at, event_id=event_id,
         correlation_id=data.get("correlation_id"), payload=payload,
+        trace_context=_carrier(data.get("trace_context")),
     )
 
 

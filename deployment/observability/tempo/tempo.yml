@@ -1,0 +1,44 @@
+# HSDEEP CORE AI - Grafana Tempo, single process, local disk (Phase 22).
+#
+# Stores the platform's own traces. Retention is TEMPO_RETENTION (default
+# 168h = 7 days). Started with -config.expand-env=true.
+
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+  log_level: warn
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: ${TEMPO_RETENTION:-168h}
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: ${TEMPO_DATA_DIR:-/var/tempo}/wal
+    local:
+      path: ${TEMPO_DATA_DIR:-/var/tempo}/blocks
+
+query_frontend:
+  search:
+    max_duration: 168h
+    default_result_limit: 20
+    max_result_limit: 100
+
+usage_report:
+  reporting_enabled: false

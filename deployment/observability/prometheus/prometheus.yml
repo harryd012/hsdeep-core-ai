@@ -35,3 +35,58 @@ scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
+
+  # ---------------------------------------------------------------------------
+  # Phase 22: the platform host, its containers, database, cache and the
+  # telemetry pipeline. All on the private compose network. `scope: platform`
+  # marks every series as the machine that RUNS HSDEEP, so it can never be
+  # read as customer infrastructure (which is not in Prometheus at all).
+  # Job names are fixed: the backend's query catalogue selects on them
+  # (backend/app/services/platform_infrastructure.py).
+  # ---------------------------------------------------------------------------
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels: {scope: platform}
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+        labels: {scope: platform}
+    metric_relabel_configs:
+      # Per-container series only for the families the catalogue reads.
+      - source_labels: [__name__]
+        regex: container_(cpu_usage_seconds_total|memory_working_set_bytes|spec_memory_limit_bytes|spec_cpu_quota|spec_cpu_period|network_receive_bytes_total|network_transmit_bytes_total|start_time_seconds|last_seen)
+        action: keep
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+        labels: {scope: platform}
+
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels: {scope: platform}
+
+  # Present only when a target file exists (GPU hosts). No file means no
+  # target, and the page shows NOT AVAILABLE rather than a failing scrape.
+  - job_name: nvidia-gpu
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/optional/gpu-*.yml"]
+        refresh_interval: 60s
+
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8888"]
+        labels: {scope: platform}
+
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]
+        labels: {scope: platform}
+
+  - job_name: tempo
+    static_configs:
+      - targets: ["tempo:3200"]
+        labels: {scope: platform}

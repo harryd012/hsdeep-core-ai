@@ -83,6 +83,17 @@ class SOPRecommendationEngine:
         catalog matches - callers (e.g. DecisionEngine) fall back to the
         existing `_SOP_BY_CATEGORY` string per the sprint's backward-
         compatibility requirement."""
+        from app.core import telemetry_context, tracing
+
+        with tracing.span("sop.lookup", hsdeep__incident_id=incident.id, hsdeep__tenant_id=incident.tenant_id) as sop_span, \
+                telemetry_context.bind(incident_id=incident.id):
+            recommendations = await self._recommend(incident, limit=limit, min_confidence=min_confidence)
+            sop_span.set_attribute("hsdeep.sop.recommendations", len(recommendations))
+            return recommendations
+
+    async def _recommend(
+        self, incident: Incident, *, limit: int = 5, min_confidence: float = 0.0
+    ) -> list[SOPRecommendation]:
         member_alerts = await self.alert_repo.list(incident.tenant_id, incident_id=incident.id, status=None, limit=1000)
         active_alerts = [a for a in member_alerts if a.status != "resolved"]
 

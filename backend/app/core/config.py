@@ -61,6 +61,29 @@ class Settings(BaseSettings):
     # separate NEXT_PUBLIC_GRAFANA_URL.
     grafana_url: str = ""
     alertmanager_url: str = ""
+    # Unified observability (Phase 22). All are internal URLs, read server-side
+    # only and never sent to the browser; "" = not configured, and the page
+    # then shows NOT AVAILABLE for that signal instead of an empty result.
+    #   LOKI_URL   log search for the Logs Explorer (Grafana Loki)
+    #   TEMPO_URL  trace search for the Trace Explorer (Grafana Tempo)
+    #   OTEL_COLLECTOR_HEALTH_URL  the collector's health_check extension
+    loki_url: str = ""
+    tempo_url: str = ""
+    otel_collector_health_url: str = ""
+    # OTLP/HTTP base URL of the OpenTelemetry Collector (for example
+    # http://127.0.0.1:4318). "" = spans and logs are not exported; trace ids
+    # are still generated and written to stdout logs.
+    otel_exporter_otlp_endpoint: str = ""
+    otel_service_name: str = "hsdeep-backend"
+    # Share of new traces sampled (0.0 - 1.0). A request that arrives with a
+    # sampled traceparent is always traced.
+    otel_traces_sampler_ratio: float = 1.0
+    # Export log records over OTLP as well (needs the endpoint above).
+    otel_logs_export: bool = True
+    # Limits for the superuser Logs / Trace explorers.
+    observability_query_timeout_seconds: float = 8.0
+    observability_max_window_hours: int = 168
+    observability_queries_per_minute: int = 60
     # POST /api/billing/signup. Off for an invite-only pilot: tenants are then
     # created by an operator (scripts/seed_admin.py), never by the public.
     public_signup_enabled: bool = True

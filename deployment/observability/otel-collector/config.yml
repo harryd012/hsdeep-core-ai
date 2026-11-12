@@ -1,0 +1,146 @@
+# HSDEEP CORE AI - OpenTelemetry Collector (Phase 22).
+#
+# One pipeline for the platform's own telemetry:
+#
+#   backend (OTLP/HTTP :4318) --> collector --> Tempo  (traces)
+#                                           \-> Loki   (logs, native OTLP)
+#   container log files (optional)  --------/
+#
+# Metrics do NOT pass through here: Prometheus scrapes /metrics and the
+# exporters directly, as in Phase 21.
+#
+# The collector redacts a second time (the backend already redacts before
+# export), so a secret that reaches it from any other sender is still masked.
+#
+# Validate:  otelcol-contrib validate --config=config.yml
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        max_request_body_size: 8388608
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+  # Docker json-file container logs. The compose file mounts an EMPTY directory
+  # here unless DOCKER_CONTAINERS_DIR is set, so by default this receiver finds
+  # no files and collects nothing (see README: "Container logs").
+  filelog/containers:
+    include: [/var/lib/docker/containers/*/*-json.log]
+    start_at: end
+    include_file_path: true
+    max_log_size: 1MiB
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.time
+          layout_type: gotime
+          layout: 2006-01-02T15:04:05.999999999Z07:00
+      - type: regex_parser
+        parse_from: attributes["log.file.path"]
+        regex: '/containers/(?P<container_id>[0-9a-f]{12})[0-9a-f]*/'
+        parse_to: attributes
+      - type: move
+        from: attributes.container_id
+        to: resource["container.id"]
+      - type: move
+        from: attributes.log
+        to: body
+      - type: remove
+        field: attributes.time
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 384
+    spike_limit_mib: 96
+
+  batch:
+    timeout: 2s
+    send_batch_size: 1024
+
+  # Container logs have no SDK resource: give them a service name and category
+  # so they are searchable next to application logs.
+  resource/containers:
+    attributes:
+      - key: service.name
+        value: container
+        action: insert
+      - key: service.namespace
+        value: hsdeep
+        action: insert
+      - key: deployment.environment
+        value: ${env:HSDEEP_ENVIRONMENT:-development}
+        action: insert
+  attributes/containers:
+    actions:
+      - key: category
+        value: container
+        action: insert
+
+  # Second redaction pass. Keys that name a credential are masked whatever
+  # their value; values that look like a credential are masked whatever their key.
+  redaction:
+    allow_all_keys: true
+    blocked_key_patterns:
+      - '(?i).*(passw|passhash|passphrase|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|authorization|credential|cookie).*'
+    blocked_values:
+      - 'eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}'
+      - '(?i)(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}'
+      - '(AKIA|ASIA)[0-9A-Z]{16}'
+      - '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+    summary: silent
+
+exporters:
+  otlphttp/tempo:
+    endpoint: ${env:TEMPO_OTLP_ENDPOINT:-http://tempo:4318}
+    tls:
+      insecure: true
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 120s
+    sending_queue:
+      enabled: true
+      queue_size: 2048
+
+  otlphttp/loki:
+    endpoint: ${env:LOKI_OTLP_ENDPOINT:-http://loki:3100/otlp}
+    tls:
+      insecure: true
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 120s
+    sending_queue:
+      enabled: true
+      queue_size: 2048
+
+service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      level: warn
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, redaction, batch]
+      exporters: [otlphttp/tempo]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, redaction, batch]
+      exporters: [otlphttp/loki]
+    logs/containers:
+      receivers: [filelog/containers]
+      processors: [memory_limiter, resource/containers, attributes/containers, redaction, batch]
+      exporters: [otlphttp/loki]

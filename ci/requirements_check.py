@@ -39,6 +39,7 @@ ALIASES = {
     "passlib": "passlib",
     "multipart": "python-multipart",
     "httpx": "httpx",
+    "opentelemetry": "opentelemetry-api",
     "apscheduler": "apscheduler",
     "cryptography": "cryptography",
     "pysnmp": "pysnmp",

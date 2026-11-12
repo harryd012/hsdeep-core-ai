@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 
 from app.collectors.base import CollectorConfigError, CollectorRegistry
 from app.core import metrics as platform_metrics
+from app.core import telemetry_context, tracing
 from app.core.security import decrypt_connection_info
 from app.models.collector_run import CollectorRun
 from app.models.monitoring_source import MonitoringSource
@@ -135,6 +136,27 @@ class CollectionOrchestrator:
         return result.recovery_events
 
     async def run(self, source: MonitoringSource, trigger: str = "scheduler") -> CollectorRun:
+        # One span per collection run, with a child span per phase (Phase 22).
+        # tenant / provider / run ids are span attributes and log fields only:
+        # the Prometheus metrics below stay per source_type.
+        with tracing.span(
+            "collector.run",
+            hsdeep__tenant_id=source.tenant_id,
+            hsdeep__provider_id=source.id,
+            hsdeep__source_type=source.source_type,
+            hsdeep__trigger=trigger,
+        ) as run_span, telemetry_context.bind(provider_id=source.id):
+            outcome = await self._run(source, trigger)
+            status = getattr(getattr(outcome, "run_record", outcome), "status", None)
+            if status is not None:
+                run_span.set_attribute("hsdeep.collection.status", str(status))
+                if status == "error":
+                    from opentelemetry.trace import Status, StatusCode
+
+                    run_span.set_status(Status(StatusCode.ERROR, "collection run failed"))
+            return outcome
+
+    async def _run(self, source: MonitoringSource, trigger: str = "scheduler") -> CollectorRun:
         # Metering hook (usage metering sprint): every completed run - success,
         # error, or skipped - increments the tenant's collector.run usage
         # counter. Best-effort: a metering failure must never fail the run.
@@ -166,6 +188,8 @@ class CollectionOrchestrator:
         run_record = await self.run_repo.create(
             tenant_id=source.tenant_id, monitoring_source_id=source.id, trigger=trigger
         )
+        telemetry_context.rebind(collection_run_id=run_record.id)
+        tracing.set_attributes(hsdeep__collection_run_id=run_record.id)
 
         # Bound before the try so the cleanup below can always see it.
         collector = None
@@ -191,7 +215,8 @@ class CollectionOrchestrator:
 
             stage = "authenticate"
             phase_started = time.perf_counter()
-            check = await collector.authenticate()
+            with tracing.span("collector.authenticate", hsdeep__source_type=source_type):
+                check = await collector.authenticate()
             _phase("authenticate", phase_started)
             if not check.success:
                 _failed()
@@ -206,15 +231,18 @@ class CollectionOrchestrator:
 
             stage = "collect"
             phase_started = time.perf_counter()
-            raw = await collector.collect()
+            with tracing.span("collector.collect", hsdeep__source_type=source_type):
+                raw = await collector.collect()
             _phase("collect", phase_started)
             stage = "normalize"
             phase_started = time.perf_counter()
-            bundle = collector.normalize(raw)
+            with tracing.span("collector.normalize", hsdeep__source_type=source_type):
+                bundle = collector.normalize(raw)
             _phase("normalize", phase_started)
             stage = "persist"
             phase_started = time.perf_counter()
-            save_result = await self.saver.save(source, bundle)
+            with tracing.span("collector.persist", hsdeep__source_type=source_type):
+                save_result = await self.saver.save(source, bundle)
 
             # alerts_upserted counts DISTINCT Alert rows touched this run -
             # NOT the raw count of vendor alert signals or changed sensors

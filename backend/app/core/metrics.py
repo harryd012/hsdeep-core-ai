@@ -299,3 +299,83 @@ try:
     _REGISTRY.register(_db_pool_collector)
 except ValueError:  # already registered (module re-executed): keep the first
     pass
+
+
+# -- Database queries (Phase 22) -----------------------------------------------------
+#
+# Timed around every SQL statement by SQLAlchemy engine events
+# (``install_db_query_metrics``). ``operation`` is the statement's first
+# keyword, folded into a fixed set, so the label is bounded; the statement
+# text, its parameters and the tenant never become labels.
+
+DB_SLOW_QUERY_SECONDS = 1.0
+_DB_OPERATIONS = frozenset({"select", "insert", "update", "delete"})
+
+db_query_duration = Histogram(
+    name="hsdeep_db_query_duration_seconds",
+    documentation="Duration of a SQL statement in seconds, by operation",
+    labelnames=["operation"],
+    buckets=(0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, float("inf")),
+)
+
+db_slow_queries_total = Counter(
+    name="hsdeep_db_slow_queries_total",
+    documentation="SQL statements slower than DB_SLOW_QUERY_SECONDS (1 s), by operation",
+    labelnames=["operation"],
+)
+
+db_query_errors_total = Counter(
+    name="hsdeep_db_query_errors_total",
+    documentation="SQL statements that raised a database error, by operation",
+    labelnames=["operation"],
+)
+
+
+def db_operation(statement: str) -> str:
+    """select / insert / update / delete, else ``other`` (bounded label)."""
+    head = (statement or "").lstrip()[:16].split(None, 1)
+    word = head[0].lower() if head else ""
+    if word == "with":
+        return "select"
+    return word if word in _DB_OPERATIONS else "other"
+
+
+def observe_db_query(operation: str, duration_seconds: float) -> None:
+    db_query_duration.labels(operation=operation).observe(duration_seconds)
+    if duration_seconds >= DB_SLOW_QUERY_SECONDS:
+        db_slow_queries_total.labels(operation=operation).inc()
+
+
+_db_metrics_installed = False
+
+
+def install_db_query_metrics(sync_engine) -> None:
+    """Attach the timing listeners to an engine (idempotent)."""
+    global _db_metrics_installed
+    if _db_metrics_installed:
+        return
+    from sqlalchemy import event
+
+    @event.listens_for(sync_engine, "before_cursor_execute")
+    def _before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+        conn.info["hsdeep_query_started"] = time.perf_counter()
+
+    @event.listens_for(sync_engine, "after_cursor_execute")
+    def _after(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+        started = conn.info.pop("hsdeep_query_started", None)
+        if started is not None:
+            observe_db_query(db_operation(statement), time.perf_counter() - started)
+
+    @event.listens_for(sync_engine, "handle_error")
+    def _error(exception_context):  # noqa: ANN001
+        conn = exception_context.connection
+        if conn is not None:
+            conn.info.pop("hsdeep_query_started", None)
+        db_query_errors_total.labels(operation=db_operation(exception_context.statement or "")).inc()
+
+    # A counter child with no increments has no series. Creating the children
+    # here makes "no slow queries" a measured 0 instead of an absent metric.
+    for operation in sorted(_DB_OPERATIONS | {"other"}):
+        db_slow_queries_total.labels(operation=operation)
+        db_query_errors_total.labels(operation=operation)
+    _db_metrics_installed = True

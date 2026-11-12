@@ -1,0 +1,6 @@
+# Copy to gpu-nvidia.yml on a host that runs the dcgm-exporter service
+# (docker compose --profile gpu up -d). Without this file Prometheus has no
+# GPU target and the page shows NVIDIA GPU as NOT AVAILABLE.
+- targets: ["dcgm-exporter:9400"]
+  labels:
+    scope: platform

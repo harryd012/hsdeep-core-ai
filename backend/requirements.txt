@@ -51,6 +51,16 @@ google-auth==2.34.0
 prometheus-client==0.25.0
 stripe==15.5.1
 
+# Distributed tracing and OTLP log export (Phase 22, app/core/tracing.py).
+# Spans and logs leave the process only when OTEL_EXPORTER_OTLP_ENDPOINT is set.
+# The two instrumentation packages are released on the 0.x "beta" track and
+# must match each other; the api / sdk / exporter must match each other.
+opentelemetry-api==1.45.2
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-instrumentation-sqlalchemy==0.66b2
+opentelemetry-instrumentation-httpx==0.66b2
+
 # Direct runtime imports that were previously satisfied only TRANSITIVELY.
 # Phase 9A adds ci/requirements_check.py, which proves every import under app/ is
 # declared, so a production image cannot silently lose these when a transitive

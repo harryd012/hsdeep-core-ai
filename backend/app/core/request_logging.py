@@ -53,72 +53,118 @@ def _principal_ids(request: Request) -> tuple[str | None, str | None]:
     return (str(tenant_id) if tenant_id is not None else None, None)
 
 
+#: Also accepted as the request id, for callers that send this name instead.
+REQUEST_ID_HEADER = "X-Request-ID"
+#: The trace this request belongs to, so a browser or a caller can open it.
+TRACE_ID_HEADER = "X-Trace-ID"
+_ID_SAFE = __import__("re").compile(r"^[A-Za-z0-9._:\-]{1,128}$")
+
+
+def _incoming_request_id(request: Request) -> str:
+    """The caller's id when it is a plain token, otherwise a new UUID. A value
+    with other characters is not echoed into logs or headers."""
+    for header in (CORRELATION_HEADER, REQUEST_ID_HEADER):
+        value = request.headers.get(header)
+        if value and _ID_SAFE.match(value):
+            return value
+    return str(uuid.uuid4())
+
+
 class RequestObservabilityMiddleware(BaseHTTPMiddleware):
-    """Logs every API request with its outcome, duration and tenant context."""
+    """Logs every API request with its outcome, duration and tenant context,
+    inside a server span that continues the caller's W3C trace (Phase 22)."""
 
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith(_SILENT_PREFIXES):
             return await call_next(request)
 
-        correlation_id = request.headers.get(CORRELATION_HEADER) or str(uuid.uuid4())
+        from opentelemetry.trace import SpanKind, Status, StatusCode
+
+        from app.core import telemetry_context, tracing
+        from app.core.http_metrics import route_template
+
+        correlation_id = _incoming_request_id(request)
         request.state.correlation_id = correlation_id
         started = time.perf_counter()
 
-        try:
-            response = await call_next(request)
-        except Exception:
-            # Never swallow the error: log it with context, then re-raise so the
-            # existing exception handling still applies.
+        with tracing.span(
+            f"{request.method} {request.url.path}"[:200],
+            kind=SpanKind.SERVER,
+            parent=tracing.extract(request.headers),
+            http__request__method=request.method,
+            url__path=request.url.path,
+            hsdeep__request_id=correlation_id,
+        ) as server_span, telemetry_context.bind(request_id=correlation_id):
+            trace_id, _ = tracing.current_ids()
+            request.state.trace_id = trace_id
+            try:
+                response = await call_next(request)
+            except Exception:
+                # Never swallow the error: log it with context, then re-raise so the
+                # existing exception handling still applies.
+                duration_ms = (time.perf_counter() - started) * 1000
+                server_span.set_attribute("http.response.status_code", 500)
+                logger.exception(
+                    "api_request_failed method=%s route=%s duration_ms=%.1f correlation_id=%s",
+                    request.method,
+                    request.url.path,
+                    duration_ms,
+                    correlation_id,
+                    extra={
+                        "method": request.method,
+                        "route": request.url.path,
+                        "duration_ms": round(duration_ms, 1),
+                        "correlation_id": correlation_id,
+                    },
+                )
+                raise
+
             duration_ms = (time.perf_counter() - started) * 1000
-            logger.exception(
-                "api_request_failed method=%s route=%s duration_ms=%.1f correlation_id=%s",
+            tenant_id, user_id = _principal_ids(request)
+            status = response.status_code
+            # The route template (bounded) names the span; the raw path stays an attribute.
+            template = route_template(request.scope)
+            server_span.update_name(f"{request.method} {template}")
+            server_span.set_attribute("http.route", template)
+            server_span.set_attribute("http.response.status_code", status)
+            if tenant_id:
+                server_span.set_attribute("hsdeep.tenant_id", tenant_id)
+            if status >= 500:
+                server_span.set_status(Status(StatusCode.ERROR, f"HTTP {status}"))
+            # 5xx = server error, 4xx = client/authz failure: log at the matching level.
+            log = logger.info
+            if status >= 500:
+                log = logger.error
+            elif status >= 400:
+                log = logger.warning
+            log(
+                "api_request method=%s route=%s status=%s duration_ms=%.1f "
+                "correlation_id=%s tenant_id=%s user_id=%s",
                 request.method,
                 request.url.path,
+                status,
                 duration_ms,
                 correlation_id,
+                tenant_id,
+                user_id,
+                # Same seven fields as first-class attributes, so LOG_FORMAT=json
+                # emits them as queryable JSON keys (any log platform can filter on
+                # tenant_id/correlation_id without parsing the message).
                 extra={
                     "method": request.method,
                     "route": request.url.path,
+                    "status": status,
                     "duration_ms": round(duration_ms, 1),
                     "correlation_id": correlation_id,
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
                 },
             )
-            raise
-
-        duration_ms = (time.perf_counter() - started) * 1000
-        tenant_id, user_id = _principal_ids(request)
-        status = response.status_code
-        # 5xx = server error, 4xx = client/authz failure: log at the matching level.
-        log = logger.info
-        if status >= 500:
-            log = logger.error
-        elif status >= 400:
-            log = logger.warning
-        log(
-            "api_request method=%s route=%s status=%s duration_ms=%.1f "
-            "correlation_id=%s tenant_id=%s user_id=%s",
-            request.method,
-            request.url.path,
-            status,
-            duration_ms,
-            correlation_id,
-            tenant_id,
-            user_id,
-            # Same seven fields as first-class attributes, so LOG_FORMAT=json
-            # emits them as queryable JSON keys (any log platform can filter on
-            # tenant_id/correlation_id without parsing the message).
-            extra={
-                "method": request.method,
-                "route": request.url.path,
-                "status": status,
-                "duration_ms": round(duration_ms, 1),
-                "correlation_id": correlation_id,
-                "tenant_id": tenant_id,
-                "user_id": user_id,
-            },
-        )
-        response.headers[CORRELATION_HEADER] = correlation_id
-        return response
+            response.headers[CORRELATION_HEADER] = correlation_id
+            response.headers[REQUEST_ID_HEADER] = correlation_id
+            if trace_id:
+                response.headers[TRACE_ID_HEADER] = trace_id
+            return response
 
 
 #: Probe endpoints exempt from FORCE_HTTPS. Container health checks, Kubernetes
