@@ -46,7 +46,7 @@ Earlier audits: `docs/REPOSITORY_AUDIT.md`, `docs/PLATFORM_LEDGER.md` (batches 1
 | P5 Infrastructure monitoring | Windows / Linux / VMware host views from existing collectors | **Slices 1–3 implemented and tested**: server fleet page and PRTG resource sensors (`tests/test_server_fleet.py`); infrastructure health overview with clouds (`tests/test_infrastructure_health_overview.py`); per-host detail already existed |
 | P6 Dashboards & topology | Widget registry over aggregated APIs, saved dashboards per tenant / role; topology already exists, add drill-down to sensors | **Slice 1 implemented** (frontend only): topology drill-down to sensors, alerts, host tabs and interface pages; **slice 2**: saved dashboards and the widget registry (`tests/test_saved_dashboards.py`) |
 | P7 Metrics / logs | Syslog receiver on the edge agent → normalized events, Logs Explorer over events | **Slice 1 implemented and tested**: syslog receiver (separate process), log-to-device linking at ingest, Logs Explorer API and page (`tests/test_logs_explorer.py`); not verified in a browser |
-| P8 APM / tracing | OTLP/HTTP ingest of traces → spans table, service map from span parent/child | **Slice 1 implemented and tested**: OTLP/HTTP JSON trace ingest, spans table, services / traces / service map / trace APIs, Traces pages (`tests/test_tracing.py`); not verified in a browser |
+| P8 APM / tracing | OTLP/HTTP ingest of traces → spans table, service map from span parent/child | **Slice 1 implemented and tested**: OTLP/HTTP JSON trace ingest, spans table, services / traces / service map / trace APIs, Traces pages (`tests/test_tracing.py`); **slice 2**: APM section with per-service time series, operations, callers / callees and grouped errors (`tests/test_apm_services.py`); neither verified in a browser |
 | P9 Alerting | Dynamic baselines, notification policies, Teams channel | **Slice 1 implemented and tested**: notification policies (severity / priority / site routing) and a Microsoft Teams channel per policy (`tests/test_notification_policies.py`); **slice 2**: opt-in dynamic baselines per sensor (`tests/test_sensor_baselines.py`) |
 | P10 AI RCA / copilot | Copilot tools over the new sensor / history APIs | **Slice 1 implemented and tested**: the Copilot answers from sensors, network, logs, traces, baselines, coverage and named hosts (`tests/test_copilot_observability.py`) |
 | P11 Reporting | Sensor / interface / availability reports from stored metrics | **Slice 1 implemented and tested**: availability, sensor performance and interface traffic reports over a period, with CSV export (`tests/test_observability_reports.py`) |
@@ -598,3 +598,35 @@ show current state from live APIs; none covers a period from recorded history or
   measured at 91.2 % fleet availability, one at 29.5 %, 259 not measured; 20 sensors with alerts
   in the period; no interface history (it starts with P4).
 - **Not in this slice**: scheduled / emailed reports, PDF, and availability weighted by time.
+
+## 17. P8 slice 2: APM section
+
+Per-service health over time on the spans P8 slice 1 stores. No new table or migration: the
+existing `(tenant, service, start)` and `(tenant, start)` indexes cover every query.
+
+- **API** (on `/api/traces`, `monitoring.read`, tenant-scoped, windows up to 7 days; the service
+  name is the rest of the path, so names with "/" work):
+  - `/services/{service}/timeseries`: requests, errors, error rate and p50 / p95 / p99 of the
+    service's entry spans per bucket. The bucket is the smallest of 1 / 5 / 15 / 30 min,
+    1 / 3 / 6 h that keeps the window within 120 points (1 h → 1 min, 24 h → 15 min,
+    7 d → 3 h). Empty buckets are measured zeros, with latency `null`, never 0 ms.
+  - `/services/{service}/operations`: per span name, the calls, errors, p50 / p95, total time
+    and share of the service's time (top 100 by time).
+  - `/services/{service}/dependencies`: the service-map edges into (callers) and out of
+    (callees) the service, from the same join as `/service-map` (now one shared query).
+  - `/errors` (optional `service`): failed spans grouped by service, span name and exception:
+    the type and message of OpenTelemetry's `exception` span event, else the span's status
+    message (cut to 300 characters). Count, traces, first / last seen and the most recent
+    trace as an example; top 100, most frequent first.
+- **UI** ("APM" under Observe, children Services / Errors / Traces): one time range (1 h / 6 h /
+  24 h / 7 d) in the URL (`?range=`), shared by every APM page and kept on links.
+  - `/apm`: services with a request trend line (first 25 services), error rate and entry
+    latency, plus the service map.
+  - `/apm/services/{name}`: requests, error rate and latency (p95 line with the p50 to p99
+    band) charts, operations, callers and callees, the service's errors, and recent failed and
+    slow (at least its p95) traces, each opening the trace waterfall.
+  - `/apm/errors`: error groups across services.
+
+  `/traces` is unchanged; its service map is now the shared `components/apm/ServiceMap`.
+- **Not in this slice**: linking services to hosts (`host.name`), latency / error-rate alert
+  rules, traces on incidents, logs by trace id, protobuf and gzip.

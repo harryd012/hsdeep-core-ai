@@ -95,6 +95,64 @@ export function getTrace(traceId: string): Promise<TraceDetail> {
   return apiFetch<TraceDetail>(`/api/traces/${encodeURIComponent(traceId)}`);
 }
 
+// ---------------------------------------------------------------- APM, per service
+
+export interface TimeseriesPoint {
+  t: string;
+  requests: number;
+  errors: number;
+  error_rate_pct: number;
+  /** null for a bucket with no requests: nothing was measured. */
+  p50_ms: number | null;
+  p95_ms: number | null;
+  p99_ms: number | null;
+}
+
+export interface OperationStats {
+  name: string;
+  entry: boolean;
+  calls: number;
+  errors: number;
+  error_rate_pct: number;
+  p50_ms: number | null;
+  p95_ms: number | null;
+  total_ms: number;
+  time_share_pct: number;
+}
+
+export interface ErrorGroup {
+  service: string;
+  operation: string;
+  exception_type: string | null;
+  message: string | null;
+  count: number;
+  traces: number;
+  first_seen: string;
+  last_seen: string;
+  sample_trace_id: string;
+}
+
+/** A service name as URL path segments ("shop/api" stays two segments, each encoded). */
+export function servicePath(service: string): string {
+  return service.split("/").map(encodeURIComponent).join("/");
+}
+
+export function getServiceTimeseries(service: string, w: Window): Promise<Window & { service: string; bucket_seconds: number; points: TimeseriesPoint[] }> {
+  return apiFetch(`/api/traces/services/${servicePath(service)}/timeseries?${qs(w)}`);
+}
+
+export function getServiceOperations(service: string, w: Window): Promise<Window & { service: string; items: OperationStats[] }> {
+  return apiFetch(`/api/traces/services/${servicePath(service)}/operations?${qs(w)}`);
+}
+
+export function getServiceDependencies(service: string, w: Window): Promise<Window & { service: string; callers: ServiceEdge[]; callees: ServiceEdge[] }> {
+  return apiFetch(`/api/traces/services/${servicePath(service)}/dependencies?${qs(w)}`);
+}
+
+export function getTraceErrors(w: Window, service?: string | null): Promise<Window & { items: ErrorGroup[] }> {
+  return apiFetch(`/api/traces/errors?${qs(w, { service })}`);
+}
+
 export function formatMs(v: number | null | undefined): string {
   if (v === null || v === undefined) return "—";
   if (v >= 1000) return `${(v / 1000).toLocaleString("en-US", { maximumFractionDigits: 2 })} s`;
