@@ -155,6 +155,90 @@ async def test_source_detail_hides_run_level_health_events(db, monitoring_source
         assert (d["include_run_events"], d["hidden_run_events"]) == (True, 0)
 
 
+async def test_itsm_connections_states_and_sync_history(db, tenant):
+    """Slice 2b: ServiceNow and universal ITSM connections as `kind="itsm"`
+    rows, state from the connection and its sync-job queue, job history per
+    connection; no credential or job payload leaves the API."""
+    from app.models.itsm import ITSMConnection, ITSMSyncJob
+    from app.models.servicenow import ServiceNowConnection, ServiceNowSyncJob
+
+    t = tenant.id
+
+    def sn(name, **kw):
+        c = ServiceNowConnection(tenant_id=t, name=name, instance_url=f"https://{name}.service-now.com", **kw)
+        db.add(c)
+        return c
+
+    def it(name, **kw):
+        c = ITSMConnection(tenant_id=t, provider_type="jira", name=name, instance_url=f"https://{name}.atlassian.net", **kw)
+        db.add(c)
+        return c
+
+    sn_dead = sn("sn-dead", status="connected", password_encrypted="gAAAA-secret", last_sync_at=NOW - timedelta(hours=2))
+    sn_retry = sn("sn-retry", status="connected", last_sync_at=NOW - timedelta(hours=1))
+    sn("sn-new", status="pending")
+    jira_ok = it("jira-ok", status="connected", credentials_encrypted={"api_token_encrypted": "gAAAA-tok"},
+                 last_sync_at=NOW - timedelta(minutes=5), last_health_check_ok=True)
+    it("jira-check", status="connected", last_sync_at=NOW - timedelta(minutes=5), last_health_check_ok=False,
+       last_error="401 from Jira")
+    it("jira-off", status="connected", is_active=False)
+    await db.flush()
+
+    def job(model, conn, status, minutes, error=None, seconds=2):
+        created = NOW - timedelta(minutes=minutes)
+        started = created if status != "pending" else None
+        done = created + timedelta(seconds=seconds) if status in ("succeeded", "dead_letter") else None
+        db.add(model(tenant_id=t, connection_id=conn.id, job_type="ticket_push", status=status, created_at=created,
+                     updated_at=done or created, started_at=started, completed_at=done, next_attempt_at=created,
+                     last_error=error, payload={"body": "webhook-secret-body"}))
+
+    job(ServiceNowSyncJob, sn_dead, "succeeded", 120)
+    job(ServiceNowSyncJob, sn_dead, "dead_letter", 60, error="HTTP 500 from instance", seconds=4)
+    job(ServiceNowSyncJob, sn_dead, "pending", 1)
+    job(ServiceNowSyncJob, sn_retry, "failed", 30, error="timeout")
+    job(ServiceNowSyncJob, sn_retry, "succeeded", 10)
+    job(ITSMSyncJob, jira_ok, "succeeded", 20)
+    job(ITSMSyncJob, jira_ok, "succeeded", 60 * 30)  # outside the 24 h window
+    await db.commit()
+
+    async with _client(t) as client:
+        r = await client.get("/api/integration-center")
+        assert r.status_code == 200
+        body = r.json()
+        rows = {i["name"]: i for i in body["items"] if i["kind"] == "itsm"}
+        assert {n: x["state"] for n, x in rows.items()} == {
+            "sn-dead": "failing", "jira-check": "failing", "sn-retry": "degraded",
+            "sn-new": "never_synced", "jira-off": "disabled", "jira-ok": "healthy"}
+        sm = body["summary"]
+        assert (sm["itsm"], sm["itsm_jobs_24h"], sm["itsm_failed_jobs_24h"], sm["runs_24h"]) == (6, 6, 2, 0)
+        assert "gAAAA" not in r.text and "webhook-secret-body" not in r.text
+
+        d = rows["sn-dead"]
+        assert (d["type"], d["endpoint"], d["credential_configured"]) == ("servicenow", "https://sn-dead.service-now.com", True)
+        assert (d["runs_24h"], d["failed_runs_24h"], d["dead_letter_24h"], d["open_jobs"]) == (3, 1, 1, 1)
+        assert (d["success_rate_24h"], d["avg_run_ms"], d["last_run_status"]) == (33.3, 3000, "pending")
+        ok = rows["jira-ok"]
+        assert (ok["type"], ok["runs_24h"], ok["success_rate_24h"], ok["credential_configured"]) == ("jira", 1, 100.0, True)
+        assert rows["jira-check"]["last_error"] == "401 from Jira"
+        assert rows["sn-retry"]["open_jobs"] == 1 and rows["sn-new"]["credential_configured"] is False
+
+        detail = await client.get(f"/api/integration-center/itsm/{sn_dead.id}")
+        assert detail.status_code == 200
+        dj = detail.json()
+        assert dj["connection"]["name"] == "sn-dead"
+        assert [j["status"] for j in dj["jobs"]] == ["pending", "dead_letter", "succeeded"]
+        assert (dj["jobs"][1]["error"], dj["jobs"][1]["duration_ms"]) == ("HTTP 500 from instance", 4000)
+        assert "payload" not in dj["jobs"][0] and "webhook-secret-body" not in detail.text
+        assert (await client.get(f"/api/integration-center/itsm/{jira_ok.id}")).json()["connection"]["type"] == "jira"
+        assert (await client.get(f"/api/integration-center/itsm/{uuid.uuid4()}")).status_code == 404
+
+    async with _client(uuid.uuid4()) as client:
+        assert not [i for i in (await client.get("/api/integration-center")).json()["items"] if i["kind"] == "itsm"]
+        assert (await client.get(f"/api/integration-center/itsm/{sn_dead.id}")).status_code == 404
+    async with _client(t, permissions=frozenset()) as client:
+        assert (await client.get(f"/api/integration-center/itsm/{sn_dead.id}")).status_code == 403
+
+
 def test_stale_rule_has_a_floor():
     from app.models.monitoring_source import MonitoringSource
 

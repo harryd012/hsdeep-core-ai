@@ -7,7 +7,9 @@ One read-only view over everything that feeds the platform:
     framework) with their health state machine, the collector runs of the last
     24 hours, sensor and device counts;
   * generic integrations (`integrations`), with the status their own
-    connectors maintain.
+    connectors maintain;
+  * ITSM connections (ServiceNow and the universal ITSM framework) with their
+    sync-job queue (slice 2, `integration_center_itsm.py`).
 
 Each row gets one operator-facing `state`, derived only from what was
 recorded, never assumed:
@@ -43,6 +45,7 @@ from app.models.source_health_audit import (
     SourceHealthAudit,
 )
 from app.services.collector_health_service import TEST_SOURCE_TYPES
+from app.services.monitoring.integration_center_itsm import itsm_detail, itsm_rows
 
 RUN_WINDOW = timedelta(hours=24)
 STALE_FLOOR = timedelta(minutes=15)
@@ -195,14 +198,20 @@ class IntegrationCenter:
 
         items = [self._source_row(s, now, runs, last, sensors, devices) for s in sources]
         items += [self._integration_row(i) for i in integrations]
+        itsm = await itsm_rows(self.db, tenant_id, now)
+        items += itsm
         items.sort(key=lambda r: (_SEVERITY[r["state"]], r["name"].lower()))
         by_state = {s: sum(1 for r in items if r["state"] == s) for s in STATES}
         return {
             "generated_at": now,
             "summary": {
-                "total": len(items), "sources": len(sources), "integrations": len(integrations), **by_state,
-                "runs_24h": sum(r["runs_24h"] or 0 for r in items),
-                "failed_runs_24h": sum(r["failed_runs_24h"] or 0 for r in items),
+                "total": len(items), "sources": len(sources), "integrations": len(integrations), "itsm": len(itsm),
+                **by_state,
+                # Collector runs only; ITSM sync jobs are counted on their own.
+                "runs_24h": sum(r["runs_24h"] or 0 for r in items if r["kind"] != "itsm"),
+                "failed_runs_24h": sum(r["failed_runs_24h"] or 0 for r in items if r["kind"] != "itsm"),
+                "itsm_jobs_24h": sum(r["runs_24h"] or 0 for r in itsm),
+                "itsm_failed_jobs_24h": sum(r["failed_runs_24h"] or 0 for r in itsm),
             },
             "items": items,
         }
@@ -271,6 +280,11 @@ class IntegrationCenter:
             "include_run_events": include_run_events,
             "hidden_run_events": hidden,
         }
+
+
+    async def itsm_detail(self, tenant_id: uuid.UUID, connection_id: uuid.UUID, now: datetime | None = None) -> dict:
+        """One ITSM connection with its last 50 sync jobs; ITSMConnectionNotFound otherwise."""
+        return await itsm_detail(self.db, tenant_id, connection_id, now or datetime.now(timezone.utc))
 
 
 __all__ = ["IntegrationCenter", "IntegrationSourceNotFound", "STATES", "integration_state", "source_state"]

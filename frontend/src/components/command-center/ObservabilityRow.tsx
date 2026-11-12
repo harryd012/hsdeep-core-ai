@@ -4,7 +4,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { STATE_LABEL, STATE_TONE, getIntegrationCenter, type IntegrationState } from "@/lib/integrationCenter";
+import { STATE_LABEL, STATE_TONE, getIntegrationCenter, integrationHref, type IntegrationState } from "@/lib/integrationCenter";
 import { getNetworkOverview } from "@/lib/network";
 import { getLogStats } from "@/lib/logs";
 import { getTraceServices } from "@/lib/traces";
@@ -92,8 +92,8 @@ function IntegrationsCard() {
             <ul style={listStyle} aria-label="Integrations needing attention">
               {worst.map((r) => (
                 <li key={`${r.kind}:${r.id}`} style={rowStyle}>
-                  {r.kind === "source" ? (
-                    <Link className="ecc-table__link" href={`/monitoring/integrations/${r.id}`} style={ellipsis} title={r.last_error ?? r.name}>{r.name}</Link>
+                  {integrationHref(r) ? (
+                    <Link className="ecc-table__link" href={integrationHref(r)!} style={ellipsis} title={r.last_error ?? r.name}>{r.name}</Link>
                   ) : (
                     <span style={ellipsis} title={r.last_error ?? r.name}>{r.name}</span>
                   )}

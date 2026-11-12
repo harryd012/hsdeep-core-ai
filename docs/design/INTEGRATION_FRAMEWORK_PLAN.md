@@ -1,7 +1,7 @@
 # Integration framework: P12 slice 2 plan
 
-Status: **approved 2026-11-12**. Clean-up and step 2a **implemented and tested** (see §5); 2b and 2c
-planned.
+Status: **approved 2026-11-12**. Clean-up, step 2a and step 2b **implemented and tested** (see §5);
+2c planned.
 
 Replaces the uncommitted "Universal Integration Registry – Phase 2" draft found on
 `feat/observability` (`backend/app/services/integration/`,
@@ -150,3 +150,30 @@ below the recovery threshold as well as repeated failures, both of which were al
   "Could not reach PRTG: ConnectError: All connection attempts failed", where runs from before
   the change show only "Could not reach PRTG:". Its health events show the one real transition
   (Healthy → Degraded, 34 days ago), with 5,951 routine runs hidden. No console errors.
+
+### 2b — implemented and tested (2026-11-12)
+A finding during the build changed the scope. ServiceNow, the only ITSM provider so far, does not
+write to `itsm_connections` / `itsm_sync_jobs`. It still uses its own `servicenow_connections` /
+`servicenow_sync_jobs`. Both stores have the same shape, so `integration_center_itsm.py` reads both
+into one `kind="itsm"` row type. There is no `itsm.read` permission (the ITSM read routes are only
+tenant-scoped), so the Integration Center keeps `monitoring.read` for everything.
+
+- `app/services/monitoring/integration_center_itsm.py`: state per connection
+  (`disabled` / `failing` / `degraded` / `never_synced` / `healthy`, as listed in its module
+  docstring). It also gives 24-hour job statistics (jobs, failed, dead letter, success rate,
+  average duration), open jobs, last success / failure / attempt and next attempt.
+- Overview: ITSM rows alongside sources and integrations; the summary gains `itsm`,
+  `itsm_jobs_24h` and `itsm_failed_jobs_24h`. `runs_24h` / `failed_runs_24h` still count only
+  collector runs.
+- `GET /api/integration-center/itsm/{id}`: the row plus the last 50 sync jobs (type, status,
+  retries, duration, next attempt, error). Job payloads and credentials are never returned.
+  Another tenant's connection returns 404.
+- UI: ITSM rows link to `/monitoring/integrations/itsm/[id]` (state, last success, jobs 24 h,
+  dead letter 24 h, open jobs, sync history). The Command Center observability row links them
+  too (`integrationHref`).
+- Tests: `test_itsm_connections_states_and_sync_history` in `tests/test_integration_center.py`.
+  It covers every state across both stores, the statistics, job history order, no credential or
+  payload leaking, tenant isolation and RBAC.
+- Browser: the list page and the new route load against the dev tenant (an unknown connection
+  shows its "not found" banner). The dev tenant has no ITSM connection, so a populated ITSM page
+  is covered by the test above but has not been seen in the browser.

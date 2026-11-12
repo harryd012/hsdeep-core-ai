@@ -9,7 +9,8 @@ import type { Tone } from "@/components/ui/PageKit";
 export type IntegrationState = "failing" | "degraded" | "stale" | "never_synced" | "disabled" | "healthy";
 
 export interface IntegrationRow {
-  kind: "source" | "integration";
+  /** source: monitoring source · integration: generic integration · itsm: ServiceNow / ITSM connection (slice 2). */
+  kind: "source" | "integration" | "itsm";
   id: string;
   name: string;
   type: string;
@@ -35,6 +36,10 @@ export interface IntegrationRow {
   success_rate_24h: number | null;
   avg_run_ms: number | null;
   health_score?: number;
+  /** ITSM only: sync jobs pending, processing or waiting to be retried. */
+  open_jobs?: number;
+  /** ITSM only: sync jobs of the last 24 hours that went to the dead-letter queue. */
+  dead_letter_24h?: number;
 }
 
 export interface IntegrationCenterOverview {
@@ -43,8 +48,11 @@ export interface IntegrationCenterOverview {
     total: number;
     sources: number;
     integrations: number;
+    itsm: number;
     runs_24h: number;
     failed_runs_24h: number;
+    itsm_jobs_24h: number;
+    itsm_failed_jobs_24h: number;
   };
   items: IntegrationRow[];
 }
@@ -112,6 +120,36 @@ export function getIntegrationCenter(): Promise<IntegrationCenterOverview> {
 export function getIntegrationSource(sourceId: string, includeRunEvents = false): Promise<IntegrationSourceDetail> {
   const qs = includeRunEvents ? "?include_run_events=true" : "";
   return apiFetch<IntegrationSourceDetail>(`/api/integration-center/sources/${encodeURIComponent(sourceId)}${qs}`);
+}
+
+export interface ITSMSyncJobRow {
+  id: string;
+  job_type: string;
+  status: string;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  next_attempt_at: string | null;
+  retry_count: number;
+  max_retries: number;
+  duration_ms: number | null;
+  error: string | null;
+}
+
+export interface ITSMConnectionDetail {
+  connection: IntegrationRow;
+  jobs: ITSMSyncJobRow[];
+}
+
+export function getIntegrationITSM(connectionId: string): Promise<ITSMConnectionDetail> {
+  return apiFetch<ITSMConnectionDetail>(`/api/integration-center/itsm/${encodeURIComponent(connectionId)}`);
+}
+
+/** Detail page of a row, or null when it has none (generic integrations). */
+export function integrationHref(r: Pick<IntegrationRow, "kind" | "id">): string | null {
+  if (r.kind === "source") return `/monitoring/integrations/${r.id}`;
+  if (r.kind === "itsm") return `/monitoring/integrations/itsm/${r.id}`;
+  return null;
 }
 
 export function formatDuration(ms: number | null | undefined): string {

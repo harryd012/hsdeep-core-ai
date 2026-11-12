@@ -9,6 +9,7 @@ import {
   STATE_TONE,
   formatDuration,
   getIntegrationCenter,
+  integrationHref,
   type IntegrationRow,
   type IntegrationState,
 } from "@/lib/integrationCenter";
@@ -43,7 +44,7 @@ const COLUMNS: Column<IntegrationRow>[] = [
       <div>
         <span className="pk-cell-main">{r.name}</span>
         <span className="pk-cell-sub">
-          {titleCaseWords(r.type)}{r.kind === "integration" ? " · integration" : ""}{r.endpoint ? ` · ${r.endpoint}` : ""}
+          {titleCaseWords(r.type)}{r.kind === "integration" ? " · integration" : r.kind === "itsm" ? " · ITSM" : ""}{r.endpoint ? ` · ${r.endpoint}` : ""}
         </span>
         {r.last_error && r.state !== "healthy" && (
           <span className="pk-cell-sub" style={{ color: "var(--ecc-bad)" }} title={r.last_error}>
@@ -105,8 +106,8 @@ export default function IntegrationCenterPage() {
       {q.isError && <Banner tone="bad">The Integration Center could not be loaded{q.error?.message ? `: ${q.error.message}` : "."}</Banner>}
 
       <StatStrip>
-        <StatTile label="Integrations" value={s ? String(s.total) : "—"} sub={s ? `${s.sources} sources · ${s.integrations} integrations` : undefined}
-          info="Monitoring sources plus generic integrations for this tenant." loading={loading} />
+        <StatTile label="Integrations" value={s ? String(s.total) : "—"} sub={s ? `${s.sources} sources · ${s.itsm} ITSM · ${s.integrations} integrations` : undefined}
+          info="Monitoring sources, ITSM connections (ServiceNow and others) and generic integrations for this tenant." loading={loading} />
         <StatTile label="Need attention" value={s ? String(attention) : "—"} alarm={attention > 0} tone={s ? (attention > 0 ? "bad" : "good") : undefined}
           sub={s ? `${count("failing")} failing · ${count("degraded")} degraded · ${count("stale")} stale` : undefined}
           info="Failing: last collection failed. Degraded: the health state machine marked it degraded. Stale: no success for three poll intervals (at least 15 minutes)." loading={loading} />
@@ -114,7 +115,8 @@ export default function IntegrationCenterPage() {
         <StatTile label="Never synced" value={s ? String(count("never_synced")) : "—"} sub={s ? `${count("disabled")} disabled` : undefined}
           info="Configured, but nothing has been collected successfully yet." loading={loading} />
         <StatTile label="Collector runs 24 h" value={s ? s.runs_24h.toLocaleString("en-US") : "—"}
-          sub={s ? `${s.failed_runs_24h} failed` : undefined} tone={s && s.failed_runs_24h > 0 ? "warn" : undefined}
+          sub={s ? `${s.failed_runs_24h} failed${s.itsm_jobs_24h ? ` · ITSM ${s.itsm_jobs_24h} jobs, ${s.itsm_failed_jobs_24h} failed` : ""}` : undefined}
+          tone={s && s.failed_runs_24h + s.itsm_failed_jobs_24h > 0 ? "warn" : undefined}
           info="Recorded collector runs of all sources in the last 24 hours." loading={loading} />
       </StatStrip>
 
@@ -140,7 +142,7 @@ export default function IntegrationCenterPage() {
           columns={COLUMNS}
           rows={visible}
           rowKey={(r) => `${r.kind}:${r.id}`}
-          rowHref={(r) => (r.kind === "source" ? `/monitoring/integrations/${r.id}` : null)}
+          rowHref={integrationHref}
           emptyText={items.length === 0 ? "No monitoring source or integration is configured for this tenant." : "Nothing matches the current filter."}
           maxHeight="max(480px, calc(100vh - 320px))"
         />
