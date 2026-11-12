@@ -79,7 +79,73 @@ SERIES: tuple[dict[str, str], ...] = (
     {"key": "platform_alerts_firing", "label": "Platform alert rules firing", "unit": "count", "group": "alerts",
      "query": 'count(ALERTS{alertstate="firing"}) or vector(0)'},
 )
-SERIES_BY_KEY = {s["key"]: s for s in SERIES}
+
+# -- Phase 22: platform host, containers, database, cache and GPU history ----------
+# Same rules as above. These are requested per group (``groups=``), so the
+# Phase 21 page keeps running exactly the queries it ran before. Metric names
+# and their exporters: app/services/platform_infrastructure.py.
+_FS = 'fstype!~"tmpfs|overlay|squashfs|ramfs|devtmpfs|nsfs|autofs|fuse.*"'
+_NIC = 'device!~"lo|veth.*|docker.*|br-.*|virbr.*|cni.*|flannel.*"'
+_C = 'job="cadvisor", name!=""'
+INFRA_SERIES: tuple[dict[str, str], ...] = (
+    {"key": "host_cpu", "label": "Host CPU utilisation", "unit": "percent", "group": "host", "by": "instance",
+     "query": '100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{job="node", mode="idle"}[{w}])))'},
+    {"key": "host_memory", "label": "Host memory utilisation", "unit": "percent", "group": "host", "by": "instance",
+     "query": '100 * (1 - node_memory_MemAvailable_bytes{job="node"} / node_memory_MemTotal_bytes{job="node"})'},
+    {"key": "host_disk_used", "label": "Disk used by mount point", "unit": "percent", "group": "host", "by": "mountpoint",
+     "query": f'100 * (1 - max by (mountpoint) (node_filesystem_avail_bytes{{job="node", {_FS}}}) / max by (mountpoint) (node_filesystem_size_bytes{{job="node", {_FS}}}))'},
+    {"key": "host_disk_io", "label": "Disk throughput", "unit": "bytes_per_second", "group": "host", "by": "direction",
+     "query": 'label_replace(sum(rate(node_disk_read_bytes_total{job="node"}[{w}])), "direction", "read", "", "") or '
+              'label_replace(sum(rate(node_disk_written_bytes_total{job="node"}[{w}])), "direction", "write", "", "")'},
+    {"key": "host_disk_iops", "label": "Disk IOPS", "unit": "count", "group": "host",
+     "query": 'sum(rate(node_disk_reads_completed_total{job="node"}[{w}]) + rate(node_disk_writes_completed_total{job="node"}[{w}]))'},
+    {"key": "host_network", "label": "Network throughput", "unit": "bytes_per_second", "group": "host", "by": "direction",
+     "query": f'label_replace(sum(rate(node_network_receive_bytes_total{{job="node", {_NIC}}}[{{w}}])), "direction", "receive", "", "") or '
+              f'label_replace(sum(rate(node_network_transmit_bytes_total{{job="node", {_NIC}}}[{{w}}])), "direction", "transmit", "", "")'},
+    {"key": "host_network_errors", "label": "Network errors and drops per second", "unit": "count", "group": "host", "by": "kind",
+     "query": f'label_replace(sum(rate(node_network_receive_errs_total{{job="node", {_NIC}}}[{{w}}]) + rate(node_network_transmit_errs_total{{job="node", {_NIC}}}[{{w}}])), "kind", "errors", "", "") or '
+              f'label_replace(sum(rate(node_network_receive_drop_total{{job="node", {_NIC}}}[{{w}}]) + rate(node_network_transmit_drop_total{{job="node", {_NIC}}}[{{w}}])), "kind", "dropped", "", "")'},
+    {"key": "container_cpu", "label": "Container CPU (cores)", "unit": "count", "group": "containers", "by": "name",
+     "query": f"sum by (name) (rate(container_cpu_usage_seconds_total{{{_C}}}[{{w}}]))"},
+    {"key": "container_memory", "label": "Container memory", "unit": "bytes", "group": "containers", "by": "name",
+     "query": f"sum by (name) (container_memory_working_set_bytes{{{_C}}})"},
+    {"key": "container_network", "label": "Container network receive", "unit": "bytes_per_second", "group": "containers", "by": "name",
+     "query": f"sum by (name) (rate(container_network_receive_bytes_total{{{_C}}}[{{w}}]))"},
+    {"key": "pg_connections", "label": "PostgreSQL connections by state", "unit": "count", "group": "postgres", "by": "state",
+     "query": 'sum by (state) (pg_stat_activity_count{job="postgres", state=~"active|idle|idle in transaction"})'},
+    {"key": "pg_transactions", "label": "PostgreSQL transactions per second", "unit": "count", "group": "postgres", "by": "kind",
+     "query": 'label_replace(sum(rate(pg_stat_database_xact_commit{job="postgres"}[{w}])), "kind", "commit", "", "") or '
+              'label_replace(sum(rate(pg_stat_database_xact_rollback{job="postgres"}[{w}])), "kind", "rollback", "", "")'},
+    {"key": "pg_query_latency", "label": "Query latency", "unit": "seconds", "group": "postgres", "by": "quantile",
+     "query": " or ".join(
+         f'label_replace(histogram_quantile({q}, sum by (le) (rate(hsdeep_db_query_duration_seconds_bucket[{{w}}]))), "quantile", "p{int(q * 100)}", "", "")'
+         for q in (0.5, 0.95, 0.99))},
+    {"key": "pg_slow_queries", "label": "Slow queries per minute (over 1 s)", "unit": "count", "group": "postgres", "by": "operation",
+     "query": "sum by (operation) (rate(hsdeep_db_slow_queries_total[{w}])) * 60"},
+    {"key": "pg_database_size", "label": "Database size", "unit": "bytes", "group": "postgres", "by": "datname",
+     "query": 'pg_database_size_bytes{job="postgres", datname!~"template.*|postgres"}'},
+    {"key": "redis_memory", "label": "Redis memory used", "unit": "bytes", "group": "redis",
+     "query": 'sum(redis_memory_used_bytes{job="redis"})'},
+    {"key": "redis_ops", "label": "Redis operations per second", "unit": "count", "group": "redis",
+     "query": 'sum(rate(redis_commands_processed_total{job="redis"}[{w}]))'},
+    {"key": "redis_hit_ratio", "label": "Redis cache hit ratio", "unit": "ratio", "group": "redis",
+     "query": 'sum(rate(redis_keyspace_hits_total{job="redis"}[{w}])) / (sum(rate(redis_keyspace_hits_total{job="redis"}[{w}])) + sum(rate(redis_keyspace_misses_total{job="redis"}[{w}])))'},
+    {"key": "redis_clients", "label": "Redis connected clients", "unit": "count", "group": "redis",
+     "query": 'sum(redis_connected_clients{job="redis"})'},
+    {"key": "gpu_util", "label": "GPU utilisation", "unit": "percent", "group": "gpu", "by": "gpu",
+     "query": 'DCGM_FI_DEV_GPU_UTIL{job="nvidia-gpu"}'},
+    {"key": "gpu_vram", "label": "GPU memory used", "unit": "bytes", "group": "gpu", "by": "gpu",
+     "query": 'DCGM_FI_DEV_FB_USED{job="nvidia-gpu"} * 1048576'},
+    {"key": "gpu_temperature", "label": "GPU temperature (°C)", "unit": "count", "group": "gpu", "by": "gpu",
+     "query": 'DCGM_FI_DEV_GPU_TEMP{job="nvidia-gpu"}'},
+    {"key": "gpu_power", "label": "GPU power draw (W)", "unit": "count", "group": "gpu", "by": "gpu",
+     "query": 'DCGM_FI_DEV_POWER_USAGE{job="nvidia-gpu"}'},
+)
+#: The groups the Phase 21 page reads (the default), and the Phase 22 ones.
+PLATFORM_GROUPS: tuple[str, ...] = ("http", "collection", "scheduler", "alerts")
+INFRA_GROUPS: tuple[str, ...] = ("host", "containers", "postgres", "redis", "gpu")
+ALL_GROUPS: tuple[str, ...] = PLATFORM_GROUPS + INFRA_GROUPS
+SERIES_BY_KEY = {s["key"]: s for s in SERIES + INFRA_SERIES}
 
 
 def _window(step: int) -> str:
@@ -104,7 +170,11 @@ def _lines(result: list[dict[str, Any]], by: str | None) -> list[dict[str, Any]]
 
 
 async def fetch_timeseries(prometheus_url: str, range_key: str = DEFAULT_RANGE,
-                           client: httpx.AsyncClient | None = None, now: float | None = None) -> dict[str, Any]:
+                           client: httpx.AsyncClient | None = None, now: float | None = None,
+                           groups: tuple[str, ...] | None = None) -> dict[str, Any]:
+    """``groups`` selects catalogue groups; ``None`` is the Phase 21 set."""
+    wanted = tuple(g for g in (groups or PLATFORM_GROUPS) if g in ALL_GROUPS) or PLATFORM_GROUPS
+    catalogue = tuple(s for s in SERIES + INFRA_SERIES if s["group"] in wanted)
     range_key = range_key if range_key in RANGES else DEFAULT_RANGE
     seconds, step = RANGES[range_key]
     out = {"range": range_key, "step_seconds": step, "checked_at": datetime.now(timezone.utc).isoformat(), "series": []}
@@ -137,7 +207,7 @@ async def fetch_timeseries(prometheus_url: str, range_key: str = DEFAULT_RANGE,
         return row
 
     try:
-        series = await asyncio.gather(*(one(s) for s in SERIES))
+        series = await asyncio.gather(*(one(s) for s in catalogue))
     finally:
         if own:
             await client.aclose()

@@ -256,6 +256,13 @@ app = FastAPI(
 # Platform metrics: identify this process's role on every /metrics scrape so
 # Prometheus can tell api / worker / scheduler targets apart.
 platform_metrics.set_build_info(app.version, settings.runtime_mode)
+# Query timing (Phase 22): hsdeep_db_query_duration_seconds and friends.
+try:
+    from app.core.db import engine as _db_engine
+
+    platform_metrics.install_db_query_metrics(_db_engine.sync_engine)
+except Exception:  # noqa: BLE001 - metrics must never stop the app from starting
+    logging.getLogger(__name__).warning("Database query metrics are off.", exc_info=True)
 
 # ---------------------------------------------------
 # CORS (environment-aware — see PRODUCTION_READINESS.md P0-3)
@@ -579,6 +586,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Lets the browser read the ids that tie a response to its trace and logs.
+    expose_headers=["X-Trace-ID", "X-Request-ID", "X-Correlation-ID"],
 )
 app.add_middleware(_SecurityHeadersMiddleware)
 # Outermost: times the whole stack and counts responses made before routing

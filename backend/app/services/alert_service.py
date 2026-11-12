@@ -71,6 +71,19 @@ def _observe_opened(alert: Alert) -> None:
 
     severity = getattr(alert.severity, "value", alert.severity)
     observe_alert_created(str(alert.source or "unknown"), str(severity or "unknown"))
+    # The alert's identity goes on a span (and so into the trace), never into
+    # a metric label. This is what links a trace to the alert it produced.
+    from app.core import tracing
+
+    with tracing.span(
+        "alert.create",
+        hsdeep__alert_id=getattr(alert, "id", None),
+        hsdeep__tenant_id=getattr(alert, "tenant_id", None),
+        hsdeep__incident_id=getattr(alert, "incident_id", None),
+        hsdeep__alert_severity=severity,
+        hsdeep__alert_source=alert.source,
+    ):
+        pass
 
 
 @dataclass(frozen=True)

@@ -82,8 +82,42 @@ def redact(text: str, *, emails: bool = False, ips: bool = False) -> str:
     return out
 
 
+#: ``extra={...}`` keys whose value is a credential whatever it looks like.
+_SENSITIVE_KEY = re.compile(
+    r"(?i)(pass(?:word|wd|phrase|hash)?$|passw|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|"
+    r"authorization|credential|cookie|community|connection[_-]?(?:info|string)|dsn$)"
+)
+_STANDARD_ATTRS = frozenset(__import__("logging").LogRecord("", 0, "", 0, "", (), None).__dict__) | {"message", "asctime"}
+
+
+_IDENTIFIER = re.compile(
+    r"^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-f]{32}|[0-9a-f]{16})$"
+)
+
+
+def is_sensitive_key(key: str) -> bool:
+    return bool(_SENSITIVE_KEY.search(key))
+
+
+def redact_value(key: str, value):
+    """Redact one structured field: masked outright when the key names a
+    credential, pattern-scrubbed when it is text, unchanged otherwise."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return MASK if (is_sensitive_key(key) and value is not None and not isinstance(value, bool)) else value
+    if is_sensitive_key(key):
+        return MASK
+    text = value if isinstance(value, str) else str(value)
+    # An identifier (UUID, trace id, span id) is not a secret, and a UUID made
+    # mostly of digits can look like a card number to the pattern scrub.
+    if _IDENTIFIER.match(text):
+        return text
+    return redact(text)
+
+
 class RedactingFilter:
-    """logging filter: scrubs secrets from every record's final message."""
+    """logging filter: scrubs secrets from every record's final message and
+    from the structured ``extra`` fields (which the JSON formatter and the
+    OTLP exporter emit as their own keys)."""
 
     def filter(self, record) -> bool:  # noqa: A003 - logging API name
         try:
@@ -94,4 +128,11 @@ class RedactingFilter:
         if cleaned != message:
             record.msg = cleaned
             record.args = ()
+        for key, value in list(record.__dict__.items()):
+            if key in _STANDARD_ATTRS or key.startswith("_"):
+                continue
+            try:
+                record.__dict__[key] = redact_value(key, value)
+            except Exception:  # noqa: BLE001 - never lose the record over one field
+                record.__dict__[key] = MASK
         return True

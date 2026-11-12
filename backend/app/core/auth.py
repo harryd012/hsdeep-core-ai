@@ -470,9 +470,16 @@ def _publish_principal(request: Request, principal: Principal) -> None:
     request.state.principal = principal
     # Code far from the request (the AI gateway) applies the tenant's privacy
     # settings; contextvars are per request task, so tenants never mix.
+    from app.core import tracing
     from app.core.tenant_context import current_tenant_id
 
+    # Tenant context resolution is its own span (Phase 22); the tenant id is
+    # also set on the enclosing span so logs and traces share it.
+    with tracing.span("tenant.resolve", hsdeep__tenant_id=principal.tenant_id,
+                      hsdeep__is_superuser=principal.is_superuser):
+        pass
     current_tenant_id.set(principal.tenant_id)
+    tracing.set_attributes(hsdeep__tenant_id=principal.tenant_id)
 
 
 async def get_current_user(
@@ -485,7 +492,27 @@ async def get_current_user(
 
     Supports both JWT bearer tokens and raw API keys. An API key is resolved
     against the api_keys table (hash lookup), checked for expiry/active state,
-    and its scopes become the Principal's permission set."""
+    and its scopes become the Principal's permission set.
+
+    Runs inside an ``auth.authenticate`` span (Phase 22). The span records the
+    outcome and the method only: never the token, the key or the email."""
+    from app.core import tracing
+
+    with tracing.span("auth.authenticate", expected=(HTTPException,)) as auth_span:
+        try:
+            principal = await _authenticate(request, token, x_tenant_id)
+        except HTTPException as exc:
+            auth_span.set_attribute("hsdeep.auth.outcome", "denied")
+            auth_span.set_attribute("http.response.status_code", exc.status_code)
+            raise
+        auth_span.set_attribute("hsdeep.auth.outcome", "allowed")
+        auth_span.set_attribute("hsdeep.tenant_id", str(principal.tenant_id))
+        return principal
+
+
+async def _authenticate(
+    request: Request, token: str | None, x_tenant_id: uuid.UUID | None
+) -> Principal:
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

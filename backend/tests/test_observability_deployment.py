@@ -41,14 +41,28 @@ class TestCompose:
             image = svc["image"]
             default = re.search(r":-([^}]+)\}", image)
             tag = default.group(1) if default else image.rsplit(":", 1)[-1]
-            assert tag and tag != "latest" and re.match(r"v?\d+\.\d+\.\d+$", tag), (name, image)
+            # An exact version, optionally with a variant suffix (v1.74.0-alpine,
+            # 4.2.3-4.1.3-ubuntu22.04). Never a floating tag.
+            assert tag and tag != "latest" and re.match(r"v?\d+\.\d+\.\d+(-[A-Za-z0-9.\-]+)?$", tag), (name, image)
 
     def test_ports_private_and_volumes_persistent(self):
         for name, svc in self.compose["services"].items():
             for port in svc.get("ports", []):
                 assert port.startswith("127.0.0.1:"), (name, port)
-            assert "healthcheck" in svc, name
-        assert set(self.compose["volumes"]) == {"prometheus-data", "grafana-data"}
+            if name not in self.NO_CONTAINER_HEALTHCHECK:
+                assert "healthcheck" in svc, name
+        # Phase 22 adds the log and trace stores.
+        assert set(self.compose["volumes"]) == {"prometheus-data", "grafana-data", "loki-data", "tempo-data"}
+
+    #: Images with no shell or HTTP client to run a check with (Loki, Tempo and
+    #: the collector are scraped by Prometheus and checked by the backend's
+    #: /pipeline endpoint instead), and the one-shot volume-init job.
+    NO_CONTAINER_HEALTHCHECK = {"loki", "tempo", "otel-collector", "volume-init"}
+
+    def test_services_without_a_container_healthcheck_are_scraped(self):
+        jobs = {j["job_name"] for j in _yaml(OBS / "prometheus" / "prometheus.yml")["scrape_configs"]}
+        for name in self.NO_CONTAINER_HEALTHCHECK - {"volume-init"}:
+            assert name in jobs, name
 
     def test_secrets_are_read_only_files(self):
         prom = self.compose["services"]["prometheus"]

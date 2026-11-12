@@ -311,15 +311,20 @@ class RCAService:
             logger.warning("AI_RCA_STARTED event missing incident_id")
             return
 
+        from app.core import telemetry_context, tracing
+
         try:
             if self._session_factory is not None:
                 async with self._session_factory() as db:
-                    await self._run_rca(
-                        event=event,
-                        incident_id=incident_id,
-                        alert_repo=AlertRepository(db),
-                        incident_repo=IncidentRepository(db),
-                    )
+                    with tracing.span("rca.execute", hsdeep__incident_id=incident_id,
+                                      hsdeep__tenant_id=event.tenant_id), \
+                            telemetry_context.bind(incident_id=incident_id):
+                        await self._run_rca(
+                            event=event,
+                            incident_id=incident_id,
+                            alert_repo=AlertRepository(db),
+                            incident_repo=IncidentRepository(db),
+                        )
             else:
                 # Unreachable if constructed correctly (__init__ validates),
                 # but kept explicit for type-safety.

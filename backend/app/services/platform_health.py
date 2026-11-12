@@ -90,6 +90,11 @@ NOT_AVAILABLE = [
 ]
 
 
+#: NOT_AVAILABLE key -> a query that returns a series once the signal is collected.
+_EXPORTER_JOBS = {"host": 'up{job="node"}', "containers": 'up{job="cadvisor"}',
+                  "db_queries": "count(hsdeep_db_query_duration_seconds_count)"}
+
+
 def _valid(url: str) -> str | None:
     if not url:
         return None
@@ -206,11 +211,25 @@ async def _evaluate(prometheus_url: str, grafana_url: str, alertmanager_url: str
 
     order = ["api", "worker", "scheduler", "database", "redis", "prometheus", "grafana", "alertmanager"]
     services.sort(key=lambda s: order.index(s["key"]))
+
+    # Phase 22: a signal stops being listed as NOT AVAILABLE once Prometheus
+    # has a scrape target for its exporter. Without that evidence (or without
+    # Prometheus) the list is unchanged.
+    not_available = NOT_AVAILABLE
+    if prom_ok:
+        deployed = set()
+        for key, probe in _EXPORTER_JOBS.items():
+            try:
+                if await prom.vector(probe):
+                    deployed.add(key)
+            except (httpx.HTTPError, ValueError, KeyError, TypeError):
+                continue
+        not_available = [item for item in NOT_AVAILABLE if item["key"] not in deployed]
     return {
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "overall": _worst(*(s["status"] for s in services)),
         "services": services,
-        "not_available": NOT_AVAILABLE,
+        "not_available": not_available,
         "status_order": ["CRITICAL", "WARNING", "DEGRADED", "HEALTHY", "UNKNOWN"],
     }
 
@@ -370,3 +389,69 @@ async def fetch_alert_rules(prometheus_url: str, client: httpx.AsyncClient | Non
     return {"checked_at": checked_at, "configured": True, "reachable": True, "error": None, "rules": rules,
             "firing": sum(1 for r in rules if r["state"] == "firing"),
             "pending": sum(1 for r in rules if r["state"] == "pending")}
+
+
+# -- Telemetry pipeline (Phase 22) ----------------------------------------------------
+
+PIPELINE_RULES: dict[str, list[str]] = {
+    "otel_collector": [
+        "CRITICAL: configured but its health_check extension does not answer 200",
+        "NOT AVAILABLE: OTEL_COLLECTOR_HEALTH_URL is not set on the backend",
+        "HEALTHY: health_check answers 200",
+    ],
+    "loki": [
+        "CRITICAL: configured but /ready does not answer 200",
+        "NOT AVAILABLE: LOKI_URL is not set on the backend (the Logs Explorer cannot search)",
+        "HEALTHY: /ready answers 200",
+    ],
+    "tempo": [
+        "CRITICAL: configured but /ready does not answer 200",
+        "NOT AVAILABLE: TEMPO_URL is not set on the backend (the Trace Explorer cannot search)",
+        "HEALTHY: /ready answers 200",
+    ],
+    "backend_export": [
+        "NOT AVAILABLE: OTEL_EXPORTER_OTLP_ENDPOINT is not set, so this process exports no spans or logs",
+        "UNKNOWN: this process exports, but the collector's health is not known",
+        "HEALTHY: this process exports and the collector answers",
+    ],
+}
+
+
+async def fetch_pipeline(collector_health_url: str, loki_url: str, tempo_url: str, *, exporting: bool,
+                         client: httpx.AsyncClient | None = None) -> dict[str, Any]:
+    """Health of the log and trace pipeline. Reachability only: it says the
+    components answer, not that any particular line or span arrived."""
+    own = client is None
+    client = client or httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
+
+    async def component(key: str, name: str, url: str, path: str, setting: str) -> dict[str, Any]:
+        base = _valid(url)
+        row = {"key": key, "name": name, "rules": PIPELINE_RULES[key], "evidence": {}}
+        if not url:
+            return {**row, "status": "NOT AVAILABLE", "reason": f"{setting} is not set on the backend"}
+        if base is None:
+            return {**row, "status": "CRITICAL", "reason": f"{setting} is not a valid http(s) URL"}
+        ok, evidence = await _http_ok(client, f"{base}{path}")
+        return {**row, "status": "HEALTHY" if ok else "CRITICAL", "evidence": evidence,
+                "reason": f"{path or '/'} answered 200" if ok else f"{path or '/'} did not answer 200"}
+
+    try:
+        collector, loki, tempo = await asyncio.gather(
+            component("otel_collector", "OpenTelemetry Collector", collector_health_url, "", "OTEL_COLLECTOR_HEALTH_URL"),
+            component("loki", "Loki (logs)", loki_url, "/ready", "LOKI_URL"),
+            component("tempo", "Tempo (traces)", tempo_url, "/ready", "TEMPO_URL"),
+        )
+    finally:
+        if own:
+            await client.aclose()
+    if not exporting:
+        export = {"status": "NOT AVAILABLE",
+                  "reason": "OTEL_EXPORTER_OTLP_ENDPOINT is not set: this process writes logs to stdout only and exports no spans"}
+    elif collector["status"] == "HEALTHY":
+        export = {"status": "HEALTHY", "reason": "This process exports spans and logs, and the collector answers"}
+    else:
+        export = {"status": "UNKNOWN", "reason": "This process exports, but the collector's health is not confirmed"}
+    components = [{"key": "backend_export", "name": "Backend export (this process)", "rules": PIPELINE_RULES["backend_export"],
+                   "evidence": {"exporting": exporting}, **export}, collector, loki, tempo]
+    return {"checked_at": datetime.now(timezone.utc).isoformat(), "components": components,
+            "statuses": ["HEALTHY", "CRITICAL", "UNKNOWN", "NOT AVAILABLE"]}

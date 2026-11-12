@@ -18,7 +18,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.core.config import get_settings
-from app.core.redaction import RedactingFilter
+from app.core.redaction import RedactingFilter, redact
+from app.core.telemetry_context import CorrelationFilter
 
 
 #: LogRecord attributes that must never be emitted as their own JSON key.
@@ -57,7 +58,8 @@ class _JsonFormatter(logging.Formatter):
                 else str(value)
             )
         if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
+            # Exception text can quote a URL or a connection string.
+            payload["exception"] = redact(self.formatException(record.exc_info))
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
@@ -77,13 +79,34 @@ def configure_logging() -> None:
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(formatter)
-    # Scrub credentials (passwords, tokens, keys, connection strings) from every
-    # message before it is written (security programme S5, core/redaction.py).
+    # Correlation identifiers first (trace_id, span_id, request_id, tenant_id,
+    # service_name, environment, incident_id, collection_run_id, provider_id,
+    # plus category / component), then redaction over the message and every
+    # structured field (security programme S5, core/redaction.py).
+    handler.addFilter(CorrelationFilter())
     handler.addFilter(RedactingFilter())
 
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
     root_logger.handlers = [handler]
+
+    # Tracing, and OTLP log export to the OpenTelemetry Collector when
+    # OTEL_EXPORTER_OTLP_ENDPOINT is set (Phase 22). The same two filters run
+    # on the exported records. A telemetry failure never stops the process.
+    try:
+        from app.core.tracing import configure_telemetry
+
+        otlp_handler = configure_telemetry(settings)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("Telemetry setup failed; continuing with stdout logging only.")
+        otlp_handler = None
+    if otlp_handler is not None:
+        otlp_handler.addFilter(CorrelationFilter())
+        otlp_handler.addFilter(RedactingFilter())
+        root_logger.addHandler(otlp_handler)
+    # The exporter's own transport must not log through itself.
+    for noisy in ("opentelemetry", "urllib3", "requests"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     # Tame noisy third-party loggers by default
     logging.getLogger("uvicorn.access").setLevel(log_level)

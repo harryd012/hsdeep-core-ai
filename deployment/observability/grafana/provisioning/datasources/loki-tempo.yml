@@ -1,0 +1,40 @@
+# Loki and Tempo datasources (Phase 22), provisioned read-only and reached on
+# the private compose network. Trace ids in log lines link to Tempo, and a
+# span links to its log lines in Loki.
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    uid: hsdeep-loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        - name: trace_id
+          matcherType: label
+          matcherRegex: trace_id
+          datasourceUid: hsdeep-tempo
+          url: "$${__value.raw}"
+          urlDisplayLabel: Open trace
+
+  - name: Tempo
+    uid: hsdeep-tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: hsdeep-loki
+        spanStartTimeShift: -1m
+        spanEndTimeShift: 5m
+        filterByTraceID: false
+        customQuery: true
+        query: '{service_namespace="hsdeep"} | trace_id="$${__span.traceId}"'
+      serviceMap:
+        datasourceUid: hsdeep-prometheus
+      nodeGraph:
+        enabled: true

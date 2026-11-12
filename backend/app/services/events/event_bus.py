@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import contextmanager
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -76,6 +77,40 @@ class DomainEvent:
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     correlation_id: Optional[str] = None  # Links related events in a lifecycle
     payload: Dict[str, Any] = field(default_factory=dict)
+    # W3C Trace Context of the code that created the event (``traceparent`` /
+    # ``tracestate``), captured automatically so handlers continue the same
+    # trace across the in-process queue and the Redis stream (Phase 22).
+    trace_context: Dict[str, str] = field(default_factory=lambda: _current_trace_context())
+
+
+def _current_trace_context() -> Dict[str, str]:
+    try:
+        from app.core.tracing import inject
+
+        return inject({})
+    except Exception:  # noqa: BLE001 - tracing must never block an event
+        return {}
+
+
+@contextmanager
+def _handling(event: "DomainEvent"):
+    """Continue the publisher's trace while handlers run, with the tenant and
+    the event's incident (when its payload names one) bound for logs."""
+    try:
+        from opentelemetry.trace import SpanKind
+
+        from app.core import telemetry_context, tracing
+    except Exception:  # noqa: BLE001
+        yield
+        return
+    event_type = getattr(event.event_type, "value", str(event.event_type))
+    incident_id = (event.payload or {}).get("incident_id")
+    with tracing.attached(getattr(event, "trace_context", None)), \
+            tracing.span(f"event.process {event_type}", kind=SpanKind.CONSUMER,
+                         hsdeep__tenant_id=event.tenant_id, hsdeep__event_id=event.event_id,
+                         hsdeep__incident_id=incident_id), \
+            telemetry_context.bind(incident_id=incident_id):
+        yield
 
 
 # Type alias for event handlers
@@ -191,6 +226,10 @@ class EventBus:
 
         self._metrics["processed"] += 1
 
+    async def _process_event_traced(self, event: DomainEvent) -> None:
+        with _handling(event):
+            await self._process_event(event)
+
     async def dispatch_tracked(self, event: DomainEvent, skip: set) -> Dict[str, Optional[BaseException]]:
         """Run the handlers for ``event`` except those named in ``skip``, and
         report each handler's outcome (None = success). Used by the shared
@@ -198,7 +237,8 @@ class EventBus:
         handlers = [h for h in self._all_handlers + self._handlers.get(event.event_type, [])
                     if handler_name(h) not in skip]
         results: Dict[str, Optional[BaseException]] = {name: None for name in skip}
-        outcomes = await asyncio.gather(*(h(event) for h in handlers), return_exceptions=True)
+        with _handling(event):
+            outcomes = await asyncio.gather(*(h(event) for h in handlers), return_exceptions=True)
         for handler, outcome in zip(handlers, outcomes):
             if isinstance(outcome, BaseException):
                 self._metrics["errors"] += 1
@@ -215,7 +255,7 @@ class EventBus:
         while self._running:
             try:
                 event = await asyncio.wait_for(self._queue.get(), timeout=1.0)
-                await self._process_event(event)
+                await self._process_event_traced(event)
             except asyncio.TimeoutError:
                 continue
             except Exception as exc:

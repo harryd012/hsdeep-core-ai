@@ -1,0 +1,66 @@
+# HSDEEP CORE AI - Grafana Loki, single process, local filesystem (Phase 22).
+#
+# Stores the platform's own logs. Retention is LOKI_RETENTION (default 168h =
+# 7 days), enforced by the compactor. Started with -config.expand-env=true.
+#
+# Index labels stay few and bounded (service, namespace, environment). Tenant,
+# trace, request, incident and collection-run ids are structured metadata:
+# searchable, but never index labels.
+#
+# Validate:  loki -config.file=loki.yml -config.expand-env=true -verify-config
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: ${LOKI_DATA_DIR:-/loki}
+  storage:
+    filesystem:
+      chunks_directory: ${LOKI_DATA_DIR:-/loki}/chunks
+      rules_directory: ${LOKI_DATA_DIR:-/loki}/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2026-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  retention_period: ${LOKI_RETENTION:-168h}
+  allow_structured_metadata: true
+  volume_enabled: true
+  max_entries_limit_per_query: 5000
+  max_query_length: 721h
+  query_timeout: 30s
+  ingestion_rate_mb: 8
+  ingestion_burst_size_mb: 16
+  otlp_config:
+    resource_attributes:
+      attributes_config:
+        - action: index_label
+          attributes:
+            - service.name
+            - service.namespace
+            - deployment.environment
+
+compactor:
+  working_directory: ${LOKI_DATA_DIR:-/loki}/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+  compaction_interval: 10m
+
+analytics:
+  reporting_enabled: false

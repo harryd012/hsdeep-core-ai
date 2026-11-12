@@ -79,6 +79,9 @@ All metrics come from `backend/app/core/metrics.py` and are exposed per process 
 | `hsdeep_http_requests_in_progress` | gauge | method |
 | `hsdeep_http_errors_total` | counter | method, route, status (5xx and exceptions) |
 | `hsdeep_build_info` | gauge | version, runtime_mode |
+| `hsdeep_db_query_duration_seconds` | histogram | operation (select / insert / update / delete / other) |
+| `hsdeep_db_slow_queries_total` | counter | operation (statements slower than 1 s) |
+| `hsdeep_db_query_errors_total` | counter | operation |
 | `hsdeep_collection_run_total` | counter | source_type, status |
 | `hsdeep_collection_run_duration_seconds` | histogram | source_type, status |
 | `hsdeep_collection_failures_total` | counter | source_type, stage |

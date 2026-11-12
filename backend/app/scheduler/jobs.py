@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 
 from app.core import metrics as platform_metrics
+from app.core import telemetry_context, tracing
 from app.core.config import get_settings
 from app.core.db import AsyncSessionLocal, engine
 from app.repositories.alert_repository import AlertRepository
@@ -132,7 +133,11 @@ async def tick() -> None:
 
         started = time.perf_counter()
         try:
-            due = await _run_due_sources()
+            # One trace per tick that held the lock; each source it runs is a
+            # child span (Phase 22). Skipped ticks create no trace.
+            with tracing.span("scheduler.tick") as tick_span:
+                due = await _run_due_sources()
+                tick_span.set_attribute("hsdeep.scheduler.due_sources", due or 0)
         except Exception:
             platform_metrics.observe_scheduler_tick_failure()
             raise
@@ -211,6 +216,25 @@ async def _run_bounded(
     a Redis failure fails OPEN by design - rate limiting must never be the
     reason a source stops being polled.
     """
+    from app.core.tenant_context import current_tenant_id
+
+    # Each source runs in its own task (a copy of the tick's context), so the
+    # tenant and provider ids set here never reach another source's logs.
+    tenant_token = current_tenant_id.set(tenant_id)
+    try:
+        with tracing.span("queue.process_source", hsdeep__tenant_id=tenant_id, hsdeep__provider_id=source_id), \
+                telemetry_context.bind(provider_id=source_id):
+            await _run_bounded_traced(source_id, tenant_id, semaphore, limiter)
+    finally:
+        current_tenant_id.reset(tenant_token)
+
+
+async def _run_bounded_traced(
+    source_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    semaphore: asyncio.Semaphore,
+    limiter: SourceRateLimiter | None = None,
+) -> None:
     limiter = limiter if limiter is not None else get_source_rate_limiter()
     if not await limiter.acquire(source_id):
         logger.info(
@@ -263,9 +287,11 @@ async def _run_bounded(
                 # Incident, so it is logged and contained here.
                 for reference in outcome.created_incidents:
                     try:
-                        await trigger_rca_for_incident(
-                            reference.incident_id, reference.tenant_id
-                        )
+                        with tracing.span("rca.trigger", hsdeep__incident_id=reference.incident_id), \
+                                telemetry_context.bind(incident_id=reference.incident_id):
+                            await trigger_rca_for_incident(
+                                reference.incident_id, reference.tenant_id
+                            )
                     except Exception:  # noqa: BLE001 - incident already committed
                         logger.exception(
                             "RCA trigger failed for committed incident %s",
