@@ -27,6 +27,7 @@ from typing import Any
 import httpx
 
 from app.collectors.base import (
+    describe_error,
     BaseCollector,
     CollectorConfigError,
     CollectorRegistry,
@@ -151,7 +152,7 @@ class PaloAltoCollector(BaseCollector):
         try:
             resp = await self._op("<show><system><info/></system></show>", _STATUS_TIMEOUT)
         except (httpx.TransportError, httpx.TimeoutException) as exc:
-            return ConnectionCheck(success=False, message=f"Could not reach Palo Alto: {exc}")
+            return ConnectionCheck(success=False, message=f"Could not reach Palo Alto: {describe_error(exc, self.source)}")
 
         if resp.status_code == 401:
             return ConnectionCheck(success=False, message="Palo Alto: Unauthorized (bad credentials).")

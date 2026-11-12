@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 
 from app.collectors.base import (
+    describe_error,
     BaseCollector,
     CollectorConfigError,
     CollectorRegistry,
@@ -141,7 +142,7 @@ class FortiManagerCollector(BaseCollector):
             )
         except (httpx.TransportError, httpx.TimeoutException) as exc:
             return ConnectionCheck(
-                success=False, message=f"Could not reach FortiManager: {exc}"
+                success=False, message=f"Could not reach FortiManager: {describe_error(exc, self.source)}"
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 401:

@@ -127,6 +127,34 @@ async def test_integration_center_states_and_history(db, monitoring_source_facto
         assert src.tenant_id == tenant_id
 
 
+async def test_source_detail_hides_run_level_health_events(db, monitoring_source_factory):
+    """State changes first: `run_recorded` rows and legacy `health_transition`
+    rows with an unchanged health state are hidden unless asked for."""
+    src = await monitoring_source_factory(name="prtg", status="error", health_status="degraded")
+
+    def ev(event_type, frm, to, minutes):
+        db.add(SourceHealthAudit(tenant_id=src.tenant_id, monitoring_source_id=src.id, event_type=event_type,
+                                 from_health_status=frm, to_health_status=to, reason=event_type,
+                                 created_at=NOW - timedelta(minutes=minutes)))
+
+    ev("health_transition", "healthy", "degraded", 60)   # real change
+    ev("health_transition", "degraded", "degraded", 50)  # legacy noise
+    ev("health_transition", "degraded", "degraded", 40)  # legacy noise
+    ev("run_recorded", "degraded", "degraded", 30)
+    ev("timeout", None, None, 20)                        # notable, kept
+    await db.commit()
+
+    async with _client(src.tenant_id) as client:
+        d = (await client.get(f"/api/integration-center/sources/{src.id}")).json()
+        assert [(e["event_type"], e["from_health_status"]) for e in d["health_events"]] == [
+            ("timeout", None), ("health_transition", "healthy")]
+        assert (d["include_run_events"], d["hidden_run_events"]) == (False, 3)
+
+        d = (await client.get(f"/api/integration-center/sources/{src.id}", params={"include_run_events": "true"})).json()
+        assert len(d["health_events"]) == 5
+        assert (d["include_run_events"], d["hidden_run_events"]) == (True, 0)
+
+
 def test_stale_rule_has_a_floor():
     from app.models.monitoring_source import MonitoringSource
 

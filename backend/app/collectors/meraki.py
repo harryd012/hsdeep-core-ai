@@ -25,6 +25,7 @@ from typing import Any
 import httpx
 
 from app.collectors.base import (
+    describe_error,
     BaseCollector,
     CollectorConfigError,
     CollectorRegistry,
@@ -114,7 +115,7 @@ class MerakiCollector(BaseCollector):
         try:
             resp = await self._request("/organizations", timeout=_STATUS_TIMEOUT)
         except (httpx.TransportError, httpx.TimeoutException) as exc:
-            return ConnectionCheck(success=False, message=f"Could not reach Meraki: {exc}")
+            return ConnectionCheck(success=False, message=f"Could not reach Meraki: {describe_error(exc, self.source)}")
 
         if resp.status_code == 200:
             return ConnectionCheck(success=True, message="Connected to Meraki Dashboard.")

@@ -4,7 +4,9 @@ Integration Center (docs/design/OBSERVABILITY_PLATFORM_PLAN.md, P12 slice 1).
   GET /api/integration-center                     every monitoring source and integration with
                                                   one derived state, 24 h run statistics, counts
   GET /api/integration-center/sources/{id}        one source with its last 50 collector runs and
-                                                  health-state events (sync history)
+                                                  health-state events (sync history); run-level
+                                                  events that changed no state are left out unless
+                                                  ?include_run_events=true
 
 Read-only, `monitoring.read`, tenant-scoped; another tenant's source is a 404.
 Syncing a source stays on the existing POST /api/monitoring/sources/{id}/sync
@@ -31,9 +33,10 @@ async def integration_center_overview(tenant_id: uuid.UUID = Depends(get_tenant_
 
 
 @router.get("/sources/{source_id}")
-async def integration_center_source(source_id: uuid.UUID, tenant_id: uuid.UUID = Depends(get_tenant_id),
+async def integration_center_source(source_id: uuid.UUID, include_run_events: bool = False,
+                                    tenant_id: uuid.UUID = Depends(get_tenant_id),
                                     db: AsyncSession = Depends(get_db)) -> dict:
     try:
-        return await IntegrationCenter(db).source_detail(tenant_id, source_id)
+        return await IntegrationCenter(db).source_detail(tenant_id, source_id, include_run_events=include_run_events)
     except IntegrationSourceNotFound as exc:
         raise HTTPException(status_code=404, detail="Source not found") from exc

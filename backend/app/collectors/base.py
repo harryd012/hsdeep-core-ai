@@ -478,6 +478,24 @@ class ConnectionCheck:
     message: str
 
 
+def describe_error(exc: BaseException, source: Any = None) -> str:
+    """Operator-facing cause of a failed call: ``"<ExceptionType>: <message>"``.
+
+    Transport exceptions often have an empty ``str()`` (``httpx.ConnectTimeout``
+    for one), which left messages like "Could not reach PRTG:" with no cause.
+    The exception type is always given; the message only when there is one.
+    When `source` is given, any configured secret is scrubbed out (some
+    libraries echo the URL, and PRTG carries its passhash in the query string).
+    """
+    name = type(exc).__name__
+    text = str(exc).strip()
+    if source is not None and text:
+        from app.services.monitoring.readiness import redact
+
+        text = redact(text, source)
+    return f"{name}: {text}" if text else name
+
+
 # -- Readiness vocabulary (Phase 3B §10) -------------------------------------
 # A readiness probe answers ONE question: "can this configured source be polled
 # right now?" These distinct states must never be collapsed, because they have

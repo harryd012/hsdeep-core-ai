@@ -29,7 +29,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Float, cast, func, select
+from sqlalchemy import Float, and_, cast, func, not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.collector_run import CollectorRun
@@ -37,7 +37,11 @@ from app.models.device import Device
 from app.models.integration import Integration
 from app.models.monitoring_source import HEALTH_STATUS_DEGRADED, MonitoringSource
 from app.models.sensor import Sensor
-from app.models.source_health_audit import SourceHealthAudit
+from app.models.source_health_audit import (
+    SOURCE_HEALTH_EVENT_RUN_RECORDED,
+    SOURCE_HEALTH_EVENT_TRANSITION,
+    SourceHealthAudit,
+)
 from app.services.collector_health_service import TEST_SOURCE_TYPES
 
 RUN_WINDOW = timedelta(hours=24)
@@ -49,6 +53,19 @@ ERROR_CHARS = 500
 STATES = ("failing", "degraded", "stale", "never_synced", "disabled", "healthy")
 _SEVERITY = {s: i for i, s in enumerate(STATES)}
 _INTEGRATION_FAILING = frozenset({"disconnected", "authentication_failed", "discovery_failed"})
+
+
+def _run_level_event():
+    """Health events that record a run without changing any health state.
+
+    `run_recorded` since 2026-11-12; before that the same rows were written as
+    `health_transition` with an unchanged health status (`Degraded -> Degraded`
+    for every failed run of an outage), so those count as run-level too.
+    """
+    return (SourceHealthAudit.event_type == SOURCE_HEALTH_EVENT_RUN_RECORDED) | and_(
+        SourceHealthAudit.event_type == SOURCE_HEALTH_EVENT_TRANSITION,
+        SourceHealthAudit.from_health_status.is_not_distinct_from(SourceHealthAudit.to_health_status),
+    )
 
 
 class IntegrationSourceNotFound(LookupError):
@@ -190,7 +207,8 @@ class IntegrationCenter:
             "items": items,
         }
 
-    async def source_detail(self, tenant_id: uuid.UUID, source_id: uuid.UUID, now: datetime | None = None) -> dict:
+    async def source_detail(self, tenant_id: uuid.UUID, source_id: uuid.UUID, now: datetime | None = None,
+                            include_run_events: bool = False) -> dict:
         now = now or datetime.now(timezone.utc)
         source = (
             await self.db.execute(
@@ -218,12 +236,16 @@ class IntegrationCenter:
             select(Device.monitoring_source_id, func.count())
             .where(Device.monitoring_source_id == source.id, Device.is_deleted.is_(False))
             .group_by(Device.monitoring_source_id))).all())
+        of_source = (SourceHealthAudit.tenant_id == tenant_id, SourceHealthAudit.monitoring_source_id == source.id)
+        run_level = _run_level_event()
+        hidden = 0
+        events_q = select(SourceHealthAudit).where(*of_source)
+        if not include_run_events:
+            events_q = events_q.where(not_(run_level))
+            hidden = (await self.db.execute(
+                select(func.count()).select_from(SourceHealthAudit).where(*of_source, run_level))).scalar_one()
         events = (
-            await self.db.execute(
-                select(SourceHealthAudit)
-                .where(SourceHealthAudit.tenant_id == tenant_id, SourceHealthAudit.monitoring_source_id == source.id)
-                .order_by(SourceHealthAudit.created_at.desc()).limit(HISTORY_LIMIT)
-            )
+            await self.db.execute(events_q.order_by(SourceHealthAudit.created_at.desc()).limit(HISTORY_LIMIT))
         ).scalars().all()
         return {
             "source": self._source_row(source, now, runs, last, sensors, devices),
@@ -246,6 +268,8 @@ class IntegrationCenter:
                 }
                 for e in events
             ],
+            "include_run_events": include_run_events,
+            "hidden_run_events": hidden,
         }
 
 

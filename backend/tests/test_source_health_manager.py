@@ -97,6 +97,39 @@ class TestSourceHealthManager:
             assert attached.status == "error"
             assert last.degraded is True
 
+    async def test_only_state_changes_are_audited_as_transitions(
+        self, tenant, monitoring_source_factory
+    ):
+        """A run that changes no health state is `run_recorded`, never a
+        `Degraded -> Degraded` "transition" (P12 slice 2)."""
+        from sqlalchemy import select
+
+        from app.models.source_health_audit import SourceHealthAudit
+
+        source = await monitoring_source_factory()
+        async with AsyncSessionLocal() as db:
+            attached = await MonitoringSourceRepository(db).get(source.id, tenant.id)
+            mgr = _manager(db)
+            for _ in range(5):  # 2 below threshold, 1 crossing it, 2 while degraded
+                await mgr.evaluate_and_update(attached, run_success=False, error="down")
+            await mgr.evaluate_and_update(attached, run_success=True, error=None)  # 1 of 2 needed
+            await mgr.evaluate_and_update(attached, run_success=True, error=None)  # recovery
+            await db.commit()
+
+            rows = (await db.execute(
+                select(SourceHealthAudit).where(SourceHealthAudit.monitoring_source_id == source.id)
+                .order_by(SourceHealthAudit.created_at, SourceHealthAudit.to_consecutive_failures)
+            )).scalars().all()
+            types = [r.event_type for r in rows]
+            assert types.count("health_transition") == 1
+            assert types.count("recovery") == 1
+            assert types.count("run_recorded") == 5
+            [t] = [r for r in rows if r.event_type == "health_transition"]
+            assert (t.from_health_status, t.to_health_status) == ("healthy", "degraded")
+            for r in rows:
+                if r.event_type == "run_recorded":
+                    assert r.from_health_status == r.to_health_status
+
     async def test_recovery_transitions_back_to_healthy_and_emits_event(
         self, tenant, monitoring_source_factory
     ):

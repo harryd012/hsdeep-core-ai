@@ -36,6 +36,7 @@ from app.core.config import get_settings
 from app.models.monitoring_source import HEALTH_STATUS_DEGRADED, HEALTH_STATUS_HEALTHY
 from app.models.source_health_audit import (
     SOURCE_HEALTH_EVENT_RECOVERY,
+    SOURCE_HEALTH_EVENT_RUN_RECORDED,
     SOURCE_HEALTH_EVENT_TRANSITION,
 )
 from app.services.events.event_bus import DomainEvent, EventType
@@ -200,7 +201,7 @@ class SourceHealthManager:
                     tenant_id=source.tenant_id,
                     monitoring_source_id=source.id,
                     collector_run_id=run_id,
-                    event_type=SOURCE_HEALTH_EVENT_TRANSITION,
+                    event_type=SOURCE_HEALTH_EVENT_RUN_RECORDED,
                     reason=f"Run succeeded; failures reset to 0, successes {prev_successes}→{source.consecutive_successes}.",
                     from_health_status=prev_health,
                     to_health_status=source.health_status,
@@ -282,7 +283,7 @@ class SourceHealthManager:
                     tenant_id=source.tenant_id,
                     monitoring_source_id=source.id,
                     collector_run_id=run_id,
-                    event_type=SOURCE_HEALTH_EVENT_TRANSITION,
+                    event_type=SOURCE_HEALTH_EVENT_RUN_RECORDED,
                     reason=f"Run failed; consecutive_failures {prev_failures}→{source.consecutive_failures}.",
                     from_health_status=prev_health,
                     to_health_status=source.health_status,

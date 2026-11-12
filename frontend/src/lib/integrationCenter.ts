@@ -81,6 +81,10 @@ export interface IntegrationSourceDetail {
   source: IntegrationRow;
   runs: CollectorRunRow[];
   health_events: HealthEventRow[];
+  /** Whether run-level events (a run that changed no health state) are included. */
+  include_run_events: boolean;
+  /** Run-level events left out of health_events (0 when they are included). */
+  hidden_run_events: number;
 }
 
 export const STATE_LABEL: Record<IntegrationState, string> = {
@@ -105,8 +109,9 @@ export function getIntegrationCenter(): Promise<IntegrationCenterOverview> {
   return apiFetch<IntegrationCenterOverview>("/api/integration-center");
 }
 
-export function getIntegrationSource(sourceId: string): Promise<IntegrationSourceDetail> {
-  return apiFetch<IntegrationSourceDetail>(`/api/integration-center/sources/${encodeURIComponent(sourceId)}`);
+export function getIntegrationSource(sourceId: string, includeRunEvents = false): Promise<IntegrationSourceDetail> {
+  const qs = includeRunEvents ? "?include_run_events=true" : "";
+  return apiFetch<IntegrationSourceDetail>(`/api/integration-center/sources/${encodeURIComponent(sourceId)}${qs}`);
 }
 
 export function formatDuration(ms: number | null | undefined): string {

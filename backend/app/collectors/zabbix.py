@@ -28,6 +28,7 @@ from typing import Any
 import httpx
 
 from app.collectors.base import (
+    describe_error,
     BaseCollector,
     CollectorConfigError,
     CollectorRegistry,
@@ -190,9 +191,9 @@ class ZabbixCollector(BaseCollector):
                 return ConnectionCheck(success=False, message=f"Zabbix authentication failed: {error_msg}")
         
         except (httpx.TransportError, httpx.TimeoutException) as exc:
-            return ConnectionCheck(success=False, message=f"Could not reach Zabbix: {exc}")
+            return ConnectionCheck(success=False, message=f"Could not reach Zabbix: {describe_error(exc, self.source)}")
         except Exception as exc:
-            return ConnectionCheck(success=False, message=f"Zabbix authentication error: {exc}")
+            return ConnectionCheck(success=False, message=f"Zabbix authentication error: {describe_error(exc, self.source)}")
 
     async def collect(self) -> dict[str, Any]:
         """Collect hosts, interfaces, items, triggers, and problems from Zabbix.

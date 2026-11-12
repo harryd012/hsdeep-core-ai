@@ -68,7 +68,14 @@ const EVENT_COLUMNS: Column<HealthEventRow>[] = [
 export default function IntegrationSourcePage() {
   const id = useParams<{ id: string }>()?.id ?? "";
   const qc = useQueryClient();
-  const q = useQuery({ queryKey: ["integration-center", "source", id], queryFn: () => getIntegrationSource(id), enabled: !!id, refetchInterval: 30_000 });
+  const [runEvents, setRunEvents] = useState(false);
+  const q = useQuery({
+    queryKey: ["integration-center", "source", id, runEvents],
+    queryFn: () => getIntegrationSource(id, runEvents),
+    enabled: !!id,
+    refetchInterval: 30_000,
+    placeholderData: (prev) => prev,
+  });
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
   const d = q.data;
@@ -133,10 +140,18 @@ export default function IntegrationSourcePage() {
           emptyText="This source has not run yet." pageSize={25} />
       </Panel>
 
-      <Panel title="Health events" info="Transitions and notable events recorded by the source health state machine (last 50)."
-        aside={d ? `${d.health_events.length} events` : undefined} state={loading ? "loading" : "ready"}>
+      <Panel title="Health events"
+        info="State changes and notable events recorded by the source health state machine (last 50). Runs that changed no health state are hidden unless you include them."
+        aside={
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+            <input type="checkbox" checked={runEvents} onChange={(e) => setRunEvents(e.target.checked)} />
+            Include routine runs
+            {d && !d.include_run_events && d.hidden_run_events > 0 ? ` (${d.hidden_run_events.toLocaleString("en-US")} hidden)` : ""}
+          </label>
+        }
+        state={loading ? "loading" : "ready"}>
         <DataTable caption="Health events" columns={EVENT_COLUMNS} rows={d?.health_events ?? []} rowKey={(r) => r.id}
-          emptyText="No health event recorded for this source." />
+          emptyText={runEvents ? "No health event recorded for this source." : "No state change recorded for this source."} />
       </Panel>
     </PageShell>
   );

@@ -39,6 +39,7 @@ from typing import Any
 import httpx
 
 from app.collectors.base import (
+    describe_error,
     BaseCollector,
     CollectorConfigError,
     CollectorRegistry,
@@ -223,7 +224,7 @@ class PRTGCollector(BaseCollector):
         try:
             resp = await self._request("/api/status.json", self._auth_params(), timeout=_STATUS_TIMEOUT)
         except (httpx.TransportError, httpx.TimeoutException) as exc:
-            return ConnectionCheck(success=False, message=f"Could not reach PRTG: {exc}")
+            return ConnectionCheck(success=False, message=f"Could not reach PRTG: {describe_error(exc, self.source)}")
         if resp.status_code == 200:
             return ConnectionCheck(success=True, message="Connected to PRTG core server.")
         return ConnectionCheck(success=False, message=f"PRTG responded with HTTP {resp.status_code}.")
