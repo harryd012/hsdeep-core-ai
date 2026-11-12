@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
+from app.core import metrics as prom
 from app.core.config import get_settings
 from app.core.db import AsyncSessionLocal, engine
 from app.repositories.alert_repository import AlertRepository
@@ -168,6 +169,7 @@ async def _run_due_sources() -> None:
         # its own session below, before this session closes.
         due_ids = [(s.id, s.tenant_id) for s in due_sources if s.tenant_id in allowed_ids]
 
+    prom.observe_scheduler_tick(queue_depth=len(due_ids))
     if not due_ids:
         logger.debug("Scheduler tick: no due sources.")
         return

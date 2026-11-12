@@ -30,9 +30,11 @@ directly inside `run()` instead.
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from app.collectors.base import CollectorConfigError, CollectorRegistry
+from app.core import metrics as prom
 from app.core.security import decrypt_connection_info
 from app.models.collector_run import CollectorRun
 from app.models.monitoring_source import MonitoringSource
@@ -46,6 +48,31 @@ if TYPE_CHECKING:
     from app.services.monitoring.source_health_manager import SourceHealthManager
 
 logger = logging.getLogger(__name__)
+
+
+def _observe_phase(source_type: str, phase: str, started: float) -> None:
+    """Prometheus: one collector phase's duration. Never fails a run."""
+    try:
+        prom.observe_collector_phase(source_type, phase, time.monotonic() - started)
+    except Exception:  # noqa: BLE001 - metrics must never break collection
+        logger.debug("collector phase metric failed", exc_info=True)
+
+
+def _observe_run(source_type: str, run: CollectorRun) -> None:
+    """Prometheus: one finished run's outcome, duration and item counts."""
+    try:
+        if run.status == "skipped":
+            prom.observe_collection_skipped(source_type)
+            return
+        duration = (run.finished_at - run.started_at).total_seconds() if run.finished_at and run.started_at else 0.0
+        prom.observe_collection_run(
+            source_type=source_type, status=run.status, duration_seconds=max(duration, 0.0),
+            devices_upserted=run.devices_upserted or 0, interfaces_upserted=run.interfaces_upserted or 0,
+            sensors_upserted=run.sensors_upserted or 0, metrics_recorded=run.metrics_recorded or 0,
+            events_recorded=run.events_recorded or 0, alerts_upserted=run.alerts_upserted or 0,
+        )
+    except Exception:  # noqa: BLE001 - metrics must never break collection
+        logger.debug("collection run metric failed", exc_info=True)
 
 
 class CollectionOutcome:
@@ -136,7 +163,9 @@ class CollectionOrchestrator:
         # Metering hook (usage metering sprint): every completed run - success,
         # error, or skipped - increments the tenant's collector.run usage
         # counter. Best-effort: a metering failure must never fail the run.
-        async def _meter() -> None:
+        # The same hook records the run's Prometheus metrics (app.core.metrics).
+        async def _meter(run: CollectorRun) -> None:
+            _observe_run(source.source_type, run)
             try:
                 await count_collector_run(source.tenant_id, self.run_repo.db)
                 await flush_usage_counters(self.run_repo.db)
@@ -157,7 +186,7 @@ class CollectionOrchestrator:
                 status="skipped",
                 error="Skipped: a collection run is already in progress for this source.",
             )
-            await _meter()
+            await _meter(skipped_run)
             return CollectionOutcome(skipped_run)
 
         run_record = await self.run_repo.create(
@@ -172,7 +201,9 @@ class CollectionOrchestrator:
             connection_info = decrypt_connection_info(source)
             collector = collector_cls(connection_info)
 
+            phase_start = time.monotonic()
             check = await collector.authenticate()
+            _observe_phase(source.source_type, "authenticate", phase_start)
             if not check.success:
                 run_record = await self.run_repo.finish(
                     run_record, status="error", error=check.message
@@ -180,11 +211,15 @@ class CollectionOrchestrator:
                 events = await self._record_health(
                     source, run_success=False, error=check.message, run_id=run_record.id
                 )
-                await _meter()
+                await _meter(run_record)
                 return CollectionOutcome(run_record, recovery_events=events)
 
+            phase_start = time.monotonic()
             raw = await collector.collect()
+            _observe_phase(source.source_type, "collect", phase_start)
+            phase_start = time.monotonic()
             bundle = collector.normalize(raw)
+            _observe_phase(source.source_type, "normalize", phase_start)
             save_result = await self.saver.save(source, bundle)
 
             # alerts_upserted counts DISTINCT Alert rows touched this run -
@@ -240,7 +275,7 @@ class CollectionOrchestrator:
             events = await self._record_health(
                 source, run_success=True, error=None, run_id=run_record.id
             )
-            await _meter()
+            await _meter(run_record)
             # Post-collection WAN Failover Intelligence (detect -> trace ->
             # verify). Deliberately AFTER the run's rows are written so the
             # detector reads the state this run just produced, and deliberately
@@ -255,7 +290,7 @@ class CollectionOrchestrator:
             events = await self._record_health(
                 source, run_success=False, error=str(exc), run_id=run_record.id
             )
-            await _meter()
+            await _meter(run_record)
             # Incidents created before this vendor-side failure still commit
             # (the run row is committed too), so they must be reported - and
             # drained here so they can never leak into a later run's result.
@@ -265,7 +300,7 @@ class CollectionOrchestrator:
             events = await self._record_health(
                 source, run_success=False, error=str(exc), run_id=run_record.id
             )
-            await _meter()
+            await _meter(run_record)
             return CollectionOutcome(run_record, self.alert_service.drain_created_incidents(), events)
 
         finally:

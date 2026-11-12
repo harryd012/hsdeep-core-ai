@@ -29,6 +29,7 @@ is a breaking API change.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -36,6 +37,7 @@ from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import select
 
+from app.core import metrics as prom
 from app.models.alert import Alert
 from app.models.device import Device
 from app.models.sensor import Sensor
@@ -84,6 +86,18 @@ class AlertEvaluation:
 
 class AlertNotFound(Exception):
     pass
+
+
+logger = logging.getLogger(__name__)
+
+
+def _observe_created(alert: Alert) -> None:
+    """Prometheus: count a newly opened alert by its origin and severity.
+    Labels are low-cardinality platform values, never tenant data."""
+    try:
+        prom.observe_alert_created(source=alert.source or "unknown", severity=alert.severity or "unknown")
+    except Exception:  # noqa: BLE001 - metrics must never break alerting
+        logger.debug("alert metric failed", exc_info=True)
 
 
 class AlertService:
@@ -233,6 +247,7 @@ class AlertService:
         )
         await self._record_history(created, event_type="opened", message=f"Alert opened: {created.title}")
         await self._correlate(created)
+        _observe_created(created)
         return AlertEvaluation(alert=created, action="opened")
 
     @staticmethod
@@ -439,6 +454,7 @@ class AlertService:
         )
         await self._record_history(created, event_type="opened", message=f"Vendor-native alert opened: {created.title}")
         await self._correlate(created)
+        _observe_created(created)
         return AlertEvaluation(alert=created, action="opened")
 
     async def evaluate_baseline(
@@ -513,6 +529,7 @@ class AlertService:
         )
         await self._record_history(created, event_type="opened", message=f"Alert opened: {created.title}")
         await self._correlate(created)
+        _observe_created(created)
         return AlertEvaluation(alert=created, action="opened")
 
     # -- operator actions ----------------------------------------------------
