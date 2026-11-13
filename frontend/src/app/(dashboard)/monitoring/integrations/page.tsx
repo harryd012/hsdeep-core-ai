@@ -27,6 +27,7 @@ import {
   titleCaseWords,
   type Column,
 } from "@/components/ui/PageKit";
+import { IntegrationCatalog } from "@/components/integration-center/IntegrationCatalog";
 
 /**
  * /monitoring/integrations — Integration Center (observability plan P12):
@@ -34,6 +35,7 @@ import {
  * was recorded, last success, 24 h collector runs and what each one feeds.
  */
 
+type View = "connected" | "catalog";
 type Filter = "all" | "attention" | IntegrationState;
 const ATTENTION: IntegrationState[] = ["failing", "degraded", "stale"];
 
@@ -75,6 +77,7 @@ const COLUMNS: Column<IntegrationRow>[] = [
 
 export default function IntegrationCenterPage() {
   const q = useQuery({ queryKey: ["integration-center"], queryFn: getIntegrationCenter, refetchInterval: 30_000 });
+  const [view, setView] = useState<View>("connected");
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   const d = q.data;
@@ -120,6 +123,17 @@ export default function IntegrationCenterPage() {
           info="Recorded collector runs of all sources in the last 24 hours." loading={loading} />
       </StatStrip>
 
+      <Tabs<View>
+        label="Integration Center view"
+        value={view}
+        onChange={setView}
+        tabs={[
+          { key: "connected", label: "Connected", count: items.length },
+          { key: "catalog", label: "Available integrations" },
+        ]}
+      />
+
+      {view === "catalog" ? <IntegrationCatalog /> : (
       <Panel title="Integrations" info="Worst state first. Open a source for its sync history and to sync it now."
         aside={d ? `${visible.length} of ${items.length}` : undefined} state={loading ? "loading" : "ready"} skeletonHeight={320}>
         <div className="pk-toolbar" style={{ marginBottom: 10 }}>
@@ -147,6 +161,7 @@ export default function IntegrationCenterPage() {
           maxHeight="max(480px, calc(100vh - 320px))"
         />
       </Panel>
+      )}
     </PageShell>
   );
 }

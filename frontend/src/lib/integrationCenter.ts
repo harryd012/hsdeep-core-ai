@@ -158,3 +158,40 @@ export function formatDuration(ms: number | null | undefined): string {
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
   return `${Math.round(ms / 60_000)} min`;
 }
+
+// -- catalogue (P12 slice 2c) ------------------------------------------------
+
+export type CatalogKind = "collector" | "itsm" | "action";
+
+export interface CatalogAction {
+  action: string;
+  /** READ_ONLY · LOW_RISK · CHANGE_REQUIRING_APPROVAL · HIGH_RISK · DESTRUCTIVE */
+  classification: string;
+  description: string;
+}
+
+export interface CatalogEntry {
+  kind: CatalogKind;
+  type: string;
+  display_name: string;
+  category: string;
+  /** False for a registry entry with no code behind it yet (shown as planned). */
+  implemented: boolean;
+  capabilities: ("collect" | "tickets" | "actions")[];
+  features: string[];
+  auth_modes: string[];
+  /** Field names only; values are never returned. */
+  required_config: string[];
+  actions: CatalogAction[];
+  /** How many this tenant has configured; null for action providers (they run on devices). */
+  configured: number | null;
+}
+
+export interface IntegrationCatalog {
+  summary: { total: number; collectors: number; itsm: number; actions: number; implemented: number; configured_types: number };
+  items: CatalogEntry[];
+}
+
+export function getIntegrationCatalog(): Promise<IntegrationCatalog> {
+  return apiFetch<IntegrationCatalog>("/api/integration-center/catalog");
+}

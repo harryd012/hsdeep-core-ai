@@ -249,3 +249,65 @@ def test_stale_rule_has_a_floor():
     assert source_state(src, NOW) == "stale"
     src.poll_interval_seconds = 600
     assert source_state(src, NOW) == "healthy"  # 3 polls = 30 min
+
+
+async def test_integration_catalog_lists_every_registered_type(db, tenant, monitoring_source_factory):
+    """Slice 2c: one catalogue from CollectorRegistry, the ITSM ProviderRegistry and
+    ActionProviderRegistry; field names only, counts per tenant."""
+    from app.actions.base import ActionProviderRegistry
+    from app.collectors.base import CollectorRegistry
+    from app.models.itsm import ITSMConnection
+    from app.models.servicenow import ServiceNowConnection
+    from app.services.itsm.provider_registry import BUILTIN_PROVIDERS
+    from app.services.monitoring.integration_catalog import COLLECTOR_REQUIRED_CONFIG
+
+    t = tenant.id
+    await monitoring_source_factory(name="prtg-1", source_type="prtg", password_encrypted="gAAAA-pw")
+    await monitoring_source_factory(name="prtg-2", source_type="prtg")
+    await monitoring_source_factory(name="snmp-1", source_type="snmp")
+    await monitoring_source_factory(name="gone", source_type="snmp", is_deleted=True)
+    db.add(ServiceNowConnection(tenant_id=t, name="sn", instance_url="https://sn.service-now.com",
+                                password_encrypted="gAAAA-sn"))
+    db.add(ITSMConnection(tenant_id=t, provider_type="servicenow", name="sn2", instance_url="https://sn2.service-now.com"))
+    db.add(ITSMConnection(tenant_id=t, provider_type="jira", name="j", instance_url="https://j.atlassian.net"))
+    await db.commit()
+
+    collector_types = {c.source_type for c in CollectorRegistry.list_types() if not c.source_type.startswith("test_")}
+    # Every registered collector says what it needs.
+    assert collector_types <= set(COLLECTOR_REQUIRED_CONFIG)
+
+    async with _client(t) as client:
+        r = await client.get("/api/integration-center/catalog")
+        assert r.status_code == 200
+        body = r.json()
+        items = {(e["kind"], e["type"]): e for e in body["items"]}
+        assert {ty for k, ty in items if k == "collector"} == collector_types
+        assert {ty for k, ty in items if k == "itsm"} == {p["provider_type"] for p in BUILTIN_PROVIDERS}
+        assert {ty for k, ty in items if k == "action"} == set(ActionProviderRegistry.list_kinds())
+        assert not [ty for _, ty in items if ty.startswith("test_")]
+        assert body["summary"]["total"] == len(items)
+
+        prtg = items[("collector", "prtg")]
+        assert (prtg["capabilities"], prtg["configured"], prtg["required_config"]) == (
+            ["collect"], 2, ["hostname", "username", "password"])
+        assert items[("collector", "snmp")]["configured"] == 1
+        assert items[("collector", "aws")]["configured"] == 0
+
+        sn = items[("itsm", "servicenow")]
+        assert (sn["implemented"], sn["configured"], sn["capabilities"]) == (True, 2, ["tickets"])
+        assert sn["required_config"][0] == "instance_url" and "webhooks" in sn["features"]
+        jira = items[("itsm", "jira")]
+        assert (jira["implemented"], jira["configured"]) == (False, 1)  # registry entry without code
+
+        icmp = items[("action", "icmp")]
+        assert icmp["configured"] is None and {a["action"] for a in icmp["actions"]} == {"PING", "HEALTH_CHECK"}
+        assert {a["classification"] for a in items[("action", "vendor:prtg")]["actions"]} >= {"READ_ONLY"}
+
+        # Field names only: no stored value leaves the API.
+        assert "gAAAA" not in r.text
+
+    async with _client(uuid.uuid4()) as client:
+        other = (await client.get("/api/integration-center/catalog")).json()
+        assert all(not e["configured"] for e in other["items"])
+    async with _client(t, permissions=frozenset()) as client:
+        assert (await client.get("/api/integration-center/catalog")).status_code == 403

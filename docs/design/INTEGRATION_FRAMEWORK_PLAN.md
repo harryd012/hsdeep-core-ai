@@ -1,7 +1,7 @@
 # Integration framework: P12 slice 2 plan
 
-Status: **approved 2026-11-12**. Clean-up, step 2a and step 2b **implemented and tested** (see §5);
-2c planned.
+Status: **approved 2026-11-12**. Clean-up and steps 2a, 2b and 2c **implemented and tested**
+(see §5).
 
 Replaces the uncommitted "Universal Integration Registry – Phase 2" draft found on
 `feat/observability` (`backend/app/services/integration/`,
@@ -177,3 +177,29 @@ tenant-scoped), so the Integration Center keeps `monitoring.read` for everything
 - Browser: the list page and the new route load against the dev tenant (an unknown connection
   shows its "not found" banner). The dev tenant has no ITSM connection, so a populated ITSM page
   is covered by the test above but has not been seen in the browser.
+
+### 2c — implemented and tested (2026-11-12)
+- `app/services/monitoring/integration_catalog.py`: one list, built at request time from
+  `CollectorRegistry` (capability `collect`), the ITSM `ProviderRegistry` (`tickets`, falling back
+  to `BUILTIN_PROVIDERS` because nothing initialises the registry at startup) and
+  `ActionProviderRegistry` (`actions`, each action with its `ACTION_CATALOG` risk class).
+  Synthetic `test_*` collectors are left out.
+- Required configuration is given by field name only. Collectors have no declared field list, so
+  `COLLECTOR_REQUIRED_CONFIG` records what each `_require_config` checks. The test fails when a
+  registered collector has no entry. ITSM entries list `instance_url` plus the fields of each auth
+  mode.
+- A finding during the build: the ITSM registry lists Jira and Freshservice, but their
+  `class_path` modules don't exist. An ITSM entry is `implemented` only when its class imports,
+  so these two show as "Planned". Existing Jira rows in `itsm_connections` are still counted.
+- Counts per tenant: monitoring sources by `source_type`; ITSM connections by provider
+  (`servicenow_connections` plus `itsm_connections`). Action providers have no count (`null`),
+  because they run on the devices of configured sources.
+- `GET /api/integration-center/catalog`, `monitoring.read`, read-only.
+- UI: a "Connected / Available integrations" switch on `/monitoring/integrations`. The catalogue
+  table shows what each type does, its status, what it provides, what it needs and how many are
+  configured, with Collect / Tickets / Actions filters
+  (`components/integration-center/IntegrationCatalog.tsx`).
+- Tests: `test_integration_catalog_lists_every_registered_type` in
+  `tests/test_integration_center.py`. It checks that every registered type appears, test
+  collectors are left out, counts are per tenant, Jira shows as not implemented, no stored value
+  leaks, and RBAC is enforced.
