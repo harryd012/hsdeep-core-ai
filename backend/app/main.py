@@ -156,9 +156,16 @@ async def lifespan(app: FastAPI):
             settings.runtime_mode,
         )
 
+    # Short in-memory history of this process's own metrics, so the Platform
+    # Observability charts have data even when Prometheus is not running.
+    from app.services.platform_metrics_history import run_sampler
+
+    metrics_sampler = asyncio.create_task(run_sampler(), name="platform-metrics-sampler")
+
     yield  # ----- application runs -----
 
     logger.info("Stopping %s", settings.app_name)
+    metrics_sampler.cancel()
     stop_scheduler(app)
     # Phase 9A: unregister RCA handlers and drain/stop the event bus inside a
     # bounded budget. Idempotent, and safe when RCA was never wired.

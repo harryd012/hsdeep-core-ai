@@ -18,6 +18,7 @@ from app.core.auth import Principal, require_admin
 from app.core.config import get_settings
 from app.services.platform_metrics_summary import build_summary
 from app.services.platform_health import evaluate, fetch_alert_rules
+from app.services.platform_metrics_history import history_timeseries
 from app.services.platform_timeseries import DEFAULT_RANGE, RANGES, fetch_timeseries
 from app.services.prometheus_targets import fetch_targets
 
@@ -58,7 +59,14 @@ async def platform_timeseries(
     range_key: str = Query(DEFAULT_RANGE, alias="range", pattern="^(" + "|".join(RANGES) + ")$"),
     _: Principal = Depends(require_admin),
 ) -> dict[str, Any]:
-    """The fixed platform metric catalogue over 1h / 6h / 24h / 7d, from
-    Prometheus, for the page's native charts. The browser picks a range,
-    never a query."""
-    return await fetch_timeseries(get_settings().prometheus_url, range_key)
+    """The fixed platform metric catalogue over 1h / 6h / 24h / 7d for the
+    native charts: from Prometheus (``source: "prometheus"``, every process)
+    or, when it is unavailable, from this process's in-memory history
+    (``source: "process"``). The browser picks a range, never a query."""
+    result = await fetch_timeseries(get_settings().prometheus_url, range_key)
+    if result["reachable"]:
+        return {**result, "source": "prometheus"}
+    # Prometheus is not configured or not answering: fall back to this
+    # process's own short history so the charts are not empty, and say so.
+    return {**history_timeseries(range_key), "prometheus_configured": result["configured"],
+            "prometheus_error": result["error"]}

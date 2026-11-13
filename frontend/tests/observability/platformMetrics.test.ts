@@ -82,3 +82,27 @@ test("timeseries formatting and grafana dashboard links", async () => {
   ]);
   assert.deepEqual(counts.map((c) => c.count), [1, 0, 0, 0, 1]);
 });
+
+test("timeseriesSourceNote says where chart data came from", async () => {
+  const { timeseriesSourceNote } = await import("../../src/lib/observability/platformMetrics.ts");
+  assert.equal(timeseriesSourceNote({ source: "prometheus" }), "From Prometheus, every scraped process");
+  assert.equal(timeseriesSourceNote({}), "From Prometheus, every scraped process");
+  const down = timeseriesSourceNote({ source: "process", history_seconds: 3600, prometheus_configured: true });
+  assert.match(down, /Prometheus is not answering/);
+  assert.match(down, /in-memory history/);
+  const unset = timeseriesSourceNote({ source: "process", history_seconds: null, prometheus_configured: false });
+  assert.match(unset, /Prometheus is not configured/);
+  assert.match(unset, /no samples yet/);
+});
+
+test("latestPoint returns the newest value or null, never 0 for no data", async () => {
+  const { latestPoint } = await import("../../src/lib/observability/platformMetrics.ts");
+  const series = {
+    key: "http_latency", label: "API latency", unit: "seconds" as const, group: "http" as const, error: null,
+    lines: [{ name: "p95", points: [[1, 0.2], [2, 0.4]] as [number, number][] }, { name: "p50", points: [] }],
+  };
+  assert.equal(latestPoint(series, "p95"), 0.4);
+  assert.equal(latestPoint(series, "p50"), null);
+  assert.equal(latestPoint(series), null);
+  assert.equal(latestPoint(undefined), null);
+});

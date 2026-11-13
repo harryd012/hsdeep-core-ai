@@ -284,6 +284,26 @@ export interface Timeseries {
   step_seconds: number;
   checked_at: string;
   series: TimeseriesSeries[];
+  /** "prometheus" = every scraped process; "process" = this backend's own in-memory history. */
+  source?: "prometheus" | "process";
+  /** Seconds of history the in-memory fallback holds (source "process" only). */
+  history_seconds?: number | null;
+  prometheus_configured?: boolean;
+  prometheus_error?: string | null;
+}
+
+/** One line saying where the charts' data came from, and its limits. */
+export function timeseriesSourceNote(t: Pick<Timeseries, "source" | "history_seconds" | "prometheus_configured">): string {
+  if (t.source !== "process") return "From Prometheus, every scraped process";
+  const why = t.prometheus_configured ? "Prometheus is not answering" : "Prometheus is not configured";
+  const held = t.history_seconds == null ? "no samples yet" : `${formatUptime(t.history_seconds)} of history`;
+  return `${why}: showing this backend process's own in-memory history (${held}, at most 24 h, reset on restart)`;
+}
+
+/** Latest value of a series line, or null when it has no points. */
+export function latestPoint(series: TimeseriesSeries | undefined, line = "total"): number | null {
+  const points = series?.lines.find((l) => l.name === line)?.points;
+  return points && points.length ? points[points.length - 1][1] : null;
 }
 
 /** Axis / legend formatter for a series unit. */
