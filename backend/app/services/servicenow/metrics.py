@@ -37,44 +37,42 @@ logger = logging.getLogger(__name__)
 push_latency_seconds = Histogram(
     "servicenow_push_latency_seconds",
     "Time spent for a ServiceNow incident push operation (API call + DB commit)",
-    ["connection_id"],
     buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
 )
 
 pull_latency_seconds = Histogram(
     "servicenow_pull_latency_seconds",
     "Time spent for a ServiceNow pull tick operation",
-    ["connection_id"],
     buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
 )
 
 webhook_latency_seconds = Histogram(
     "servicenow_webhook_latency_seconds",
     "Time spent for ServiceNow webhook processing (signature verify + DB)",
-    ["connection_id"],
     buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
 )
 
 # ---------------------------------------------------------------------------
-# Counters — labeled by connection and category where applicable
+# Counters — labeled by category where applicable. Never by connection_id:
+# that is a per-tenant identifier, and platform metrics carry no tenant labels
 # ---------------------------------------------------------------------------
 
 retry_total = Counter(
     "servicenow_retry_total",
     "Number of retry attempts per error category",
-    ["connection_id", "category"],
+    ["category"],
 )
 
 conflict_total = Counter(
     "servicenow_conflict_total",
     "Number of bidirectional conflicts detected",
-    ["connection_id", "resolution_type"],  # ours | servicenow | manual | auto_merge
+    ["resolution_type"],  # ours | servicenow | manual | auto_merge
 )
 
 failed_sync_total = Counter(
     "servicenow_failed_sync_total",
     "Number of sync jobs that reached dead letter state (permanently failed)",
-    ["job_type", "connection_id"],
+    ["job_type"],
 )
 
 queue_depth = Gauge(
@@ -118,7 +116,8 @@ def update_connection_health(connection_id: uuid.UUID, is_healthy: bool) -> None
 
 
 # ---------------------------------------------------------------------------
-# Latency context managers — attach to _seconds label where applicable
+# Latency context managers. ``connection_id`` is accepted for call-site
+# compatibility but is NOT a label (it identifies a tenant's connection).
 # ---------------------------------------------------------------------------
 
 @contextmanager
@@ -127,7 +126,7 @@ def measure_push_latency(connection_id: uuid.UUID):
     start = time.time()
     yield
     elapsed = time.time() - start
-    push_latency_seconds.labels(connection_id=str(connection_id)).observe(elapsed)
+    push_latency_seconds.observe(elapsed)
 
 
 @contextmanager
@@ -136,7 +135,7 @@ def measure_pull_latency(connection_id: uuid.UUID):
     start = time.time()
     yield
     elapsed = time.time() - start
-    pull_latency_seconds.labels(connection_id=str(connection_id)).observe(elapsed)
+    pull_latency_seconds.observe(elapsed)
 
 
 @contextmanager
@@ -145,4 +144,4 @@ def measure_webhook_latency(connection_id: uuid.UUID):
     start = time.time()
     yield
     elapsed = time.time() - start
-    webhook_latency_seconds.labels(connection_id=str(connection_id)).observe(elapsed)
+    webhook_latency_seconds.observe(elapsed)

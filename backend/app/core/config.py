@@ -50,6 +50,17 @@ class Settings(BaseSettings):
     # `Authorization: Bearer <token>`. When unset, /metrics is open outside
     # production and answers 404 in production (not published by default).
     metrics_bearer_token: str = ""
+    # Base URL of the platform Prometheus (deployment/observability), read
+    # server-side only by GET /api/platform/observability/prometheus to show
+    # scrape-target health on the superuser Platform Observability page.
+    # "" = not configured. Never exposed to the browser.
+    prometheus_url: str = ""
+    # Server-side health checks for the platform page (GET /api/health on
+    # Grafana; GET /-/healthy on Alertmanager). Internal URLs, never sent to
+    # the browser; "" = not configured. The browser's Grafana link is the
+    # separate NEXT_PUBLIC_GRAFANA_URL.
+    grafana_url: str = ""
+    alertmanager_url: str = ""
     # POST /api/billing/signup. Off for an invite-only pilot: tenants are then
     # created by an operator (scripts/seed_admin.py), never by the public.
     public_signup_enabled: bool = True
@@ -131,6 +142,9 @@ class Settings(BaseSettings):
     # how long a revoked session's access token can still be used on another
     # process. 0 checks the database on every request.
     session_check_cache_seconds: int = 10
+    # How long the Command Center overview reuses a Redis/Ollama reachability
+    # probe. 0 probes on every request.
+    dependency_probe_cache_seconds: int = 15
     # Break-glass support access (R1.2): longest grant a superuser may open
     # on another tenant, and the default when none is requested.
     support_grant_max_minutes: int = 480
@@ -209,6 +223,14 @@ class Settings(BaseSettings):
     # guarantees a single owner per tick across replicas; this setting stops API
     # replicas from even attempting it.
     runtime_mode: str = "all"
+    # Event transport (R2): "memory" keeps events in the publishing process
+    # (single-process development); "redis" carries them over a Redis stream
+    # so the API and a separate worker share them. Split runtime roles in
+    # production require "redis".
+    event_transport: str = "memory"
+    event_stream_maxlen: int = 100_000
+    event_claim_idle_seconds: int = 30
+    event_max_deliveries: int = 5
 
     # Bounded shutdown drain budget (seconds) for queued background work, so a
     # slow/hung handler can never block a rolling deploy indefinitely.
@@ -340,11 +362,18 @@ class Settings(BaseSettings):
                 f"LOG_FORMAT={self.log_format!r} is not one of "
                 f"{', '.join(self.VALID_LOG_FORMATS)}."
             )
+        if self.event_transport not in ("memory", "redis"):
+            problems.append(f"EVENT_TRANSPORT={self.event_transport!r} is not one of memory, redis.")
 
         if self.app_env != "production":
             return problems
 
         # --- production-only contract (Phase 9A) --------------------------
+        if self.runtime_mode in ("api", "worker", "scheduler") and self.event_transport != "redis":
+            problems.append(
+                f"RUNTIME_MODE={self.runtime_mode} with EVENT_TRANSPORT={self.event_transport}: in a split "
+                "deployment events raised in the API never reach the worker. Set EVENT_TRANSPORT=redis."
+            )
         if self.email_transport == "log":
             problems.append(
                 "EMAIL_TRANSPORT=log only logs messages; in production password "

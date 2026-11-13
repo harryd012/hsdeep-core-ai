@@ -1,5 +1,5 @@
 import {
-  Activity, ArrowLeftRight, Bell, BookOpen, Bot, Building2, CreditCard, Database, DatabaseBackup, LayoutDashboard,
+  Activity, ArrowLeftRight, Bell, BookOpen, Bot, Building2, CreditCard, Database, DatabaseBackup, Gauge, LayoutDashboard,
   LayoutGrid, LayoutPanelLeft, LifeBuoy, Network, ScrollText, Server, Settings, Shield, Ticket, TriangleAlert, Waypoints, Workflow, type LucideIcon,
 } from "lucide-react";
 
@@ -39,6 +39,8 @@ export interface NavGroup {
   description: string;
   children?: NavChild[];
   permission?: string;
+  /** Platform internals (not tenant data): shown to platform superusers only. */
+  superuserOnly?: boolean;
 }
 
 export const NAV_CONFIG: NavGroup[] = [
@@ -61,8 +63,13 @@ export const NAV_CONFIG: NavGroup[] = [
     description: "Interface health and load, errors and VPN tunnels" },
   { id: "logs", label: "Logs", icon: ScrollText, route: "/logs", section: "Observe", permission: "monitoring.read",
     description: "Search syslog and collector log lines" },
-  { id: "traces", label: "Traces", icon: Waypoints, route: "/traces", section: "Observe", permission: "monitoring.read",
-    description: "Distributed traces from OpenTelemetry: services and dependencies" },
+  { id: "apm", label: "APM", icon: Waypoints, route: "/apm", section: "Observe", permission: "monitoring.read",
+    description: "Application performance from OpenTelemetry traces: services, errors and traces",
+    children: [
+      { label: "Services", route: "/apm", keywords: "latency throughput error rate p95 apm" },
+      { label: "Errors", route: "/apm/errors", keywords: "exceptions failures" },
+      { label: "Traces", route: "/traces", keywords: "distributed tracing waterfall opentelemetry" },
+    ] },
   { id: "alerts", label: "Alerts", icon: Bell, route: "/alerts", section: "Observe", permission: "alerts.read",
     description: "Alerts from every connected source" },
   { id: "reports", label: "Reports", icon: Database, route: "/reports", section: "Observe", permission: "dashboard.read",
@@ -137,6 +144,7 @@ export const NAV_CONFIG: NavGroup[] = [
       { label: "SOC Dashboard", route: "/soc-analysis" },
       { label: "Analyst Roster", route: "/soc-analyst-roster" },
       { label: "Firewall Diagnostic", route: "/firewall-diagnostic", keywords: "palo alto runbook rca diagnostic" },
+      { label: "SOC Playbooks", route: "/soc-playbooks", keywords: "sop firewall fortigate ips ids compromise brute force threat playbook" },
     ] },
 
   // -- Automation & AI --------------------------------------------------------------
@@ -167,13 +175,23 @@ export const NAV_CONFIG: NavGroup[] = [
       { label: "API Keys", route: "/settings/api-keys", keywords: "tokens" },
       { label: "Customers (Admin)", route: "/admin/customers", keywords: "tenants msp" },
     ] },
+  { id: "platform-observability", label: "Platform Observability", icon: Gauge, route: "/observability", section: "Manage", superuserOnly: true,
+    description: "Health of the HSDEEP platform itself: services, performance, Prometheus targets, alert rules, Grafana",
+    children: [
+      { label: "Platform Health", route: "/observability#health", keywords: "status healthy degraded critical database redis" },
+      { label: "Application Performance", route: "/observability#performance", keywords: "latency p95 requests errors red" },
+      { label: "Scrape Targets", route: "/observability#targets", keywords: "prometheus up down worker scheduler" },
+      { label: "Alert Rules", route: "/observability#alerts", keywords: "prometheus alerts firing pending" },
+      { label: "Grafana Dashboards", route: "/observability#grafana", keywords: "grafana dashboards" },
+      { label: "Plan & Metrics", route: "/observability#plan", keywords: "metric catalogue references roadmap" },
+    ] },
 ];
 
 /** Groups the signed-in user may see. While the session resolves nothing is hidden. */
 export function visibleNav(user: { is_superuser: boolean; permissions: string[] } | null | undefined): NavGroup[] {
   if (!user || user.is_superuser) return NAV_CONFIG;
   const granted = new Set(user.permissions);
-  return NAV_CONFIG.filter((g) => !g.permission || granted.has(g.permission));
+  return NAV_CONFIG.filter((g) => !g.superuserOnly && (!g.permission || granted.has(g.permission)));
 }
 
 export interface LauncherEntry {

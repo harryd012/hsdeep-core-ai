@@ -1,0 +1,142 @@
+# promtool unit tests for the HSDEEP alert rules:
+#   promtool test rules deployment/observability/prometheus/rules-tests/hsdeep-alerts.test.yml
+# Lives outside rules/ so Prometheus never loads it as a rule file.
+rule_files:
+  - ../rules/hsdeep-recording.yml
+  - ../rules/hsdeep-api-alerts.yml
+  - ../rules/hsdeep-collector-alerts.yml
+  - ../rules/hsdeep-scheduler-alerts.yml
+
+evaluation_interval: 30s
+
+tests:
+  # API down: fires after 2 m of failed scrapes, not before.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="hsdeep-backend", component="all", instance="host:8000"}'
+        values: "1 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: HsdeepApiTargetDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: HsdeepApiTargetDown
+        exp_alerts:
+          - exp_labels: { severity: critical, team: platform, job: hsdeep-backend, component: all, instance: "host:8000" }
+            exp_annotations:
+              summary: "HSDEEP API process host:8000 is not answering scrapes"
+              description: "Prometheus could not scrape /metrics on host:8000 (component all) for 2 minutes. The API may be down, unreachable, or rejecting the metrics token."
+              runbook_url: "deployment/observability/README.md#hsdeepapitargetdown"
+
+  # 5xx ratio of 1/11 (~9 %) at 11 req/s: fires after 10 m.
+  - interval: 1m
+    input_series:
+      - series: 'hsdeep_http_requests_total{component="api", method="GET", route="/api/x", status="200"}'
+        values: "0+600x30"
+      - series: 'hsdeep_http_requests_total{component="api", method="GET", route="/api/x", status="500"}'
+        values: "0+60x30"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: HsdeepApiErrorRateHigh
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: HsdeepApiErrorRateHigh
+        exp_alerts:
+          - exp_labels: { severity: warning, team: platform, component: api }
+            exp_annotations:
+              summary: "HSDEEP API 5xx ratio is 9.091% (api)"
+              description: "More than 5% of API requests on api have ended in a 5xx or an unhandled exception for 10 minutes."
+              runbook_url: "deployment/observability/README.md#hsdeepapierrorratehigh"
+
+  # The same error ratio on an idle system (one request every 10 min) must not fire.
+  - interval: 1m
+    input_series:
+      - series: 'hsdeep_http_requests_total{component="api", method="GET", route="/api/x", status="500"}'
+        values: "0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2 2 2 2 3"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: HsdeepApiErrorRateHigh
+        exp_alerts: []
+
+  # Collector failures: 1 of 2 PRTG runs failing (50 %) at 0.1 runs/s.
+  - interval: 1m
+    input_series:
+      - series: 'hsdeep_collection_run_total{component="worker", source_type="prtg", status="success"}'
+        values: "0+3x60"
+      - series: 'hsdeep_collection_run_total{component="worker", source_type="prtg", status="error"}'
+        values: "0+3x60"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: HsdeepCollectorFailureRatioHigh
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: HsdeepCollectorFailureRatioHigh
+        exp_alerts:
+          - exp_labels: { severity: warning, team: platform, component: worker, source_type: prtg }
+            exp_annotations:
+              summary: "prtg collections failing: 50%"
+              description: "More than 20% of prtg collection runs on worker have failed over 15 minutes. hsdeep_collection_failures_total shows which stage (authenticate / collect / normalize / persist) is failing."
+              runbook_url: "deployment/observability/README.md#hsdeepcollectorfailureratiohigh"
+
+  # Scheduler: the newest tick across processes decides; one process ticking is enough.
+  - interval: 1m
+    input_series:
+      # Ticked once at t=60 s, then stopped.
+      - series: 'hsdeep_scheduler_last_tick_timestamp_seconds{component="worker", instance="w:8001"}'
+        values: "60x20"
+      # A second scheduler-capable process that never ticks (lost the lock).
+      - series: 'hsdeep_scheduler_last_tick_timestamp_seconds{component="scheduler", instance="s:8002"}'
+        values: "0x20"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: HsdeepSchedulerTickStale
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: HsdeepSchedulerTickStale
+        exp_alerts:
+          - exp_labels: { severity: critical, team: platform }
+            exp_annotations:
+              summary: "No HSDEEP scheduler tick for 11m 0s"
+              description: "No process has completed a scheduler tick for over 5 minutes, so due collections are not starting."
+              runbook_url: "deployment/observability/README.md#hsdeepschedulertickstale"
+      # One process has ticked, so this is not "never ticked".
+      - eval_time: 20m
+        alertname: HsdeepSchedulerNeverTicked
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'hsdeep_scheduler_last_tick_timestamp_seconds{component="all", instance="h:8000"}'
+        values: "0x20"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HsdeepSchedulerNeverTicked
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: HsdeepSchedulerNeverTicked
+        exp_alerts:
+          - exp_labels: { severity: warning, team: platform }
+            exp_annotations:
+              summary: "HSDEEP scheduler has not ticked since its processes started"
+              description: "Processes that run the scheduler are being scraped, but none has completed a tick in 15 minutes."
+              runbook_url: "deployment/observability/README.md#hsdeepschedulerneverticked"
+
+  # Database down for 2 m fires; Redis needs 10 m.
+  - interval: 1m
+    input_series:
+      - series: 'hsdeep_dependency_up{component="api", instance="a:8000", dependency="database"}'
+        values: "1 0 0 0 0"
+      - series: 'hsdeep_dependency_up{component="api", instance="a:8000", dependency="redis"}'
+        values: "0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: HsdeepDatabaseUnreachable
+        exp_alerts:
+          - exp_labels: { severity: critical, team: platform, component: api, instance: "a:8000", dependency: database }
+            exp_annotations:
+              summary: "HSDEEP api cannot reach PostgreSQL"
+              description: "The /health check on a:8000 has reported the database down for 2 minutes."
+              runbook_url: "deployment/observability/README.md#hsdeepdatabaseunreachable"
+      - eval_time: 4m
+        alertname: HsdeepRedisUnreachable
+        exp_alerts: []

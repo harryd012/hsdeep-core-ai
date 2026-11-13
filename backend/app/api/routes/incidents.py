@@ -12,7 +12,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from app.core.auth import get_actor_user_id, get_tenant_id, require_permission
+from app.core.auth import Principal, get_actor_user_id, get_tenant_id, require_permission
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -25,6 +25,13 @@ from app.repositories.maintenance_window_repository import MaintenanceWindowRepo
 from app.repositories.site_repository import SiteRepository
 from app.schemas.incident import IncidentDetailOut, IncidentOut, IncidentSeverity, IncidentStatus, RecoveryCheckOut
 from app.schemas.priority import Priority, PrioritizedIncidentOut
+from app.schemas.sop import IncidentSOPRecommendationOut, SOPRecommendationDecisionIn, SOPRecommendationDecisionOut
+from app.services.audit_service import AuditService
+from app.services.sop.incident_recommendations import (
+    IncidentSOPRecommendations,
+    RecommendationIncidentNotFound,
+    SOPNotRecommended,
+)
 from app.services.collector_health_service import CollectorHealthService
 from app.services.incident_service import IncidentNotFound, IncidentService
 from app.services.recovery_check import RecoveryIncidentNotFound, check_incident_recovery
@@ -307,6 +314,75 @@ async def get_recovery_check(
     except RecoveryIncidentNotFound as exc:
         raise HTTPException(status_code=404, detail="Incident not found") from exc
     return RecoveryCheckOut.model_validate(result, from_attributes=True)
+
+
+# ---------------------------------------------------------------------------
+# SOP recommendations
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/{incident_id}/sop-recommendations",
+    response_model=list[IncidentSOPRecommendationOut],
+    dependencies=[Depends(require_permission("incidents.read")), Depends(require_permission("sops.read"))],
+)
+async def list_sop_recommendations(
+    incident_id: uuid.UUID,
+    limit: int = Query(3, ge=1, le=10),
+    min_confidence: float = Query(30.0, ge=0.0, le=100.0),
+    include_dismissed: bool = Query(False),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Approved SOPs that match this incident, best first, with the answer an
+    operator recorded for each. Dismissed SOPs are left out unless
+    `include_dismissed`. Read-only: nothing is executed."""
+    try:
+        return await IncidentSOPRecommendations(db).list(
+            tenant_id, incident_id, limit=limit, min_confidence=min_confidence, include_dismissed=include_dismissed
+        )
+    except RecommendationIncidentNotFound as exc:
+        raise HTTPException(status_code=404, detail="Incident not found") from exc
+
+
+@router.post(
+    "/{incident_id}/sop-recommendations/{sop_id}/decision",
+    response_model=SOPRecommendationDecisionOut,
+    dependencies=[Depends(require_permission("sops.read")), _active_sub_guard],
+)
+async def decide_sop_recommendation(
+    incident_id: uuid.UUID,
+    sop_id: uuid.UUID,
+    body: SOPRecommendationDecisionIn,
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    principal: Principal = Depends(require_permission("incidents.write")),
+    actor_id: uuid.UUID | None = Depends(get_actor_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Accept or dismiss one recommended SOP for this incident. Repeating the
+    same answer changes nothing; a changed answer replaces the old one and is
+    audited. Accepting records the choice only - it starts no runbook."""
+    try:
+        row, old, new = await IncidentSOPRecommendations(db).decide(
+            tenant_id, incident_id, sop_id, decision=body.decision, reason=body.reason, actor_id=actor_id
+        )
+    except RecommendationIncidentNotFound as exc:
+        raise HTTPException(status_code=404, detail="Incident not found") from exc
+    except SOPNotRecommended as exc:
+        raise HTTPException(status_code=404, detail="This SOP is not recommended for the incident") from exc
+    if new:
+        await AuditService(db).record_entity(
+            tenant_id=tenant_id,
+            action=f"sop_recommendation.{body.decision}",
+            entity_type="incident",
+            entity_id=incident_id,
+            actor_id=actor_id,
+            actor_email=principal.email,
+            description=f"SOP {sop_id} {body.decision} for incident {incident_id}",
+            old_values=old or None,
+            new_values={**new, "sop_id": str(sop_id)},
+        )
+        await db.commit()
+    return SOPRecommendationDecisionOut.model_validate(row)
 
 
 # ---------------------------------------------------------------------------

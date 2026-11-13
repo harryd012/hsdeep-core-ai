@@ -82,14 +82,26 @@ class DomainEvent:
 EventHandler = Callable[[DomainEvent], Awaitable[None]]
 
 
+def handler_name(handler: EventHandler) -> str:
+    """Stable name for idempotency records (module + qualified name)."""
+    return f"{getattr(handler, '__module__', '?')}.{getattr(handler, '__qualname__', repr(handler))}"
+
+
 class EventBus:
-    """In-memory async event bus with fan-out to multiple handlers.
-    
-    Designed for single-process deployments. For multi-process/multi-node,
-    replace with Redis pub/sub or similar - the handler interface stays the same.
+    """Async event bus with fan-out to multiple handlers.
+
+    Without a transport, events stay in this process (single-process
+    deployments, local development). With a transport (Redis Streams, R2,
+    ``EVENT_TRANSPORT=redis``) every publish goes to the shared stream and the
+    processes that run consumers handle it, so an event raised in the API
+    process reaches a separately deployed worker. The handler interface is the
+    same either way.
     """
-    
-    def __init__(self):
+
+    def __init__(self, transport=None):
+        self.transport = transport
+        self._consumer_task: Optional[asyncio.Task] = None
+        self._consumer_stop: Optional[asyncio.Event] = None
         self._handlers: Dict[EventType, List[EventHandler]] = {}
         self._all_handlers: List[EventHandler] = []
         self._queue: asyncio.Queue[DomainEvent] = asyncio.Queue()
@@ -100,13 +112,13 @@ class EventBus:
             "processed": 0,
             "errors": 0,
         }
-    
+
     def subscribe(self, event_type: Optional[EventType] = None) -> Callable[[EventHandler], EventHandler]:
         """Decorator to register an event handler.
-        
+
         Args:
             event_type: Specific event type to handle, or None for all events.
-            
+
         Returns:
             Decorator that registers the handler.
         """
@@ -121,33 +133,51 @@ class EventBus:
                 logger.debug("Registered handler %s for event %s", handler.__name__, event_type)
             return handler
         return decorator
-    
+
     async def publish(self, event: DomainEvent) -> None:
         """Publish an event to all subscribers.
-        
+
         Non-blocking - queues the event for background processing.
         """
         self._metrics["published"] += 1
+        if self.transport is not None:
+            try:
+                await self.transport.publish(event)
+                logger.debug("Published event %s (id=%s) to the shared stream", event.event_type, event.event_id)
+                return
+            except Exception as exc:  # noqa: BLE001 - publish has never raised to callers
+                self._metrics["publish_failed"] = self._metrics.get("publish_failed", 0) + 1
+                if not self._running:
+                    logger.error(
+                        "Event %s (id=%s) could not be published (shared transport unavailable: %s) "
+                        "and this process runs no consumers; the event is lost.",
+                        event.event_type, event.event_id, exc,
+                    )
+                    return
+                logger.warning(
+                    "Shared transport unavailable (%s); handling event %s in this process.",
+                    exc, event.event_id,
+                )
         await self._queue.put(event)
         logger.debug("Published event %s (id=%s)", event.event_type, event.event_id)
-    
+
     async def publish_and_wait(self, event: DomainEvent) -> None:
         """Publish an event and wait for all handlers to complete.
-        
+
         Use for critical events where you need confirmation of processing.
         """
         await self.publish(event)
         # Brief yield to let the worker pick it up
         await asyncio.sleep(0.01)
-    
+
     async def _process_event(self, event: DomainEvent) -> None:
         """Process a single event through all registered handlers."""
         handlers = self._all_handlers + self._handlers.get(event.event_type, [])
-        
+
         if not handlers:
             logger.debug("No handlers for event %s", event.event_type)
             return
-        
+
         tasks = []
         for handler in handlers:
             try:
@@ -155,12 +185,30 @@ class EventBus:
             except Exception as exc:
                 logger.error("Failed to schedule handler for event %s: %s", event.event_type, exc)
                 self._metrics["errors"] += 1
-        
+
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         self._metrics["processed"] += 1
-    
+
+    async def dispatch_tracked(self, event: DomainEvent, skip: set) -> Dict[str, Optional[BaseException]]:
+        """Run the handlers for ``event`` except those named in ``skip``, and
+        report each handler's outcome (None = success). Used by the shared
+        transport, which acknowledges only when every handler succeeded."""
+        handlers = [h for h in self._all_handlers + self._handlers.get(event.event_type, [])
+                    if handler_name(h) not in skip]
+        results: Dict[str, Optional[BaseException]] = {name: None for name in skip}
+        outcomes = await asyncio.gather(*(h(event) for h in handlers), return_exceptions=True)
+        for handler, outcome in zip(handlers, outcomes):
+            if isinstance(outcome, BaseException):
+                self._metrics["errors"] += 1
+                logger.error("Handler %s failed for event %s: %s", handler_name(handler), event.event_id, outcome)
+                results[handler_name(handler)] = outcome
+            else:
+                results[handler_name(handler)] = None
+        self._metrics["processed"] += 1
+        return results
+
     async def _worker(self) -> None:
         """Background worker that processes events from the queue."""
         logger.info("Event bus worker started")
@@ -173,25 +221,37 @@ class EventBus:
             except Exception as exc:
                 logger.error("Event bus worker error: %s", exc, exc_info=True)
                 self._metrics["errors"] += 1
-    
+
     async def start(self) -> None:
         """Start the background event processing worker."""
         if self._running:
             return
         self._running = True
         self._worker_task = asyncio.create_task(self._worker())
-        logger.info("Event bus started")
-    
+        if self.transport is not None:
+            self._consumer_stop = asyncio.Event()
+            self._consumer_task = asyncio.create_task(
+                self.transport.run(self.dispatch_tracked, self._consumer_stop)
+            )
+        logger.info("Event bus started (transport=%s)", "redis" if self.transport else "memory")
+
     async def stop(self) -> None:
         """Stop the background worker and drain the queue."""
         self._running = False
+        if self._consumer_task is not None:
+            self._consumer_stop.set()
+            try:
+                await asyncio.wait_for(self._consumer_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                self._consumer_task.cancel()
+            self._consumer_task = None
         if self._worker_task:
             self._worker_task.cancel()
             try:
                 await self._worker_task
             except asyncio.CancelledError:
                 pass
-        
+
         # Process remaining events
         while not self._queue.empty():
             try:
@@ -199,9 +259,9 @@ class EventBus:
                 await self._process_event(event)
             except asyncio.QueueEmpty:
                 break
-        
+
         logger.info("Event bus stopped")
-    
+
     def unsubscribe(self, event_type: EventType, handler: EventHandler) -> bool:
         """Remove a previously registered handler (Phase 9A graceful shutdown).
 
@@ -228,9 +288,12 @@ class EventBus:
         return removed
 
     def get_metrics(self) -> Dict[str, int]:
-        """Get event processing metrics."""
-        return dict(self._metrics)
-    
+        """Get event processing metrics (plus the transport's, when set)."""
+        metrics = dict(self._metrics)
+        if self.transport is not None:
+            metrics.update({f"transport_{k}": v for k, v in self.transport.metrics.items()})
+        return metrics
+
     def clear_handlers(self) -> None:
         """Remove all handlers - useful for testing."""
         self._handlers.clear()
@@ -245,8 +308,27 @@ def get_event_bus() -> EventBus:
     """Get the global event bus instance."""
     global _event_bus
     if _event_bus is None:
-        _event_bus = EventBus()
+        _event_bus = EventBus(transport=_configured_transport())
     return _event_bus
+
+
+def _configured_transport():
+    """The shared transport selected by EVENT_TRANSPORT (None = in-process)."""
+    from app.core.config import get_settings
+
+    cfg = get_settings()
+    if cfg.event_transport != "redis":
+        return None
+    from app.core.redis import redis_client
+    from app.services.events.redis_transport import RedisStreamTransport, default_source
+
+    return RedisStreamTransport(
+        redis_client,
+        source=default_source(cfg.runtime_mode),
+        maxlen=cfg.event_stream_maxlen,
+        claim_idle_ms=cfg.event_claim_idle_seconds * 1000,
+        max_deliveries=cfg.event_max_deliveries,
+    )
 
 
 def set_event_bus(bus: EventBus) -> None:

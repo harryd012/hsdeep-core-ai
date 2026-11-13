@@ -34,7 +34,7 @@ import time
 from typing import TYPE_CHECKING
 
 from app.collectors.base import CollectorConfigError, CollectorRegistry
-from app.core import metrics as prom
+from app.core import metrics as platform_metrics
 from app.core.security import decrypt_connection_info
 from app.models.collector_run import CollectorRun
 from app.models.monitoring_source import MonitoringSource
@@ -50,29 +50,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _observe_phase(source_type: str, phase: str, started: float) -> None:
-    """Prometheus: one collector phase's duration. Never fails a run."""
+def _record(observe, *args, **kwargs) -> None:
+    """Call one platform-metrics recorder. Recording a metric never fails a
+    collection run: an error is logged at debug level and dropped."""
     try:
-        prom.observe_collector_phase(source_type, phase, time.monotonic() - started)
+        observe(*args, **kwargs)
     except Exception:  # noqa: BLE001 - metrics must never break collection
-        logger.debug("collector phase metric failed", exc_info=True)
-
-
-def _observe_run(source_type: str, run: CollectorRun) -> None:
-    """Prometheus: one finished run's outcome, duration and item counts."""
-    try:
-        if run.status == "skipped":
-            prom.observe_collection_skipped(source_type)
-            return
-        duration = (run.finished_at - run.started_at).total_seconds() if run.finished_at and run.started_at else 0.0
-        prom.observe_collection_run(
-            source_type=source_type, status=run.status, duration_seconds=max(duration, 0.0),
-            devices_upserted=run.devices_upserted or 0, interfaces_upserted=run.interfaces_upserted or 0,
-            sensors_upserted=run.sensors_upserted or 0, metrics_recorded=run.metrics_recorded or 0,
-            events_recorded=run.events_recorded or 0, alerts_upserted=run.alerts_upserted or 0,
-        )
-    except Exception:  # noqa: BLE001 - metrics must never break collection
-        logger.debug("collection run metric failed", exc_info=True)
+        logger.debug("collection metric failed", exc_info=True)
 
 
 class CollectionOutcome:
@@ -163,9 +147,7 @@ class CollectionOrchestrator:
         # Metering hook (usage metering sprint): every completed run - success,
         # error, or skipped - increments the tenant's collector.run usage
         # counter. Best-effort: a metering failure must never fail the run.
-        # The same hook records the run's Prometheus metrics (app.core.metrics).
-        async def _meter(run: CollectorRun) -> None:
-            _observe_run(source.source_type, run)
+        async def _meter() -> None:
             try:
                 await count_collector_run(source.tenant_id, self.run_repo.db)
                 await flush_usage_counters(self.run_repo.db)
@@ -186,7 +168,8 @@ class CollectionOrchestrator:
                 status="skipped",
                 error="Skipped: a collection run is already in progress for this source.",
             )
-            await _meter(skipped_run)
+            _record(platform_metrics.observe_collection_skipped, source.source_type)
+            await _meter()
             return CollectionOutcome(skipped_run)
 
         run_record = await self.run_repo.create(
@@ -195,31 +178,51 @@ class CollectionOrchestrator:
 
         # Bound before the try so the cleanup below can always see it.
         collector = None
+        # Platform metrics (app/core/metrics.py): global per source_type, never
+        # per tenant or source. ``stage`` names what was running if it fails.
+        source_type = source.source_type
+        run_started = time.perf_counter()
+        stage = "configure"
+
+        def _phase(name: str, started: float) -> None:
+            _record(platform_metrics.observe_collector_phase, source_type, name, time.perf_counter() - started)
+
+        def _failed() -> None:
+            if stage == "done":  # the run was already recorded as a success
+                return
+            _record(platform_metrics.observe_collection_failure, source_type, stage)
+            _record(platform_metrics.observe_collection_run, source_type, "error", time.perf_counter() - run_started)
 
         try:
             collector_cls = CollectorRegistry.get(source.source_type)
             connection_info = decrypt_connection_info(source)
             collector = collector_cls(connection_info)
 
-            phase_start = time.monotonic()
+            stage = "authenticate"
+            phase_started = time.perf_counter()
             check = await collector.authenticate()
-            _observe_phase(source.source_type, "authenticate", phase_start)
+            _phase("authenticate", phase_started)
             if not check.success:
+                _failed()
                 run_record = await self.run_repo.finish(
                     run_record, status="error", error=check.message
                 )
                 events = await self._record_health(
                     source, run_success=False, error=check.message, run_id=run_record.id
                 )
-                await _meter(run_record)
+                await _meter()
                 return CollectionOutcome(run_record, recovery_events=events)
 
-            phase_start = time.monotonic()
+            stage = "collect"
+            phase_started = time.perf_counter()
             raw = await collector.collect()
-            _observe_phase(source.source_type, "collect", phase_start)
-            phase_start = time.monotonic()
+            _phase("collect", phase_started)
+            stage = "normalize"
+            phase_started = time.perf_counter()
             bundle = collector.normalize(raw)
-            _observe_phase(source.source_type, "normalize", phase_start)
+            _phase("normalize", phase_started)
+            stage = "persist"
+            phase_started = time.perf_counter()
             save_result = await self.saver.save(source, bundle)
 
             # alerts_upserted counts DISTINCT Alert rows touched this run -
@@ -261,6 +264,7 @@ class CollectionOrchestrator:
             # triggered here: the transaction owner fires RCA only after a
             # successful commit (see scheduler/jobs.py and monitoring route).
             created_incidents = self.alert_service.drain_created_incidents()
+            _phase("persist", phase_started)
 
             run_record = await self.run_repo.finish(
                 run_record,
@@ -272,10 +276,23 @@ class CollectionOrchestrator:
                 events_recorded=save_result.events_recorded,
                 alerts_upserted=alerts_upserted,
             )
+            _record(
+                platform_metrics.observe_collection_run,
+                source_type,
+                "success",
+                time.perf_counter() - run_started,
+                devices_upserted=save_result.devices_upserted,
+                interfaces_upserted=save_result.interfaces_upserted,
+                sensors_upserted=save_result.sensors_created + save_result.sensors_updated,
+                metrics_recorded=save_result.metrics_recorded,
+                events_recorded=save_result.events_recorded,
+                alerts_upserted=alerts_upserted,
+            )
+            stage = "done"
             events = await self._record_health(
                 source, run_success=True, error=None, run_id=run_record.id
             )
-            await _meter(run_record)
+            await _meter()
             # Post-collection WAN Failover Intelligence (detect -> trace ->
             # verify). Deliberately AFTER the run's rows are written so the
             # detector reads the state this run just produced, and deliberately
@@ -286,21 +303,23 @@ class CollectionOrchestrator:
             return CollectionOutcome(run_record, created_incidents, events)
 
         except CollectorConfigError as exc:
+            _failed()
             run_record = await self.run_repo.finish(run_record, status="error", error=str(exc))
             events = await self._record_health(
                 source, run_success=False, error=str(exc), run_id=run_record.id
             )
-            await _meter(run_record)
+            await _meter()
             # Incidents created before this vendor-side failure still commit
             # (the run row is committed too), so they must be reported - and
             # drained here so they can never leak into a later run's result.
             return CollectionOutcome(run_record, self.alert_service.drain_created_incidents(), events)
         except Exception as exc:  # noqa: BLE001 - catch-all: never propagate vendor-side failures
+            _failed()
             run_record = await self.run_repo.finish(run_record, status="error", error=str(exc))
             events = await self._record_health(
                 source, run_success=False, error=str(exc), run_id=run_record.id
             )
-            await _meter(run_record)
+            await _meter()
             return CollectionOutcome(run_record, self.alert_service.drain_created_incidents(), events)
 
         finally:

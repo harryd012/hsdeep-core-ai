@@ -79,6 +79,8 @@ def _prod_settings(**overrides) -> Settings:
         log_format="json",
         # Production must choose email explicitly ("log" is refused).
         email_transport="none",
+        # Split roles share events over Redis Streams (R2).
+        event_transport="redis",
     )
     base.update(overrides)
     return Settings(**base)

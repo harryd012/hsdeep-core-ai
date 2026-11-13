@@ -432,3 +432,52 @@ a.pk-barlist__row:hover { background: var(--ecc-surface-raised); }
 .pk-form--wide { max-width: none; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); align-items: end; }
 .pk-form--wide > .pk-help, .pk-form--wide > .pk-banner { grid-column: 1 / -1; }
 .pk-help { margin: 0; font-size: 12px; line-height: 1.5; color: var(--ecc-text-muted); max-width: 900px; }
+
+/* -- SOC playbooks (/soc-playbooks) ----------------------------------------- */
+.sp-list { margin-top: 10px; }
+.sp-list > li { padding: 0; }
+.sp-pick { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; width: 100%; padding: 9px 8px; border: 0; border-left: 2px solid transparent; background: none; color: inherit; text-align: left; cursor: pointer; }
+.sp-pick:hover { background: var(--ecc-surface-raised); }
+.sp-pick[aria-current="true"] { border-left-color: var(--ecc-accent); background: var(--ecc-surface-raised); }
+.sp-pick:focus-visible { outline: 2px solid var(--ecc-accent); outline-offset: -2px; }
+.sp-pick__meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.sp-facts { margin: 10px 0; }
+.sp-platform { max-width: 280px; margin-bottom: 8px; }
+.sp-steps { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; }
+.sp-step { padding: 12px; border: 1px solid var(--ecc-border); border-radius: var(--ecc-radius); background: var(--ecc-surface); }
+.sp-step__head { display: flex; gap: 10px; align-items: flex-start; }
+.sp-step__num { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--ecc-accent); color: #fff; font-size: 11px; font-weight: 700; }
+.sp-step__action { margin: 1px 0 0; font-size: 13px; line-height: 1.5; color: var(--ecc-text); }
+.sp-step__expected { margin: 6px 0 0 32px; font-size: 12px; color: var(--ecc-text-muted); }
+.sp-step__expected b { color: var(--ecc-good); font-weight: 600; }
+.sp-step__warn { display: flex; gap: 6px; align-items: flex-start; margin: 6px 0 0 32px; font-size: 12px; color: var(--ecc-warn); }
+.sp-step__warn svg { flex-shrink: 0; margin-top: 2px; }
+.sp-cmds { margin: 8px 0 0 32px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.sp-cmd { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 6px 5px 8px; border: 1px solid var(--ecc-border); border-radius: 4px; background: var(--ecc-surface-raised); }
+.sp-cmd--disruptive { border-color: var(--ecc-bad); }
+.sp-cmd__platform { flex-shrink: 0; width: 132px; font-size: 11px; color: var(--ecc-text-muted); }
+.sp-cmd__text { flex: 1; min-width: 0; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ecc-text); }
+.sp-cmd__copy { flex-shrink: 0; display: inline-flex; padding: 4px; border: 1px solid transparent; border-radius: 4px; background: none; color: var(--ecc-text-muted); cursor: pointer; }
+.sp-cmd__copy:hover, .sp-cmd__copy:focus-visible { border-color: var(--ecc-border-strong); color: var(--ecc-accent); }
+.sp-matrix { margin: 8px 0 0 32px; font-size: 12px; }
+.sp-matrix summary { cursor: pointer; color: var(--ecc-accent); font-weight: 600; }
+.sp-matrix dl { margin: 6px 0 0; display: grid; gap: 4px; }
+.sp-matrix dl > div { display: grid; grid-template-columns: minmax(120px, 200px) 1fr; gap: 10px; }
+.sp-matrix dt { color: var(--ecc-text); font-weight: 600; text-transform: capitalize; }
+.sp-matrix dd { margin: 0; color: var(--ecc-text-muted); }
+.sp-causes { margin: 0; padding-left: 18px; font-size: 12px; color: var(--ecc-text-muted); columns: 2; }
+@media (max-width: 720px) {
+  .sp-cmd { flex-wrap: wrap; }
+  .sp-cmd__platform { width: 100%; }
+  .sp-cmds, .sp-matrix, .sp-step__expected, .sp-step__warn { margin-left: 0; }
+  .sp-matrix dl > div { grid-template-columns: 1fr; gap: 0; }
+  .sp-causes { columns: 1; }
+}
+
+/* -- phone width: card headers wrap so a tab strip or long aside never
+      widens the page (selectors doubled to win regardless of load order) -- */
+@media (max-width: 767px) {
+  .ecc-card .ecc-card__header { flex-wrap: wrap; }
+  .ecc-card .ecc-card__aside { min-width: 0; max-width: 100%; white-space: normal; }
+  .pk-tabs.pk-tabs { flex-wrap: wrap; max-width: 100%; }
+}

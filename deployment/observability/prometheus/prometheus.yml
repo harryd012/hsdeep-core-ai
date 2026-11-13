@@ -1,0 +1,37 @@
+# Development: scrape the HSDEEP backend running on the host (uvicorn on
+# :8000, RUNTIME_MODE=all, so API, worker and scheduler metrics are all in
+# that one process). Production uses prometheus.production.yml instead.
+#
+# The scrape token is read from a mounted secret file, never written here.
+# A development backend without METRICS_BEARER_TOKEN serves /metrics openly
+# and simply ignores the header.
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    platform: hsdeep-core-ai
+    environment: development
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: hsdeep-backend
+    metrics_path: /metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/metrics_token
+    # Targets come from files so a local backend on another port can be added
+    # without touching this config: targets/backend.yml is the default
+    # (host :8000); add targets/local-*.yml (git ignored) for anything else.
+    # Prometheus re-reads these files on change; no restart needed.
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/*.yml"]
+        refresh_interval: 30s
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

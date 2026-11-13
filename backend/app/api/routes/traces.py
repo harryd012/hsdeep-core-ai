@@ -6,6 +6,13 @@ Traces routes (docs/design/OBSERVABILITY_PLATFORM_PLAN.md, P8 slice 1).
   GET /api/traces/service-map     caller -> callee edges between services
   GET /api/traces/{trace_id}      every span of one trace (waterfall)
 
+APM, per service (the name is the rest of the path, so it may contain "/"):
+
+  GET /api/traces/services/{service}/timeseries     requests, errors, latency per bucket
+  GET /api/traces/services/{service}/operations     per span name
+  GET /api/traces/services/{service}/dependencies   callers and callees
+  GET /api/traces/errors                            failed spans grouped by exception
+
 Read-only, `monitoring.read`, tenant-scoped (another tenant's trace is a 404).
 Windows default to the last hour and are capped at 7 days. Spans arrive over
 OTLP/HTTP at /api/v1/ingest/otlp/v1/traces.
@@ -103,6 +110,71 @@ class TraceDetail(BaseModel):
     truncated: bool
 
 
+class TimeseriesPoint(BaseModel):
+    t: datetime
+    requests: int
+    errors: int
+    error_rate_pct: float
+    #: None for a bucket with no requests (nothing was measured).
+    p50_ms: float | None
+    p95_ms: float | None
+    p99_ms: float | None
+
+
+class ServiceTimeseries(BaseModel):
+    service: str
+    since: datetime
+    until: datetime
+    bucket_seconds: int
+    points: list[TimeseriesPoint]
+
+
+class OperationStats(BaseModel):
+    name: str
+    #: True when some of its spans are entry spans (server / consumer / root).
+    entry: bool
+    calls: int
+    errors: int
+    error_rate_pct: float
+    p50_ms: float | None
+    p95_ms: float | None
+    total_ms: float
+    time_share_pct: float
+
+
+class ServiceOperations(BaseModel):
+    service: str
+    since: datetime
+    until: datetime
+    items: list[OperationStats]
+
+
+class ServiceDependencies(BaseModel):
+    service: str
+    since: datetime
+    until: datetime
+    callers: list[ServiceEdge]
+    callees: list[ServiceEdge]
+
+
+class ErrorGroup(BaseModel):
+    service: str
+    operation: str
+    exception_type: str | None
+    message: str | None
+    count: int
+    traces: int
+    first_seen: datetime
+    last_seen: datetime
+    sample_trace_id: str
+
+
+class ErrorGroups(BaseModel):
+    since: datetime
+    until: datetime
+    items: list[ErrorGroup]
+
+
 def _window(since, until):
     try:
         return window(since, until)
@@ -147,6 +219,44 @@ async def list_traces(
         q=q, limit=limit, offset=offset,
     )
     return {"since": start, "until": end, "items": items, "total": total}
+
+
+@router.get("/services/{service:path}/timeseries", response_model=ServiceTimeseries)
+async def service_timeseries(
+    service: str, since: datetime | None = None, until: datetime | None = None,
+    tenant_id: uuid.UUID = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    start, end = _window(since, until)
+    return {"service": service, "since": start, "until": end, **await TraceQuery(db).timeseries(tenant_id, service, start, end)}
+
+
+@router.get("/services/{service:path}/operations", response_model=ServiceOperations)
+async def service_operations(
+    service: str, since: datetime | None = None, until: datetime | None = None,
+    tenant_id: uuid.UUID = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    start, end = _window(since, until)
+    return {"service": service, "since": start, "until": end, "items": await TraceQuery(db).operations(tenant_id, service, start, end)}
+
+
+@router.get("/services/{service:path}/dependencies", response_model=ServiceDependencies)
+async def service_dependencies(
+    service: str, since: datetime | None = None, until: datetime | None = None,
+    tenant_id: uuid.UUID = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    start, end = _window(since, until)
+    return {"service": service, "since": start, "until": end, **await TraceQuery(db).dependencies(tenant_id, service, start, end)}
+
+
+@router.get("/errors", response_model=ErrorGroups)
+async def trace_errors(
+    since: datetime | None = None, until: datetime | None = None,
+    service: str | None = Query(None, max_length=255),
+    tenant_id: uuid.UUID = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    """Failed spans grouped by service, span name and exception, most frequent first (top 100)."""
+    start, end = _window(since, until)
+    return {"since": start, "until": end, "items": await TraceQuery(db).errors(tenant_id, start, end, service=service)}
 
 
 @router.get("/{trace_id}", response_model=TraceDetail)

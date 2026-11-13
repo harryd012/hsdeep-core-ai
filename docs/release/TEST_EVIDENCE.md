@@ -98,6 +98,19 @@ from a blank database.
 Known flaky tests: `test_bounded_tick_concurrency_never_exceeds_configured_max`
 (Hypothesis property over real async timing).
 
+## 2026-11-04 - R1.3 cross-tenant leak scan
+
+Branch `test/tenant-isolation-suite` from `origin/main` (`d18cea01d`).
+Database `hsdeep_test_release` upgraded to `a4c8e2f6b1d3`.
+
+| Command | Result |
+| --- | --- |
+| `pytest tests/test_cross_tenant_leak_scan.py` | 3 passed: no leaks over 228 GET routes as tenant B (session token), none as tenant B's all-scope API key, positive control finds tenant A's markers on its own routes |
+| `pytest tests/test_servicenow_sync_job_repository.py` | 1 passed (regression for the `is_deleted` crash in `ServiceNowSyncJobRepository`) |
+| `pytest tests/test_tenant_isolation.py` | 56 passed |
+| Full backend suite | 2,714 passed, 1 skipped, 0 failed (10 min 38 s locally) |
+| API-key scan after skipping the per-IP rate limiter's wait | 11 s (was 185 s: 228 requests from one client hit the 60/min limit, which waits rather than answering 429) |
+
 ## Remote CI
 
 | Run | Branch | Revision | Result |

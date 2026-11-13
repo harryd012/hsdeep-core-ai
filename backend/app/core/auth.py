@@ -33,6 +33,7 @@ immutable, and never accidentally serialized to a client.
 from __future__ import annotations
 
 import asyncio
+import time
 import hashlib
 import logging
 import secrets
@@ -222,6 +223,12 @@ def hash_api_key(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+#: api_keys.last_used_at is refreshed at most this often per key.
+_API_KEY_TOUCH_INTERVAL_SECONDS = 60.0
+_api_key_touched: dict[uuid.UUID, float] = {}
+_touch_tasks: set[asyncio.Task] = set()
+
+
 async def _resolve_api_key_principal(
     raw_key: str, db: AsyncSession, x_tenant_id: uuid.UUID | None
 ) -> Principal | None:
@@ -283,7 +290,18 @@ async def _resolve_api_key_principal(
         except Exception:  # noqa: BLE001 - best-effort, never break the request
             logger.debug("Failed to update api_key.last_used_at for key %s", row.id)
 
-    asyncio.get_running_loop().create_task(_touch_last_used())
+    # At most one write per key per API_KEY_TOUCH_INTERVAL_SECONDS: every
+    # API-key request used to open a second connection and rewrite the same
+    # row. Minute resolution is enough for "last used". A strong reference
+    # keeps the task alive until it finishes (asyncio holds only a weak one).
+    now = time.monotonic()
+    if now - _api_key_touched.get(row.id, float("-inf")) >= _API_KEY_TOUCH_INTERVAL_SECONDS:
+        _api_key_touched[row.id] = now
+        if len(_api_key_touched) > 10_000:
+            _api_key_touched.clear()
+        task = asyncio.get_running_loop().create_task(_touch_last_used())
+        _touch_tasks.add(task)
+        task.add_done_callback(_touch_tasks.discard)
 
     return Principal(
         user_id=uuid.UUID(int=0),  # API keys have no user identity

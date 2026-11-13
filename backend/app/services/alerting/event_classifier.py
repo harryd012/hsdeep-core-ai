@@ -29,7 +29,9 @@ from __future__ import annotations
 _RULES: list[tuple[str, tuple[str, ...]]] = [
     ("capacity", ("disk", "storage", "memory", "capacity", "quota")),
     ("performance", ("cpu", "latency", "response_time", "throughput", "performance", "load")),
-    ("connectivity", ("interface", "traffic", "bandwidth", "link", "wan", "vpn", "network", "packet_loss")),
+    # "internet" keeps an "Internet down" alert with the internet-outage SOPs
+    # (connectivity) instead of falling through to the generic "down" rule.
+    ("connectivity", ("interface", "traffic", "bandwidth", "link", "wan", "vpn", "network", "packet_loss", "internet")),
     ("security", ("auth", "login", "security", "intrusion", "certificate", "cert_expiry")),
     ("configuration", ("config", "reboot", "ha_failover", "firmware", "backup")),
     ("availability", ("ping", "uptime", "down", "unreachable", "status", "health")),

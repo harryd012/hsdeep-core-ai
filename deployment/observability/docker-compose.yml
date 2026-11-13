@@ -1,0 +1,82 @@
+# HSDEEP CORE AI - platform observability (Prometheus + Grafana).
+#
+# Monitors the HSDEEP platform itself (API / worker / scheduler processes),
+# never customer infrastructure. Both UIs bind to 127.0.0.1 only: nothing is
+# published on a public interface. Secrets are files under ./secrets (git
+# ignored), mounted read-only; no secret is ever an environment value.
+#
+#   cp .env.example .env
+#   printf '%s' "$METRICS_BEARER_TOKEN" > secrets/metrics_token        # same value as the backend
+#   openssl rand -base64 24 | tr -d '\n' > secrets/grafana_admin_password
+#   docker compose up -d
+#
+# See README.md for production use (prometheus.production.yml).
+
+name: hsdeep-observability
+
+services:
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_VERSION:-v3.5.0}
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}
+      - --storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-5GB}
+      - --web.listen-address=:9090
+    volumes:
+      - ./prometheus/${PROMETHEUS_CONFIG:-prometheus.yml}:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - ./prometheus/targets:/etc/prometheus/targets:ro
+      - ./secrets/metrics_token:/run/secrets/metrics_token:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    extra_hosts:
+      # Lets the container reach a backend running on the host (Windows/macOS
+      # Docker Desktop resolve this natively; Linux needs the host-gateway alias).
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [observability]
+
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION:-12.1.1}
+    restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3002}
+      GF_SECURITY_COOKIE_SAMESITE: strict
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./secrets/grafana_admin_password:/run/secrets/grafana_admin_password:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3002}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [observability]
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  observability:
+    driver: bridge

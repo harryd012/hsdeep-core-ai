@@ -37,7 +37,6 @@ from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import select
 
-from app.core import metrics as prom
 from app.models.alert import Alert
 from app.models.device import Device
 from app.models.sensor import Sensor
@@ -66,6 +65,19 @@ if TYPE_CHECKING:
 AlertAction = Literal["opened", "updated", "resolved", "noop"]
 
 
+def _observe_opened(alert: Alert) -> None:
+    """Platform metric for a newly opened alert: source and severity only,
+    never tenant, device or alert identifiers. Recording a metric never
+    breaks alerting."""
+    from app.core.metrics import observe_alert_created
+
+    try:
+        severity = getattr(alert.severity, "value", alert.severity)
+        observe_alert_created(str(alert.source or "unknown"), str(severity or "unknown"))
+    except Exception:  # noqa: BLE001 - metrics must never break alerting
+        logger.debug("alert metric failed", exc_info=True)
+
+
 @dataclass(frozen=True)
 class CreatedIncidentReference:
     """Minimal identity of an Incident created during a collection run.
@@ -90,14 +102,6 @@ class AlertNotFound(Exception):
 
 logger = logging.getLogger(__name__)
 
-
-def _observe_created(alert: Alert) -> None:
-    """Prometheus: count a newly opened alert by its origin and severity.
-    Labels are low-cardinality platform values, never tenant data."""
-    try:
-        prom.observe_alert_created(source=alert.source or "unknown", severity=alert.severity or "unknown")
-    except Exception:  # noqa: BLE001 - metrics must never break alerting
-        logger.debug("alert metric failed", exc_info=True)
 
 
 class AlertService:
@@ -247,7 +251,7 @@ class AlertService:
         )
         await self._record_history(created, event_type="opened", message=f"Alert opened: {created.title}")
         await self._correlate(created)
-        _observe_created(created)
+        _observe_opened(created)
         return AlertEvaluation(alert=created, action="opened")
 
     @staticmethod
@@ -454,7 +458,7 @@ class AlertService:
         )
         await self._record_history(created, event_type="opened", message=f"Vendor-native alert opened: {created.title}")
         await self._correlate(created)
-        _observe_created(created)
+        _observe_opened(created)
         return AlertEvaluation(alert=created, action="opened")
 
     async def evaluate_baseline(
@@ -529,7 +533,7 @@ class AlertService:
         )
         await self._record_history(created, event_type="opened", message=f"Alert opened: {created.title}")
         await self._correlate(created)
-        _observe_created(created)
+        _observe_opened(created)
         return AlertEvaluation(alert=created, action="opened")
 
     # -- operator actions ----------------------------------------------------

@@ -1,0 +1,91 @@
+# API and its dependencies.
+#
+# Thresholds (keep in step with THRESHOLDS in
+# frontend/src/lib/observability/platformMetrics.ts, which colours the page):
+#   5xx ratio      > 5 %   for 10 m  (page shows amber from 1 %)
+#   p95 latency    > 2.5 s for 10 m  (page shows amber from 1 s)
+#   minimum traffic for ratio/latency alerts: 0.05 req/s (3 per minute), so a
+#   single failed request on an idle system does not page anyone.
+#
+# Notifications: these rules are evaluated and visible in Prometheus
+# (Status > Rules, Alerts). No Alertmanager or Grafana contact point is
+# configured, so nothing is sent until one is set up and tested.
+groups:
+  - name: hsdeep-api
+    rules:
+      - alert: HsdeepApiTargetDown
+        expr: up{job=~"hsdeep-backend|api", component=~"api|all"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "HSDEEP API process {{ $labels.instance }} is not answering scrapes"
+          description: "Prometheus could not scrape /metrics on {{ $labels.instance }} (component {{ $labels.component }}) for 2 minutes. The API may be down, unreachable, or rejecting the metrics token."
+          runbook_url: "deployment/observability/README.md#hsdeepapitargetdown"
+
+      - alert: HsdeepApiErrorRateHigh
+        expr: hsdeep:http_5xx:ratio5m > 0.05 and on (component) hsdeep:http_requests:rate5m > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "HSDEEP API 5xx ratio is {{ $value | humanizePercentage }} ({{ $labels.component }})"
+          description: "More than 5% of API requests on {{ $labels.component }} have ended in a 5xx or an unhandled exception for 10 minutes."
+          runbook_url: "deployment/observability/README.md#hsdeepapierrorratehigh"
+
+      - alert: HsdeepApiLatencyHigh
+        expr: hsdeep:http_latency_seconds:p95_5m > 2.5 and on (component) hsdeep:http_requests:rate5m > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "HSDEEP API p95 latency is {{ $value | humanizeDuration }} ({{ $labels.component }})"
+          description: "The 95th percentile API response time on {{ $labels.component }} has been above 2.5 s for 10 minutes."
+          runbook_url: "deployment/observability/README.md#hsdeepapilatencyhigh"
+
+      - alert: HsdeepDatabaseUnreachable
+        expr: hsdeep_dependency_up{dependency="database"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "HSDEEP {{ $labels.component }} cannot reach PostgreSQL"
+          description: "The /health check on {{ $labels.instance }} has reported the database down for 2 minutes."
+          runbook_url: "deployment/observability/README.md#hsdeepdatabaseunreachable"
+
+      - alert: HsdeepRedisUnreachable
+        expr: hsdeep_dependency_up{dependency="redis"} == 0
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "HSDEEP {{ $labels.component }} cannot reach Redis"
+          description: "Redis has been down for 10 minutes on {{ $labels.instance }}. The platform keeps serving (PostgreSQL-backed), but cache, rate limiting and the event transport are degraded."
+          runbook_url: "deployment/observability/README.md#hsdeepredisunreachable"
+
+      - alert: HsdeepDependencyCheckStale
+        expr: time() - hsdeep_dependency_last_check_timestamp_seconds > 600
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "No HSDEEP health check on {{ $labels.instance }} for over 10 minutes"
+          description: "hsdeep_dependency_up for {{ $labels.dependency }} is only refreshed by /health (readiness probes). A stale value means nothing is probing this process, so its dependency state is unknown."
+          runbook_url: "deployment/observability/README.md#hsdeepdependencycheckstale"
+
+      - alert: HsdeepDbPoolSaturated
+        expr: hsdeep_db_pool_saturation_ratio > 0.9
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "HSDEEP DB pool {{ $value | humanizePercentage }} used on {{ $labels.instance }}"
+          description: "More than 90% of the SQLAlchemy pool (size + max_overflow) has been checked out for 10 minutes; requests will start waiting for connections."
+          runbook_url: "deployment/observability/README.md#hsdeepdbpoolsaturated"

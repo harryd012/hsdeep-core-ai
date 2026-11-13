@@ -2729,6 +2729,61 @@ export function getIncidentRecoveryCheck(incidentId: string): Promise<RecoveryCh
   return apiFetch<RecoveryCheck>(`/api/incidents/${incidentId}/recovery-check`);
 }
 
+export type SopDecision = "accepted" | "dismissed";
+
+export interface SopRecommendationDecision {
+  incident_id: string;
+  sop_id: string;
+  sop_version_id: string | null;
+  decision: SopDecision;
+  reason: string | null;
+  confidence_score: number | null;
+  decided_by: string | null;
+  decided_at: string;
+}
+
+/** GET /api/incidents/{id}/sop-recommendations — approved SOPs matching the incident, best first. */
+export interface IncidentSopRecommendation {
+  sop_id: string;
+  sop_number: string;
+  name: string;
+  category: string;
+  confidence_score: number;
+  matched_criteria: Record<string, boolean | null>;
+  reasoning: Record<string, unknown>;
+  business_impact_score: number;
+  estimated_resolution_minutes: number | null;
+  required_skills: string[];
+  requires_approval: boolean;
+  rollback_procedure: string | null;
+  current_version_id: string | null;
+  decision: SopRecommendationDecision | null;
+}
+
+export function getIncidentSopRecommendations(
+  incidentId: string,
+  params: { limit?: number; minConfidence?: number; includeDismissed?: boolean } = {},
+): Promise<IncidentSopRecommendation[]> {
+  const qs = new URLSearchParams();
+  if (params.limit !== undefined) qs.set("limit", String(params.limit));
+  if (params.minConfidence !== undefined) qs.set("min_confidence", String(params.minConfidence));
+  if (params.includeDismissed) qs.set("include_dismissed", "true");
+  const q = qs.toString();
+  return apiFetch<IncidentSopRecommendation[]>(`/api/incidents/${incidentId}/sop-recommendations${q ? `?${q}` : ""}`);
+}
+
+export function decideIncidentSopRecommendation(
+  incidentId: string,
+  sopId: string,
+  decision: SopDecision,
+  reason?: string,
+): Promise<SopRecommendationDecision> {
+  return apiFetch<SopRecommendationDecision>(`/api/incidents/${incidentId}/sop-recommendations/${sopId}/decision`, {
+    method: "POST",
+    body: JSON.stringify({ decision, reason: reason || null }),
+  });
+}
+
 export function recoverIncident(incidentId: string, tenantId: string = DEFAULT_TENANT_ID): Promise<Incident> {
   return apiFetch<Incident>(`/api/incidents/${incidentId}/recover?${withTenant(tenantId).toString()}`, {
     method: "POST",

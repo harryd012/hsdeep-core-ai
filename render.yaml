@@ -27,6 +27,10 @@ envVarGroups:
         value: json
       - key: READINESS_REQUIRE_REDIS
         value: "true"
+      # API and worker are separate services: events go over the shared
+      # Redis stream (R2). Production refuses split roles without it.
+      - key: EVENT_TRANSPORT
+        value: redis
       - key: PRTG_DEV_VERIFY_SSL
         value: "true"
       # Explicit allow-list, e.g. https://app.example.com (a wildcard is refused at startup).

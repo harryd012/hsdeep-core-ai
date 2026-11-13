@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 SOPCategory = Literal[
     "availability", "performance", "capacity", "configuration", "security", "connectivity", "other"
@@ -117,3 +117,33 @@ class SOPRecommendationOut(BaseModel):
     requires_approval: bool
     rollback_procedure: str | None
     current_version_id: uuid.UUID | None
+
+
+SOPDecision = Literal["accepted", "dismissed"]
+
+
+class SOPRecommendationDecisionIn(BaseModel):
+    """An operator's answer to one recommended SOP. The deciding user comes
+    from the authenticated principal, never the body."""
+
+    decision: SOPDecision
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class SOPRecommendationDecisionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    incident_id: uuid.UUID
+    sop_id: uuid.UUID
+    sop_version_id: uuid.UUID | None
+    decision: SOPDecision
+    reason: str | None
+    confidence_score: float | None
+    decided_by: uuid.UUID | None
+    decided_at: datetime
+
+
+class IncidentSOPRecommendationOut(SOPRecommendationOut):
+    """A recommendation plus the operator's recorded answer, if any."""
+
+    decision: SOPRecommendationDecisionOut | None = None

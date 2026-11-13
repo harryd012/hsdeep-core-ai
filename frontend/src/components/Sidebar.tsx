@@ -1,9 +1,9 @@
 "use client";
 
-import { Activity, Check, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, Search } from "lucide-react";
+import { Activity, Check, ChevronDown, ChevronRight, Menu, PanelLeftClose, PanelLeftOpen, Search, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   clearActiveTenantOverride, getActiveTenantOverride, getAlertSummary, getTenantId, setActiveTenantOverride,
@@ -18,6 +18,15 @@ import "@/app/styles/executive-command-center.css";
 import "@/app/styles/navigation.css";
 import { NAV_SECTIONS, visibleNav, type NavGroup } from "@/lib/navigation";
 import { NAV_STORAGE_KEY } from "@/lib/theme";
+import { MOBILE_NAV_QUERY, collapseButtonRole, drawerReducer } from "@/lib/mobile-nav";
+
+function subscribeMobile(onChange: () => void) {
+  const mq = window.matchMedia(MOBILE_NAV_QUERY);
+  mq.addEventListener("change", onChange);
+  return () => mq.removeEventListener("change", onChange);
+}
+const isMobileNow = () => window.matchMedia(MOBILE_NAV_QUERY).matches;
+const isMobileOnServer = () => false;
 
 // The per-dependency system status line is derived in lib/health.ts
 // (dependencyStatusLine) so the sidebar and the status tests share one source.
@@ -50,17 +59,36 @@ export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(
     () => typeof document !== "undefined" && document.documentElement.getAttribute("data-nav") === "collapsed",
   );
+  // ── Phone-width overlay drawer (lib/mobile-nav.ts) ─────────────────────
+  // Below the breakpoint the sidebar is off-canvas and closed by default;
+  // the top bar's menu button opens it. Following a link, Escape, the
+  // backdrop or the brand-row button (the rail collapse control on desktop)
+  // closes it.
+  const mobile = useSyncExternalStore(subscribeMobile, isMobileNow, isMobileOnServer);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerPath, setDrawerPath] = useState(pathname);
+  if (drawerPath !== pathname) {
+    setDrawerPath(pathname);
+    setDrawerOpen((o) => drawerReducer(o, { type: "navigate" }));
+  }
+  const drawerShown = mobile && drawerOpen;
+  const collapseRole = collapseButtonRole(mobile, collapsed);
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setLauncherOpen((o) => !o);
       }
+      if (e.key === "Escape") setDrawerOpen((o) => drawerReducer(o, { type: "key", key: e.key }));
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, []);
   function toggleCollapsed() {
+    if (collapseRole.action === "close") {
+      setDrawerOpen((o) => drawerReducer(o, { type: "close" }));
+      return;
+    }
     const next = !collapsed;
     setCollapsed(next);
     document.documentElement.setAttribute("data-nav", next ? "collapsed" : "expanded");
@@ -151,7 +179,33 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="hs-sidebar" data-collapsed={collapsed || undefined}>
+    <>
+    <div className="hs-mobilebar">
+      <button
+        type="button"
+        className="hs-mobilebar__menu"
+        onClick={() => setDrawerOpen((o) => drawerReducer(o, { type: "toggle" }))}
+        aria-label="Open navigation"
+        aria-expanded={drawerShown}
+        aria-controls="hs-primary-sidebar"
+      >
+        <Menu size={20} />
+      </button>
+      <span className="hs-brand__mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Zm0 2.3 6.8 3.8L12 12 5.2 8.1 12 4.3Z" fill="currentColor" /></svg>
+      </span>
+      <b className="hs-mobilebar__title">HSDEEP CORE AI</b>
+    </div>
+    <AppLauncher open={launcherOpen} onClose={() => setLauncherOpen(false)} groups={visibleGroups} />
+    {drawerShown && (
+      <div className="hs-drawer-backdrop" aria-hidden="true" onClick={() => setDrawerOpen((o) => drawerReducer(o, { type: "close" }))} />
+    )}
+    <aside
+      id="hs-primary-sidebar"
+      className="hs-sidebar"
+      data-collapsed={(!mobile && collapsed) || undefined}
+      data-drawer-open={drawerShown || undefined}
+    >
       <div className="hs-brand">
         <span className="hs-brand__mark" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Zm0 2.3 6.8 3.8L12 12 5.2 8.1 12 4.3Z" fill="currentColor" /></svg>
@@ -164,10 +218,10 @@ export default function Sidebar() {
           type="button"
           className="hs-brand__collapse"
           onClick={toggleCollapsed}
-          aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}
-          title={collapsed ? "Expand navigation" : "Collapse navigation"}
+          aria-label={collapseRole.label}
+          title={collapseRole.label}
         >
-          {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+          {collapseRole.action === "close" ? <X size={16} /> : collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
         </button>
       </div>
       <button type="button" className="hs-search" onClick={() => setLauncherOpen(true)} title="Search apps (Ctrl+K)">
@@ -175,7 +229,6 @@ export default function Sidebar() {
         <span>Search apps</span>
         <kbd>Ctrl K</kbd>
       </button>
-      <AppLauncher open={launcherOpen} onClose={() => setLauncherOpen(false)} groups={visibleGroups} />
       <nav aria-label="Primary navigation">
         {/* Tenant context / switcher */}
         <div className="hs-sidebar__ctx" ref={tenantRef}>
@@ -256,7 +309,7 @@ export default function Sidebar() {
                 aria-expanded={hasChildren ? expanded : undefined}
                 aria-current={isActive ? "page" : undefined}
                 onClick={() => { if (hasChildren) toggleGroup(g); else router.push(g.route); }}
-                title={collapsed ? g.label : undefined}
+                title={collapsed && !mobile ? g.label : undefined}
               >
                 <Icon size={18} />
                 <span>{g.label}</span>
@@ -303,6 +356,7 @@ export default function Sidebar() {
         </small>
       </div>
     </aside>
+    </>
   );
 }
 // NAV: Firewall Diagnostic -> /(dashboard)/firewall-diagnostic

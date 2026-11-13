@@ -96,6 +96,7 @@ from app.models.discovery_scope import DiscoveryScope
 from app.models.host_saved_view import HostSavedView
 from app.models.saved_dashboard import SavedDashboard
 from app.models.trace_span import TraceSpan
+from app.models.sop_recommendation_decision import SOPRecommendationDecision
 from app.models.notification_policy import NotificationPolicy
 from app.models.sensor_baseline import SensorBaseline
 from app.models.auth_session import AuthSession

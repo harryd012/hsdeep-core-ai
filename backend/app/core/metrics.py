@@ -1,8 +1,9 @@
 """
-Prometheus metrics for the Monitoring Collector Framework.
+Prometheus platform metrics for HSDEEP CORE AI (the platform itself, never
+customer infrastructure, which stays in PostgreSQL).
 
-Tracks collection pipeline health, alert creation rates, and scheduler
-status. Exposed at the /metrics endpoint for scraping by Prometheus or any
+Tracks HTTP API traffic, collection pipeline health, alert creation rates and
+scheduler status. Exposed at the /metrics endpoint for scraping by Prometheus or any
 OpenMetrics-compatible collector.
 
 Security note: metrics are intentionally global counters, not tenant-scoped.
@@ -16,6 +17,10 @@ import time
 from datetime import datetime, timezone
 
 from prometheus_client import Counter, Gauge, Histogram
+
+# When this process loaded its metrics (Unix seconds). The standard
+# process_start_time_seconds is Linux-only, so the summary API uses this.
+PROCESS_STARTED_AT = time.time()
 
 # -- Collection Pipeline -----------------------------------------------------
 
@@ -83,6 +88,28 @@ scheduler_last_tick_timestamp = Gauge(
     documentation="Unix timestamp of the last scheduler tick",
 )
 
+# Failed collection runs by the stage that failed: authenticate (credentials
+# rejected), collect (vendor call), normalize (payload shape) or persist
+# (saving / alert evaluation).
+collection_failures_total = Counter(
+    name="hsdeep_collection_failures_total",
+    documentation="Failed collection runs by source type and failing stage",
+    labelnames=["source_type", "stage"],
+)
+
+# Wall time of one scheduler tick that held the lock (all due sources).
+scheduler_tick_duration = Histogram(
+    name="hsdeep_scheduler_tick_duration_seconds",
+    documentation="Duration of a scheduler tick in seconds",
+    buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, float("inf")),
+)
+
+# Scheduler ticks that raised before finishing.
+scheduler_tick_failures_total = Counter(
+    name="hsdeep_scheduler_tick_failures_total",
+    documentation="Scheduler ticks that raised an exception",
+)
+
 # Number of sources skipped due to concurrent-run guard.
 collection_skipped_total = Counter(
     name="hsdeep_collection_skipped_total",
@@ -136,7 +163,139 @@ def observe_collection_skipped(source_type: str) -> None:
     collection_skipped_total.labels(source_type=source_type).inc()
 
 
-def observe_scheduler_tick(queue_depth: int) -> None:
-    """Record scheduler tick metrics."""
+def observe_collection_failure(source_type: str, stage: str) -> None:
+    """Record a failed collection run and the stage it failed in."""
+    collection_failures_total.labels(source_type=source_type, stage=stage).inc()
+
+
+def observe_scheduler_tick(queue_depth: int, duration_seconds: float | None = None) -> None:
+    """Record a completed scheduler tick."""
     scheduler_queue_depth.set(queue_depth)
     scheduler_last_tick_timestamp.set(datetime.now(timezone.utc).timestamp())
+    if duration_seconds is not None:
+        scheduler_tick_duration.observe(duration_seconds)
+
+
+def observe_scheduler_tick_failure() -> None:
+    """Record a scheduler tick that raised."""
+    scheduler_tick_failures_total.inc()
+
+# -- HTTP API ----------------------------------------------------------------
+#
+# Labels are bounded on purpose: ``route`` is the route TEMPLATE
+# (``/api/incidents/{incident_id}``), never the raw path; anything that matches
+# no route is ``__unmatched__`` so scanners cannot mint new series; ``method``
+# outside the standard verbs is ``OTHER``. No tenant, user, IP or credential
+# ever becomes a label. Recorded by ``app.core.http_metrics``.
+
+UNMATCHED_ROUTE = "__unmatched__"
+
+http_requests_total = Counter(
+    name="hsdeep_http_requests_total",
+    documentation="HTTP requests handled, by method, route template and status code",
+    labelnames=["method", "route", "status"],
+)
+
+http_request_duration = Histogram(
+    name="hsdeep_http_request_duration_seconds",
+    documentation="HTTP request duration in seconds, by method and route template",
+    labelnames=["method", "route"],
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, float("inf")),
+)
+
+http_requests_in_progress = Gauge(
+    name="hsdeep_http_requests_in_progress",
+    documentation="HTTP requests currently being handled, by method",
+    labelnames=["method"],
+)
+
+http_errors_total = Counter(
+    name="hsdeep_http_errors_total",
+    documentation="HTTP requests that ended in a 5xx or an unhandled exception",
+    labelnames=["method", "route", "status"],
+)
+
+# -- Process identity ----------------------------------------------------------
+
+build_info = Gauge(
+    name="hsdeep_build_info",
+    documentation="Always 1; labels identify the app version and runtime role of this process",
+    labelnames=["version", "runtime_mode"],
+)
+
+
+def observe_http_request(method: str, route: str, status: int, duration_seconds: float) -> None:
+    """Record one finished HTTP request."""
+    code = str(status)
+    http_requests_total.labels(method=method, route=route, status=code).inc()
+    http_request_duration.labels(method=method, route=route).observe(duration_seconds)
+    if status >= 500:
+        http_errors_total.labels(method=method, route=route, status=code).inc()
+
+
+def set_build_info(version: str, runtime_mode: str) -> None:
+    """Publish this process's version and runtime role (api/worker/scheduler/all)."""
+    build_info.labels(version=version, runtime_mode=runtime_mode).set(1)
+
+
+# -- Dependencies ----------------------------------------------------------------
+#
+# Set by the existing /health check (which readiness probes call every few
+# seconds), so no extra polling is added. ``dependency`` is database / redis.
+
+dependency_up = Gauge(
+    name="hsdeep_dependency_up",
+    documentation="1 when the dependency answered the last health check, else 0",
+    labelnames=["dependency"],
+)
+
+dependency_last_check = Gauge(
+    name="hsdeep_dependency_last_check_timestamp_seconds",
+    documentation="Unix timestamp of the last health check of the dependency",
+    labelnames=["dependency"],
+)
+
+
+def observe_dependency(dependency: str, up: bool) -> None:
+    """Record one health-check result for a dependency."""
+    dependency_up.labels(dependency=dependency).set(1 if up else 0)
+    dependency_last_check.labels(dependency=dependency).set(time.time())
+
+
+class _DbPoolCollector:
+    """SQLAlchemy connection-pool state, read at scrape time from the pool
+    object itself (no query, no polling). Exposes nothing for pools without
+    QueuePool counters (e.g. NullPool in tests)."""
+
+    def collect(self):
+        from prometheus_client.core import GaugeMetricFamily
+
+        try:
+            from app.core.db import engine
+
+            pool = engine.pool
+            size = int(pool.size())
+            checked_out = int(pool.checkedout())
+            overflow = max(int(pool.overflow()), 0)
+            max_overflow = int(getattr(pool, "_max_overflow", 0))
+        except Exception:  # noqa: BLE001 - a scrape must never fail on pool introspection
+            return
+        capacity = size + max(max_overflow, 0)
+        for name, doc, value in (
+            ("hsdeep_db_pool_size", "Configured connection pool size", size),
+            ("hsdeep_db_pool_max_overflow", "Connections allowed above the pool size", max_overflow),
+            ("hsdeep_db_pool_checked_out", "Connections currently checked out of the pool", checked_out),
+            ("hsdeep_db_pool_overflow", "Overflow connections currently open", overflow),
+            ("hsdeep_db_pool_saturation_ratio", "Checked-out connections / (size + max_overflow)",
+             checked_out / capacity if capacity > 0 else 0.0),
+        ):
+            yield GaugeMetricFamily(name, doc, value=value)
+
+
+_db_pool_collector = _DbPoolCollector()
+try:
+    from prometheus_client import REGISTRY as _REGISTRY
+
+    _REGISTRY.register(_db_pool_collector)
+except ValueError:  # already registered (module re-executed): keep the first
+    pass

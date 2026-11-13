@@ -1,0 +1,4 @@
+# Development backend on the host (uvicorn --port 8000, RUNTIME_MODE=all).
+- targets: ["host.docker.internal:8000"]
+  labels:
+    component: all

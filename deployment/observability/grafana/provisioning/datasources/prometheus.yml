@@ -1,0 +1,15 @@
+# Grafana datasource, provisioned from file (read-only in the UI).
+# Prometheus is reached on the private compose network, never a public URL.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: hsdeep-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
+      httpMethod: POST
