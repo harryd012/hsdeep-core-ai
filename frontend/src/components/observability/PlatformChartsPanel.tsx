@@ -11,6 +11,7 @@ import {
   TIMESERIES_RANGES,
   formatUnit,
   prometheusProblem,
+  timeseriesSourceNote,
   type Timeseries,
   type TimeseriesRange,
 } from "@/lib/observability/platformMetrics";
@@ -72,11 +73,17 @@ export default function PlatformChartsPanel() {
     <section aria-label="Platform trends" style={{ display: "grid", gap: 16 }}>
       <div className="pk-toolbar" style={{ justifyContent: "space-between" }}>
         <span className="pk-count">
-          From Prometheus, every scraped process · last {data.range} · updated {ago(data.checked_at, now)}
+          {timeseriesSourceNote(data)} · last {data.range} · updated {ago(data.checked_at, now)}
           {error ? " · refresh failed, showing last reading" : ""}
         </span>
         {rangeTabs}
       </div>
+      {data.source === "process" && (
+        <Banner tone="warn">
+          Prometheus is not available, so these charts cover only this backend process. Per-stage collection
+          failures, per-source run times and alert rules need Prometheus and are not shown.
+        </Banner>
+      )}
       {problem && <Banner tone={data.configured ? "bad" : "warn"}>NOT AVAILABLE: {problem}</Banner>}
       {!problem && GROUPS.map((g) => {
         const series = data.series.filter((s) => s.group === g.key);
