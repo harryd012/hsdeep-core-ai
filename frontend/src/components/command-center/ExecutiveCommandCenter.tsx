@@ -36,6 +36,7 @@ import {
 import { CardShell, DonutRing, KpiTile, Legend, type CardState } from "./primitives";
 import SiteHoneycomb from "./SiteHoneycomb";
 import CoverageRow from "./CoverageRow";
+import ObservabilityRow from "./ObservabilityRow";
 import AppearanceMenu from "@/components/AppearanceMenu";
 import SituationBriefing from "./SituationBriefing";
 import NetworkTopologyCard from "./NetworkTopologyCard";
@@ -617,6 +618,8 @@ export default function ExecutiveCommandCenter() {
       <KpiStrip brief={brief.data} loading={brief.isLoading && !brief.data} error={!!brief.error} />
 
       <CoverageRow />
+
+      <ObservabilityRow />
 
       <div className="ecc-row">
         <NetworkTopologyCard siteId={filters.siteId} />

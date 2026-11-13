@@ -38,6 +38,10 @@ SOURCE_HEALTH_EVENT_RETRY = "retry_attempt"
 SOURCE_HEALTH_EVENT_TIMEOUT = "timeout"
 SOURCE_HEALTH_EVENT_RATE_LIMITED = "rate_limited"
 SOURCE_HEALTH_EVENT_DUPLICATE_SKIPPED = "duplicate_skipped"
+# A run outcome that changed no health state (still failing while degraded,
+# a success below the recovery threshold, ...). Rows written before
+# 2026-11-12 recorded these as `health_transition`.
+SOURCE_HEALTH_EVENT_RUN_RECORDED = "run_recorded"
 
 # Valid set for validation.
 SOURCE_HEALTH_EVENT_TYPES = frozenset({
@@ -47,6 +51,7 @@ SOURCE_HEALTH_EVENT_TYPES = frozenset({
     SOURCE_HEALTH_EVENT_TIMEOUT,
     SOURCE_HEALTH_EVENT_RATE_LIMITED,
     SOURCE_HEALTH_EVENT_DUPLICATE_SKIPPED,
+    SOURCE_HEALTH_EVENT_RUN_RECORDED,
 })
 
 

@@ -57,6 +57,7 @@ export const NAV_CONFIG: NavGroup[] = [
     children: [
       { label: "Sources & Sensors", route: "/monitoring" },
       { label: "Sensor Library", route: "/monitoring/library", keywords: "templates thresholds coverage recommendations" },
+      { label: "Integration Center", route: "/monitoring/integrations", keywords: "sources collectors sync health connectors" },
     ] },
   { id: "network", label: "Network", icon: Network, route: "/network", section: "Observe", permission: "monitoring.read",
     description: "Interface health and load, errors and VPN tunnels" },

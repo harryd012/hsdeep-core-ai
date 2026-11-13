@@ -50,6 +50,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _record(observe, *args, **kwargs) -> None:
+    """Call one platform-metrics recorder. Recording a metric never fails a
+    collection run: an error is logged at debug level and dropped."""
+    try:
+        observe(*args, **kwargs)
+    except Exception:  # noqa: BLE001 - metrics must never break collection
+        logger.debug("collection metric failed", exc_info=True)
+
+
 class CollectionOutcome:
     """Return wrapper for `CollectionOrchestrator.run()`.
 
@@ -159,7 +168,7 @@ class CollectionOrchestrator:
                 status="skipped",
                 error="Skipped: a collection run is already in progress for this source.",
             )
-            platform_metrics.observe_collection_skipped(source.source_type)
+            _record(platform_metrics.observe_collection_skipped, source.source_type)
             await _meter()
             return CollectionOutcome(skipped_run)
 
@@ -176,13 +185,13 @@ class CollectionOrchestrator:
         stage = "configure"
 
         def _phase(name: str, started: float) -> None:
-            platform_metrics.observe_collector_phase(source_type, name, time.perf_counter() - started)
+            _record(platform_metrics.observe_collector_phase, source_type, name, time.perf_counter() - started)
 
         def _failed() -> None:
             if stage == "done":  # the run was already recorded as a success
                 return
-            platform_metrics.observe_collection_failure(source_type, stage)
-            platform_metrics.observe_collection_run(source_type, "error", time.perf_counter() - run_started)
+            _record(platform_metrics.observe_collection_failure, source_type, stage)
+            _record(platform_metrics.observe_collection_run, source_type, "error", time.perf_counter() - run_started)
 
         try:
             collector_cls = CollectorRegistry.get(source.source_type)
@@ -267,7 +276,8 @@ class CollectionOrchestrator:
                 events_recorded=save_result.events_recorded,
                 alerts_upserted=alerts_upserted,
             )
-            platform_metrics.observe_collection_run(
+            _record(
+                platform_metrics.observe_collection_run,
                 source_type,
                 "success",
                 time.perf_counter() - run_started,

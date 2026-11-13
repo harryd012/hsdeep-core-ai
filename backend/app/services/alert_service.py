@@ -29,6 +29,7 @@ is a breaking API change.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -66,11 +67,15 @@ AlertAction = Literal["opened", "updated", "resolved", "noop"]
 
 def _observe_opened(alert: Alert) -> None:
     """Platform metric for a newly opened alert: source and severity only,
-    never tenant, device or alert identifiers."""
+    never tenant, device or alert identifiers. Recording a metric never
+    breaks alerting."""
     from app.core.metrics import observe_alert_created
 
-    severity = getattr(alert.severity, "value", alert.severity)
-    observe_alert_created(str(alert.source or "unknown"), str(severity or "unknown"))
+    try:
+        severity = getattr(alert.severity, "value", alert.severity)
+        observe_alert_created(str(alert.source or "unknown"), str(severity or "unknown"))
+    except Exception:  # noqa: BLE001 - metrics must never break alerting
+        logger.debug("alert metric failed", exc_info=True)
 
 
 @dataclass(frozen=True)
@@ -93,6 +98,10 @@ class AlertEvaluation:
 
 class AlertNotFound(Exception):
     pass
+
+
+logger = logging.getLogger(__name__)
+
 
 
 class AlertService:
@@ -524,6 +533,7 @@ class AlertService:
         )
         await self._record_history(created, event_type="opened", message=f"Alert opened: {created.title}")
         await self._correlate(created)
+        _observe_opened(created)
         return AlertEvaluation(alert=created, action="opened")
 
     # -- operator actions ----------------------------------------------------

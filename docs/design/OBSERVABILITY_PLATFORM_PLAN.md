@@ -50,7 +50,7 @@ Earlier audits: `docs/REPOSITORY_AUDIT.md`, `docs/PLATFORM_LEDGER.md` (batches 1
 | P9 Alerting | Dynamic baselines, notification policies, Teams channel | **Slice 1 implemented and tested**: notification policies (severity / priority / site routing) and a Microsoft Teams channel per policy (`tests/test_notification_policies.py`); **slice 2**: opt-in dynamic baselines per sensor (`tests/test_sensor_baselines.py`) |
 | P10 AI RCA / copilot | Copilot tools over the new sensor / history APIs | **Slice 1 implemented and tested**: the Copilot answers from sensors, network, logs, traces, baselines, coverage and named hosts (`tests/test_copilot_observability.py`) |
 | P11 Reporting | Sensor / interface / availability reports from stored metrics | **Slice 1 implemented and tested**: availability, sensor performance and interface traffic reports over a period, with CSV export (`tests/test_observability_reports.py`) |
-| P12 Integration center | One page over `monitoring_sources` + integrations with health, sync history | planned |
+| P12 Integration center | One page over `monitoring_sources` + integrations with health, sync history | **Slice 1 implemented and tested**: one derived state per source / integration, 24 h run statistics, sync history and health events per source, Integration Center pages (`tests/test_integration_center.py`); checked in a browser. **Slice 2** (plan: `docs/design/INTEGRATION_FRAMEWORK_PLAN.md`): step 2a done — collector errors name their cause, run-level health events split from real transitions (`tests/test_collector_error_text.py`); step 2b done — ServiceNow and ITSM connections with sync-job history in the Integration Center; step 2c done — integration catalogue from the collector, ITSM and action registries (`GET /api/integration-center/catalog`, "Available integrations" tab) |
 | P13 RBAC, metering, scale | New roles as permission bundles; metering of metrics / logs / traces | planned |
 | P14 Hardening | Performance benchmarks, retention jobs | planned |
 
@@ -630,3 +630,35 @@ existing `(tenant, service, start)` and `(tenant, start)` indexes cover every qu
   `/traces` is unchanged; its service map is now the shared `components/apm/ServiceMap`.
 - **Not in this slice**: linking services to hosts (`host.name`), latency / error-rate alert
   rules, traces on incidents, logs by trace id, protobuf and gzip.
+
+## 18. P12 slice 1: Integration Center
+
+- **Overview** (`GET /api/integration-center`): every monitoring source (synthetic test sources
+  left out) and every generic integration of the tenant, each with one operator-facing `state`
+  derived only from what was recorded: `disabled`, `failing` (last collection failed, or the
+  integration reports a connection / authentication / discovery failure), `degraded` (the health
+  state machine said so), `never_synced`, `stale` (no success for three poll intervals, at least
+  15 minutes) or `healthy`. Per source: last success / failure / attempt, next run, consecutive
+  failures, last error (cut at 500 characters), sensors and devices it maintains, runs in the last
+  24 hours with failures, success rate (success or partial) and average run time. Worst state
+  first. Credentials are reported only as configured or not.
+- **Source detail** (`GET /api/integration-center/sources/{id}`): the same row plus the last 50
+  collector runs (sync history) and the last 50 source-health events. Another tenant's source is
+  a 404.
+- Read-only, `monitoring.read`, tenant-scoped. Syncing stays on the existing
+  `POST /api/monitoring/sources/{id}/sync` (`monitoring.update`), offered as "Sync now" on the
+  detail page.
+- **UI**: `/monitoring/integrations` (under Monitoring in the sidebar) with summary tiles, state
+  filters and search; `/monitoring/integrations/[id]` with sync history and health events.
+  Type-checked and linted; checked in a signed-in browser against the dev tenant on 2026-11-12:
+  5 sources, the dev PRTG server failing all 114 runs of the last 24 hours ("Could not reach
+  PRTG", 5,929 consecutive failures), four SNMP lab sources disabled, no console errors. "Sync
+  now" was not pressed: it runs a real collection. Seen in that data, not changed here: the PRTG
+  error text gives no cause after "Could not reach PRTG:", and every repeated failure is audited
+  as a `Degraded -> Degraded` transition, which buries real transitions in the event list.
+- **Alongside**: the collector pipeline now feeds the existing Prometheus metrics
+  (`app.core.metrics`, served at `/metrics`): run outcome, duration and item counts, collector
+  phase durations, skipped runs, alerts opened by origin and severity, and scheduler queue depth.
+  Recording a metric can never fail a run (`tests/test_collection_metrics.py`).
+- **Not in this slice**: per-integration sync history (generic integrations record no runs),
+  editing sources from this page.

@@ -87,7 +87,7 @@ NOT_CONFIGURED_TARGET = "not configured"
 # case-insensitive and substring-based so a future "snmp_community" key is
 # covered without a code change.
 _SECRET_KEY_HINTS: tuple[str, ...] = (
-    "password", "passwd", "secret", "community", "token",
+    "password", "passwd", "passhash", "secret", "community", "token",
     "api_key", "apikey", "auth_key", "priv_key", "privacy",
 )
 

@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from app.collectors.base import (
+    describe_error,
     BaseCollector,
     CollectorConfigError,
     CollectorRegistry,
@@ -190,7 +191,7 @@ class DatadogCollector(BaseCollector):
             resp = await self._request("/api/v1/validate", timeout=_STATUS_TIMEOUT)
         except (httpx.TransportError, httpx.TimeoutException) as exc:
             return ConnectionCheck(
-                success=False, message=f"Could not reach Datadog: {exc}"
+                success=False, message=f"Could not reach Datadog: {describe_error(exc, self.source)}"
             )
         if resp.status_code == 200:
             return ConnectionCheck(success=True, message="Connected to Datadog.")

@@ -57,6 +57,7 @@ from urllib.parse import unquote
 import httpx
 
 from app.collectors.base import (
+    describe_error,
     BaseCollector,
     CollectorAuthenticationError,
     CollectorConfigError,
@@ -343,12 +344,12 @@ class PNETLabCollector(BaseCollector):
         except PNETLabAuthError as exc:
             return ConnectionCheck(success=False, message=f"PNETLab authentication failed: {exc}")
         except PNETLabTimeout as exc:
-            return ConnectionCheck(success=False, message=f"PNETLab timed out: {exc}")
+            return ConnectionCheck(success=False, message=f"PNETLab timed out: {describe_error(exc, self.source)}")
         except PNETLabUnreachable as exc:
-            return ConnectionCheck(success=False, message=f"PNETLab unreachable: {exc}")
+            return ConnectionCheck(success=False, message=f"PNETLab unreachable: {describe_error(exc, self.source)}")
         except PNETLabMalformed as exc:
             return ConnectionCheck(
-                success=False, message=f"PNETLab returned an unusable response: {exc}"
+                success=False, message=f"PNETLab returned an unusable response: {describe_error(exc, self.source)}"
             )
         except Exception as exc:  # noqa: BLE001 - an expected failure never raises
             return ConnectionCheck(
