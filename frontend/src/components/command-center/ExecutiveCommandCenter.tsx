@@ -40,6 +40,7 @@ import ObservabilityRow from "./ObservabilityRow";
 import AppearanceMenu from "@/components/AppearanceMenu";
 import SituationBriefing from "./SituationBriefing";
 import NetworkTopologyCard from "./NetworkTopologyCard";
+import PlatformObservabilityCard from "./PlatformObservabilityCard";
 import { getAlertSummary, getBackupOverview, getTaskCounts, getWorkflowStatistics, type CloudOperationsKPI } from "@/lib/api";
 import { useCloudOperations } from "@/hooks/useCloudOperations";
 import { BarList, DayColumns } from "@/components/ui/PageKit";
@@ -622,6 +623,10 @@ export default function ExecutiveCommandCenter() {
 
       <div className="ecc-row">
         <NetworkTopologyCard siteId={filters.siteId} />
+      </div>
+
+      <div className="ecc-row">
+        <PlatformObservabilityCard />
       </div>
 
       <div className="ecc-row">
